@@ -1,0 +1,31 @@
+{-# LANGUAGE Strict #-}
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE FlexibleInstances #-}
+
+module Better.Hash
+  ( hashArray
+  , hashArrayFold
+  ) where
+
+
+import Data.Word
+import Data.ByteArray (ByteArrayAccess(..))
+
+import qualified Streamly.Data.Array as Array
+import qualified Streamly.Internal.Data.Array as Array (asPtrUnsafe, castUnsafe) 
+import qualified Streamly.Data.Fold as F
+
+import Crypto.Hash
+
+hashArray :: Array.Array Word8 -> Digest SHA256
+hashArray = hashWith SHA256 . ArrayBA
+
+hashArrayFold :: (Monad m) => F.Fold m (Array.Array Word8) (Digest SHA256)
+hashArrayFold = F.lmap ArrayBA $ fmap hashFinalize $ (F.foldl' hashUpdate hashInit)
+{-# INLINEABLE hashArrayFold #-}
+
+newtype ArrayBA a = ArrayBA (Array.Array a)
+
+instance ByteArrayAccess (ArrayBA Word8) where
+  length (ArrayBA arr) = Array.length arr
+  withByteArray (ArrayBA arr) fp = Array.asPtrUnsafe (Array.castUnsafe arr) fp

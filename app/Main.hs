@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE AllowAmbiguousTypes #-}
@@ -69,11 +70,11 @@ import qualified Capability.Reader as C
 import qualified Capability.Source as C
 
 import Control.Monad
-import Control.Monad.Trans.Reader
+import Control.Monad.Reader
 import Control.Monad.IO.Class
 import Control.Monad.Catch
 import Control.Monad.Base
-import Control.Monad.Trans.Control
+import Control.Monad.Trans.Control (MonadBaseControl)
 import Control.Concurrent
 import Control.Concurrent.STM
 import Control.Concurrent.Async
@@ -101,6 +102,10 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import qualified Data.Text.Encoding as TE
 
+import Better.Repository
+import Better.Repository.Class
+import qualified Better.Repository as Repo
+
 import Data.ByteArray (ByteArrayAccess(..))
 
 newtype ArrayBA a = ArrayBA (Array.Array a)
@@ -115,41 +120,11 @@ data Hbk m = MkHbk
   , hbk_objExists :: Digest SHA256 -> m Bool
   , hbk_fileExists :: Digest SHA256 -> m Bool
   , hbk_dirExists :: Digest SHA256 -> m Bool
-  , hbk_repository :: Repository
+  , hbk_repo :: Repository
   }
   deriving (Generic)
 
-data Repository = Repository
-   { repo_addBlob :: Array.Array Word8 -> IO (Digest SHA256)
-   , repo_addFileFromLocalFile :: Path Path.Abs Path.File -> IO (Digest SHA256)
-   }
-  deriving (Generic)
-
-localRepository :: Path Path.Abs Path.Dir -> Repository
-localRepository hbk_path = Repository add_blob' add_file_from_local_file'
-  where
-    add_blob' :: Array.Array Word8 -> IO (Digest SHA256)
-    add_blob' chunk = do
-      let !chunk_hash = hashWith SHA256 (ArrayBA chunk)
-      file_name <- Path.parseRelFile $ show chunk_hash
-      let f = hbk_path </> [Path.reldir|obj|] </> file_name
-      exist <- P.fileExist $ Path.fromAbsFile f
-      unless exist $ 
-        S.fromPure chunk
-          & S.fold (File.writeChunks $ Path.fromAbsFile f)
-      pure chunk_hash 
-
-    add_file_from_local_file' :: Path Path.Abs Path.File -> IO (Digest SHA256)
-    add_file_from_local_file' p = do
-      file_hash <- File.readChunks (Path.fromAbsFile p)
-        & S.fold (F.lmap ArrayBA (hash_fold @SHA256))
-      file_hash_name <- Path.parseRelFile $ show file_hash
-      let new_file_name = hbk_path </> [Path.reldir|file|] </> file_hash_name
-      -- TODO rename won't work all the time
-      P.rename (Path.fromAbsFile p) (Path.fromAbsFile new_file_name)
-      pure file_hash
-
-pattern Hbk a b c d <- (MkHbk a a' b c d _)
+type MonadBackup m = (C.HasReader "hbk" (Hbk m) m, MonadIO m, MonadCatch m, MonadRepository m)
 
 newtype HbkT m a = HbkT { runHbkT :: Hbk (HbkT m) -> m a }
   deriving (Generic)
@@ -170,35 +145,42 @@ newtype HbkT m a = HbkT { runHbkT :: Hbk (HbkT m) -> m a }
     ) via (C.MonadReader (ReaderT (Hbk (HbkT m)) m))
   deriving
     ( C.HasSource "repo" Repository
-    , C.HasReader "repo" Repository 
-    ) via C.Rename "hbk_repository"
-         (C.Field "hbk_repository" ()
+    , C.HasReader "repo" Repository
+    ) via C.Rename "hbk_repo"
+         (C.Field "hbk_repo" ()
 	 (C.MonadReader
 	 (ReaderT (Hbk (HbkT m)) m)))
+  deriving 
+    ( MonadRepository
+    ) via TheMonadRepository
+         (C.Rename "hbk_repo"
+         (C.Field "hbk_repo" ()
+	 (C.MonadReader
+	 (ReaderT (Hbk (HbkT m)) m))))
 
 touch_file :: (C.HasReader "hbk" (Hbk m) m, MonadIO m) => T.Text -> m T.Text
 touch_file file_name = do
   hbk <- C.asks @"hbk" hbk_path
   liftIO $ do
-    (tmp_name, tmp_fd) <- P.mkstemp (T.unpack $ hbk <> "/file/")
+    (tmp_name, tmp_fd) <- P.mkstemp (T.unpack $ hbk <> "/tmp/")
     hClose tmp_fd
     T.writeFile tmp_name ""
     pure $ T.pack tmp_name
 
-append_file :: Hbk m -> T.Text -> Digest SHA256 -> IO ()
-append_file (Hbk hbk _ _ _) file_name chunk_hash = do
+append_file :: T.Text -> Digest SHA256 -> IO ()
+append_file file_name chunk_hash = do
   let f = file_name
   T.appendFile (T.unpack f) (T.pack $ show chunk_hash <> "\n")
 
 try_touching_dir :: MonadIO m => Hbk m -> m T.Text
-try_touching_dir (Hbk hbk _ _ _) = liftIO $ do
-  (tmp_name, tmp_fd) <- P.mkstemp (T.unpack $ hbk <> "/dir/")
+try_touching_dir hbk = liftIO $ do
+  (tmp_name, tmp_fd) <- P.mkstemp (T.unpack $ hbk_path hbk <> "/tmp/")
   hClose tmp_fd
   T.writeFile tmp_name ""
   pure $ T.pack tmp_name
 
-dir_content :: Hbk m -> Either T.Text T.Text -> Digest SHA256 -> BS.ByteString
-dir_content (Hbk hbk _ _ _) file_or_dir hash' =
+dir_content :: Either T.Text T.Text -> Digest SHA256 -> BS.ByteString
+dir_content file_or_dir hash' =
   let
     name = either file_name' file_name' file_or_dir
     t = either (const "dir") (const "file") file_or_dir
@@ -231,14 +213,6 @@ data Object
   }
   deriving (Show)
 
-touch_version :: Hbk m -> Version -> IO ()
-touch_version (Hbk hbk _ _ _) v = do
-  let f = hbk <> "/version/" <> T.pack (show (ver_id v))
-  (tmp_name, tmp_fd) <- P.mkstemp (T.unpack $ hbk <> "/version/")
-  hClose tmp_fd
-  T.writeFile tmp_name $ T.pack $ show (ver_root v)
-  P.rename tmp_name $ T.unpack f
-
 hash_fold :: (HashAlgorithm alg, ByteArrayAccess ba, Monad m)
 	  => F.Fold m ba (Digest alg)
 hash_fold = fmap hashFinalize (F.foldl' hashUpdate hashInit)
@@ -246,78 +220,56 @@ hash_fold = fmap hashFinalize (F.foldl' hashUpdate hashInit)
 file_name' :: T.Text -> T.Text
 file_name' = last . T.splitOn "/"
 
-h_dir :: (C.HasReader "hbk" (Hbk m) m, C.HasReader "repo" Repository m, MonadIO m, MonadCatch m) => T.Text -> m (Digest SHA256)
+h_dir :: (MonadBackup m) => T.Text -> m (Digest SHA256)
 h_dir dir_name = do
   hbk <- C.ask @"hbk"
   let hbb = hbk_path hbk
 
   tmp_dir_file <- try_touching_dir hbk
-  dir_hash <- fmap (bimap T.pack T.pack) (Dir.readEitherPaths $ T.unpack dir_name)
+  fmap (bimap T.pack T.pack) (Dir.readEitherPaths $ T.unpack dir_name)
     & S.mapM (\fod ->do
         hash <- either h_dir h_file fod
-	pure $ dir_content hbk fod hash
+	pure $ dir_content fod hash
       )
     & S.trace (liftIO . BS.appendFile (T.unpack tmp_dir_file))
-    & S.fold (hash_fold @SHA256)
-  
-  liftIO $ do
-    let new_dir_name = T.unpack hbb <> "/dir/" <> show dir_hash
-    P.rename (T.unpack tmp_dir_file) new_dir_name
-    
-    pure dir_hash
+    & S.fold F.drain
 
-h_file :: (C.HasReader "hbk" (Hbk m) m, C.HasReader "repo" Repository m, MonadIO m, MonadCatch m) => T.Text -> m (Digest SHA256)
+  cwd <- C.asks @"hbk" hbk_cwd
+  rel_dir_name <- Path.parseRelFile $ T.unpack tmp_dir_file
+
+  File.readChunks (Path.fromAbsFile $ cwd </> rel_dir_name)
+    & Repo.addDir
+
+h_file :: (MonadBackup m) => T.Text -> m (Digest SHA256)
 h_file file_name = do
-  hbk <- C.ask @"hbk"
-  let hbb = hbk_path hbk
-
-  add_blob <- C.asks @"repo" repo_addBlob
-  add_file_from_local_file <- C.asks @"repo" repo_addFileFromLocalFile
-
   file_name' <- touch_file file_name
-
   File.readChunksWith (1024 * 1024) (T.unpack file_name)
     & S.filter ((0 /=) . Array.length)
     & S.mapM (\chunk -> do
-      chunk_hash <- liftIO $ add_blob chunk
+      chunk_hash <- Repo.addBlob $ S.fromPure chunk
       pure chunk_hash
     )
-    & S.trace (liftIO . append_file hbk file_name')
+    & S.trace (liftIO . append_file file_name')
     & S.fold F.drain
 
   cwd <- C.asks @"hbk" hbk_cwd
   rel_file_name' <- Path.parseRelFile $ T.unpack file_name'
+  File.readChunks (Path.fromAbsFile $ cwd </> rel_file_name')
+    & Repo.addFile
 
-  liftIO $ add_file_from_local_file (cwd </> rel_file_name')
-
-next_backup_version_id :: (C.HasReader "hbk" (Hbk m) m, MonadIO m) => m Integer
-next_backup_version_id = do
-  hbk <- C.asks @"hbk" hbk_path
-  Dir.readFiles (T.unpack (hbk <> "/version"))
-    & S.mapMaybe (readMaybe @Integer)
-    & S.fold F.maximum
-    & fmap (succ . fromMaybe 0)
-
-backup :: (C.HasReader "hbk" (Hbk m) m, C.HasReader "repo" Repository m, MonadIO m, MonadCatch m) => T.Text -> m Version
+backup :: (MonadBackup m) => T.Text -> m Version
 backup dir = do
-  hbk <- C.ask @"hbk"
-  let hbb = hbk_path hbk
-
-  version_id <- next_backup_version_id
-
+  version_id <- Repo.nextBackupVersionId
   root_hash <- h_dir dir
-
-  let version = Version version_id $ root_hash
-  liftIO $ touch_version hbk version
-
-  return version
+  Repo.addVersion version_id root_hash
+  return $ Version version_id root_hash
 
 init_bkp :: (C.HasReader "hbk" (Hbk m) m, MonadIO m) => m ()
 init_bkp = do
   hbk <- C.asks @"hbk" hbk_path
   exist <- liftIO $ P.fileExist $ T.unpack hbk
   liftIO $ unless exist $ do
-    for_ ["", "obj", "file", "dir", "version"] $ \d ->
+    for_ ["", "obj", "file", "dir", "version", "tmp"] $ \d ->
       P.createDirectory (T.unpack $ hbk <> "/" <> d) 700
 
 list_versions :: (C.HasReader "hbk" (Hbk m) m, MonadIO m, MonadCatch m)
@@ -434,13 +386,16 @@ tree_explorer sha = do
         loop []
       _ -> loop (s:ss)
 
+mm :: (C.HasSource "x" Int m) => m Bool
+mm = pure True
+
 main :: IO ()
 main = do
   cwd <- P.getWorkingDirectory >>= Path.parseAbsDir
   
-  let hbk = MkHbk "bkp/" cwd (const $ pure False) (const $ pure False) (const $ pure False) (localRepository (cwd </> [Path.reldir|bkp|]))
+  let hbk = MkHbk "bkp/" cwd (const $ pure False) (const $ pure False) (const $ pure False) (localRepo $ cwd </> [Path.reldir|bkp|])
 
-  flip runHbkT hbk $ init_bkp 
+  flip runHbkT hbk $ initRepositoryStructure 
 
   let
     handle_cmd cmd go =
@@ -509,3 +464,18 @@ main = do
       "q":_ -> pure ()
       l:_ -> T.putStrLn ("no such command: " <> l) >> loop
       [] -> loop
+
+withEmitUnfoldr :: ((Int -> IO ()) -> IO b)
+     -> (S.Stream IO Int -> IO a) -> IO a
+withEmitUnfoldr putter go = do
+  tbq <- newTBQueueIO @Int 1
+
+  withAsync (putter (atomically . writeTBQueue tbq)) $ \h -> do
+    let 
+      f = do
+        e <- atomically $ (Just <$> readTBQueue tbq) <|> (Nothing <$ waitSTM h)
+        case e of
+          Just v -> pure (Just (v, ()))
+	  Nothing -> pure Nothing
+
+    go $ S.unfoldrM (\() -> f) ()
