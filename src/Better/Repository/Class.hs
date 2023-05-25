@@ -32,4 +32,5 @@ class Monad m => MonadRepository m where
   -- TODO File mode?
   createDirectory :: Path Path.Rel Path.Dir -> m () 
   fileExists :: Path Path.Rel Path.File -> m Bool
+  mkRead :: forall n. (MonadIO n) => m (Path Path.Rel Path.File -> S.Stream n (Array.Array Word8))
   mkListFolderFiles :: forall n. (MonadIO n) => m (Path Path.Rel Path.Dir -> S.Stream n (Path Path.Rel Path.File))

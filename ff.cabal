@@ -60,6 +60,7 @@ common warnings
       -fmax-worker-args=16
       -fspec-constr-recursive=16
       -- -fplugin=Fusion.Plugin
+
 common deps
     build-depends:    base ^>=4.16, text, streamly, streamly-core, containers, unix, time, stm, async, unliftio, unliftio-core, fusion-plugin, memory, cryptonite, bytestring, capability, exceptions, base16-bytestring, katip, monad-control, transformers-base, path, mtl
 
@@ -70,6 +71,7 @@ library better-core
       Better.Repository
       Better.Repository.Class
       Better.Hash
+      Better.TempDir.Class
     hs-source-dirs:   src
     default-language: Haskell2010
 
@@ -78,3 +80,4 @@ executable ff
     main-is:          Main.hs
     hs-source-dirs:   app
     default-language: Haskell2010
+    build-depends:  better-core, optparse-applicative
