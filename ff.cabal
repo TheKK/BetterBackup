@@ -54,11 +54,14 @@ common warnings
     ghc-options:
       -Wall
       -fllvm
+      -g
       -threaded
       -rtsopts
       -fdicts-strict
       -fmax-worker-args=16
       -fspec-constr-recursive=16
+      -finfo-table-map
+      -fdistinct-constructor-tables
       -- -fplugin=Fusion.Plugin
 
 common deps
@@ -68,6 +71,7 @@ common deps
 library better-core
     import:           warnings, deps
     exposed-modules:
+      Better.Streamly.FileSystem.Dir
       Better.Repository
       Better.Repository.Class
       Better.Hash

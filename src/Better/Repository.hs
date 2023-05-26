@@ -77,8 +77,8 @@ import qualified Streamly.Internal.Data.Array as Array (asPtrUnsafe, castUnsafe)
 
 import qualified Streamly.Data.Stream.Prelude as S
 import qualified Streamly.Data.Fold as F
+import qualified Streamly.Data.Unfold as U
 import qualified Streamly.FileSystem.File as File
-import qualified Streamly.Internal.FileSystem.Dir as Dir
 import qualified Streamly.Unicode.Stream as US
 import qualified Streamly.Internal.Unicode.Stream as US
 
@@ -91,9 +91,6 @@ import qualified Path
 
 import Crypto.Hash
 
-import Better.Hash
-
-import Better.Repository.Class
 import GHC.Generics
 
 import qualified Streamly.Data.Array as Array
@@ -112,6 +109,10 @@ import Data.Coerce (coerce)
 
 import Control.Monad.IO.Class
 import Data.ByteArray (ByteArrayAccess(..))
+
+import Better.Hash
+import Better.Repository.Class
+import qualified Better.Streamly.FileSystem.Dir as Dir
 
 data Repository = Repository
    { _repo_putFile :: Path Path.Rel Path.File -> F.Fold IO (Array.Array Word8) ()
@@ -219,10 +220,10 @@ localRepo root = Repository
   -- (tmp_name, tmp_fd) <- P.mkstemp (Path.fromAbsDir $ hbk_path </> [Path.reldir|version|])
   --hClose tmp_fd
   (File.writeChunks . Path.fromAbsFile . (root </>))
-  (liftIO . flip P.createDirectory 700 . Path.fromAbsDir . (root </>))
-  (liftIO . P.fileExist . Path.fromAbsFile . (root </>))
+  (flip P.createDirectory 700 . Path.fromAbsDir . (root </>))
+  (P.fileExist . Path.fromAbsFile . (root </>))
   (File.readChunks . Path.fromAbsFile . (root </>))
-  (S.mapM Path.parseRelFile . Dir.read . Path.fromAbsDir . (root </>))
+  (S.mapM Path.parseRelFile . Dir.read . (root </>))
 
 put_file_in_repo :: (MonadCatch m, MonadIO m, MonadRepository m)
   => Path Path.Rel Path.Dir
@@ -332,6 +333,7 @@ nextBackupVersionId = do
     & S.fold F.maximum
     & fmap (succ . fromMaybe 0)
 
+
 cat_stuff_under :: (Show a, MonadThrow m, MonadIO m, MonadRepository m)
 	=> Path Path.Rel Path.Dir -> a -> S.Stream m (Array.Array Word8)
 cat_stuff_under folder stuff = S.concatEffect $ do
@@ -399,22 +401,21 @@ instance ByteArrayAccess (ArrayBA Word8) where
 
 checksum :: (MonadIO m, MonadCatch m, MonadRepository m, MonadBaseControl IO m) => Int -> m ()
 checksum n = do
-  let
-    check p = listFolderFiles p
-      & fmap (\f -> (Path.fromRelFile f, p </> f)
-      )
-      & S.parMapM (S.maxBuffer n) (\(expected_sha, f) -> do
-          actual_sha <- read f
-	    & S.fold hashArrayFold
-          pure $
-            if show actual_sha == expected_sha
-            then Nothing
-	    else Just (f, actual_sha)
-        )
-      & S.filter (isJust)
-      & fmap (fromJust)
-      & S.trace (\(invalid_f, expect_sha) ->
-          liftIO $ T.putStrLn $ "invalid file: " <> T.pack (Path.fromRelFile invalid_f) <> ", " <> T.pack (show expect_sha))
-      & S.fold F.drain
-
-  for_ [folder_tree, folder_file, folder_chunk] $ check
+  S.fromList [folder_tree, folder_file, folder_chunk] 
+    & S.concatMap (\p ->
+      listFolderFiles p
+        & fmap (\f -> (Path.fromRelFile f, p </> f))
+    )
+    & S.parMapM (S.maxBuffer 50 . S.maxThreads n . S.eager True) (\(expected_sha, f) -> do
+         actual_sha <- read f
+           & S.fold hashArrayFold
+         pure $
+           if show actual_sha == expected_sha
+           then Nothing
+           else Just (f, actual_sha)
+       )
+    & S.filter (isJust)
+    & fmap (fromJust)
+    & S.trace (\(invalid_f, expect_sha) ->
+        liftIO $ T.putStrLn $ "invalid file: " <> T.pack (Path.fromRelFile invalid_f) <> ", " <> T.pack (show expect_sha))
+    & S.fold F.drain
