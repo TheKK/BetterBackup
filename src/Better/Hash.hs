@@ -19,6 +19,7 @@ import Crypto.Hash
 
 hashArray :: Array.Array Word8 -> Digest SHA256
 hashArray = hashWith SHA256 . ArrayBA
+{-# INLINE hashArray #-}
 
 hashArrayFold :: (Monad m) => F.Fold m (Array.Array Word8) (Digest SHA256)
 hashArrayFold = F.lmap ArrayBA $ fmap hashFinalize $ (F.foldl' hashUpdate hashInit)
@@ -28,4 +29,7 @@ newtype ArrayBA a = ArrayBA (Array.Array a)
 
 instance ByteArrayAccess (ArrayBA Word8) where
   length (ArrayBA arr) = Array.length arr
+  {-# INLINE length #-}
+
   withByteArray (ArrayBA arr) fp = Array.asPtrUnsafe (Array.castUnsafe arr) fp
+  {-# INLINE withByteArray #-}

@@ -406,7 +406,7 @@ checksum n = do
       listFolderFiles p
         & fmap (\f -> (Path.fromRelFile f, p </> f))
     )
-    & S.parMapM (S.maxBuffer n . S.maxThreads n . S.eager True) (\(expected_sha, f) -> do
+    & S.parMapM (S.maxBuffer (n + 1) . S.maxThreads n . S.eager True) (\(expected_sha, f) -> do
          actual_sha <- read f
 	   & S.parEval (S.ordered True . S.eager True . S.maxBuffer 2)
            & S.fold hashArrayFold

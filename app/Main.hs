@@ -190,7 +190,7 @@ h_dir tbq tree_name = withEmptyTmpFile $ \file_name' -> do
       & S.fold (F.drainMapM $ liftIO . BC.hPutStrLn fd)
 
   dir_hash <- File.readChunks (Path.fromAbsFile file_name')
-    & S.parMapM (S.ordered True . S.maxBuffer 8) pure
+    & S.parEval (S.ordered True . S.eager True . S.maxBuffer 2)
     & S.fold hashArrayFold
   atomically $ writeTBQueue tbq $ do
     Repo.addDir' dir_hash (File.readChunks (Path.fromAbsFile file_name'))
@@ -207,7 +207,7 @@ h_file tbq file_name = withEmptyTmpFile $ \file_name' -> do
   Un.withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
     File.readChunksWith (1024 * 1024) (T.unpack file_name)
       & S.filter ((0 /=) . Array.length)
-      & S.parMapM (S.ordered True . S.maxBuffer 4) (\chunk -> do
+      & S.parMapM (S.ordered True . S.eager True . S.maxBuffer 5) (\chunk -> do
         chunk_hash <- S.fromPure chunk & S.fold hashArrayFold
         atomically $ writeTBQueue tbq $ do
           Repo.addBlob' chunk_hash (S.fromPure chunk)
@@ -216,7 +216,7 @@ h_file tbq file_name = withEmptyTmpFile $ \file_name' -> do
       & S.fold (F.drainMapM $ liftIO . BC.hPutStrLn fd . d2b)
 
   file_hash <- File.readChunks (Path.fromAbsFile file_name')
-    & S.parMapM (S.ordered True . S.maxBuffer 8) pure
+    & S.parEval (S.ordered True . S.eager True . S.maxBuffer 2)
     & S.fold hashArrayFold
   atomically $ writeTBQueue tbq $ do
     Repo.addFile' file_hash (File.readChunks (Path.fromAbsFile file_name'))
@@ -229,7 +229,7 @@ backup :: (MonadBackup m, MonadBaseControl IO m) => T.Text -> m Version
 backup dir = do
   (root_hash, _) <- withEmitUnfoldr 50 (\tbq -> h_dir tbq dir)
     $ (\s -> s 
-       & S.parSequence (S.maxBuffer 20 . S.maxThreads 10 . S.eager True)
+       & S.parSequence (S.maxBuffer 50 . S.eager True)
        & S.fold F.drain
       )
   version_id <- Repo.nextBackupVersionId
