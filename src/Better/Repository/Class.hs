@@ -29,6 +29,7 @@ import Control.Monad.IO.Class
 
 class Monad m => MonadRepository m where
   mkPutFileFold :: forall n. (MonadIO n) => m (Path Path.Rel Path.File -> F.Fold n (Array.Array Word8) ())
+  removeFiles :: [Path Path.Rel Path.File] -> m ()
   -- TODO File mode?
   createDirectory :: Path Path.Rel Path.Dir -> m () 
   fileExists :: Path Path.Rel Path.File -> m Bool

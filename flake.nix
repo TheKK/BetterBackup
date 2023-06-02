@@ -16,10 +16,10 @@
 
       in {
         devShell = pkgs.mkShell {
-          LD_LIBRARY_PATH = "${pkgs.zlib}/lib";
+          LD_LIBRARY_PATH = "${pkgs.zlib}/lib;${pkgs.leveldb}/lib;";
           inputsFrom = [ ];
-          buildInputs = [ pkgs.zlib pkgs.libevent ];
-          nativeBuildInputs = [ ];
+          buildInputs = [ pkgs.zlib pkgs.leveldb ];
+          nativeBuildInputs = [ pkgs.haskellPackages.hsc2hs ];
         };
       });
 }

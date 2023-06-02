@@ -30,6 +30,8 @@ module Better.Repository
   , listFolderFiles
   , listVersions
   , checksum
+  -- * Deletion
+  , garbageCollection
   -- * Repositories
   , localRepo
   -- * Monad
@@ -56,6 +58,12 @@ import Data.Function
 import Data.Foldable
 import Data.Maybe (fromMaybe, isJust, fromJust)
 
+import Data.Set (Set)
+import qualified Data.Set as Set
+
+import UnliftIO
+import qualified UnliftIO.Directory as Un
+
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import qualified Data.Text.Encoding as TE
@@ -63,7 +71,10 @@ import qualified Data.Text.Encoding as TE
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base16 as BS
 import qualified Data.ByteString.Builder as BB
+import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString.Lazy as BL
+
+import qualified Data.ByteString.UTF8 as UTF8
 
 import Text.Read (readMaybe)
 
@@ -81,6 +92,8 @@ import qualified Streamly.Data.Unfold as U
 import qualified Streamly.FileSystem.File as File
 import qualified Streamly.Unicode.Stream as US
 import qualified Streamly.Internal.Unicode.Stream as US
+
+import System.IO.Error (isDoesNotExistError)
 
 import qualified System.Posix.Files as P
 import qualified System.Posix.Directory as P
@@ -114,8 +127,12 @@ import Better.Hash
 import Better.Repository.Class
 import qualified Better.Streamly.FileSystem.Dir as Dir
 
+import Data.ByteArray (ByteArrayAccess(..))
+import qualified Data.ByteArray.Encoding as BA
+
 data Repository = Repository
    { _repo_putFile :: Path Path.Rel Path.File -> F.Fold IO (Array.Array Word8) ()
+   , _repo_removeFiles :: [Path Path.Rel Path.File] -> IO ()
    -- TODO File mode?
    , _repo_createDirectory :: Path Path.Rel Path.Dir -> IO () 
    , _repo_fileExists :: Path Path.Rel Path.File -> IO Bool
@@ -146,7 +163,7 @@ data FFile
 
 data Object
   = Object
-  { object_name :: {-# UNPACK #-} T.Text -- TODO To Digest
+  { chunk_name :: {-# UNPACK #-} T.Text -- TODO To Digest
   }
   deriving (Show)
 
@@ -157,6 +174,10 @@ instance (C.HasReader "repo" Repository m, MonadIO m) => MonadRepository (TheMon
   mkPutFileFold = TheMonadRepository $ do
     f <- C.asks @"repo" _repo_putFile
     pure $ F.morphInner liftIO . f
+
+  removeFiles files = TheMonadRepository $ do
+    f <- C.asks @"repo" _repo_removeFiles
+    liftIO $ f files
 
   createDirectory d = TheMonadRepository $ do
     f <- C.asks @"repo" _repo_createDirectory
@@ -217,9 +238,8 @@ listVersions =
 
 localRepo :: Path Path.Abs Path.Dir -> Repository
 localRepo root = Repository 
-  -- (tmp_name, tmp_fd) <- P.mkstemp (Path.fromAbsDir $ hbk_path </> [Path.reldir|version|])
-  --hClose tmp_fd
   (File.writeChunks . Path.fromAbsFile . (root </>))
+  (mapM_ $ (handleIf isDoesNotExistError (const $ pure ())) . Un.removeFile . Path.fromAbsFile . (root </>))
   (flip P.createDirectory 700 . Path.fromAbsDir . (root </>))
   (P.fileExist . Path.fromAbsFile . (root </>))
   (File.readChunks . Path.fromAbsFile . (root </>))
@@ -420,3 +440,116 @@ checksum n = do
     & S.trace (\(invalid_f, expect_sha) ->
         liftIO $ T.putStrLn $ "invalid file: " <> T.pack (Path.fromRelFile invalid_f) <> ", " <> T.pack (show expect_sha))
     & S.fold F.drain
+
+garbageCollection :: (MonadCatch m, MonadRepository m, MonadUnliftIO m) => m ()
+garbageCollection = gc_tree >> gc_file >> gc_chunk
+  where
+    gc_tree :: (MonadCatch m, MonadRepository m, MonadUnliftIO m) => m ()
+    gc_tree = do
+      -- tree level
+      all_tree_file_set <- listFolderFiles folder_tree
+        & fmap (UTF8.fromString . Path.fromRelFile)
+        & S.fold F.toSet
+
+      traverse_set <- newIORef all_tree_file_set
+      to_set <- newIORef Set.empty
+
+      listVersions 
+        & fmap (ver_root)
+        & S.fold (F.drainMapM $ \sha -> modifyIORef' to_set (Set.insert sha))
+
+      fix $ \(~cont) -> do
+        to <- readIORef to_set 
+        case Set.lookupMin to of
+          Nothing -> pure ()
+          Just e -> do
+            modifyIORef' to_set (Set.delete e)
+            visited <- not . Set.member (d2b e) <$> readIORef traverse_set
+            if visited
+              then cont
+              else do
+                modifyIORef' traverse_set (Set.delete $ d2b e)
+                traversed_set' <- readIORef traverse_set
+                catTree e
+                  & S.mapMaybe (either (Just . tree_sha) (const Nothing))
+                  & S.mapM t2d
+                  & S.filter (flip Set.member traversed_set' . d2b)
+                  & S.fold (F.drainMapM $ \s -> modifyIORef' to_set (Set.insert s))
+                cont
+
+      s <- readIORef traverse_set
+      for_ s $ \dead_file -> tryIO $ do
+        liftIO $ putStrLn $ "delete tree: " <> show dead_file
+        rel_dead_file <- Path.parseRelFile $ T.unpack $ TE.decodeUtf8 dead_file
+        removeFiles ([folder_tree </> rel_dead_file])
+
+    gc_file :: (MonadCatch m, MonadRepository m, MonadUnliftIO m) => m ()
+    gc_file = do
+      -- tree level
+      all_file_file_set <- listFolderFiles folder_file
+        & fmap (UTF8.fromString . Path.fromRelFile)
+        & S.fold F.toSet
+
+      traverse_set <- newIORef all_file_file_set
+
+      listFolderFiles folder_tree
+        & S.concatMapM (\tree_path -> do
+            tree_digest <- t2d $ T.pack $ Path.fromRelFile $ tree_path
+            pure $ catTree tree_digest
+              & S.mapMaybe (either (const Nothing) (Just . file_sha))
+              & S.mapM t2d
+          )
+        & S.mapM (\file_digest -> do
+    	    modifyIORef' traverse_set $ Set.delete (d2b file_digest)
+            )
+        & S.fold F.drain
+
+      s <- readIORef traverse_set
+      for_ s $ \dead_file -> tryIO $ do
+        liftIO $ putStrLn $ "delete file: " <> show dead_file
+        rel_dead_file <- Path.parseRelFile $ T.unpack $ TE.decodeUtf8 dead_file
+        removeFiles ([folder_file </> rel_dead_file])
+
+    gc_chunk :: (MonadCatch m, MonadRepository m, MonadUnliftIO m) => m ()
+    gc_chunk = do
+      all_file_file_set <- listFolderFiles folder_chunk
+        & fmap (UTF8.fromString . Path.fromRelFile)
+        & S.fold F.toSet
+
+      traverse_set <- newIORef all_file_file_set
+
+      listFolderFiles folder_file
+        & S.concatMapM (\tree_path -> do
+            file_digest <- t2d $ T.pack $ Path.fromRelFile $ tree_path
+            pure $ catFile file_digest
+              & fmap chunk_name
+              & S.mapM t2d
+          )
+        & S.mapM (\file_digest -> do
+    	    modifyIORef' traverse_set $ Set.delete (d2b file_digest)
+            )
+        & S.fold F.drain
+
+      s <- readIORef traverse_set
+      for_ s $ \dead_file -> tryIO $ do
+        liftIO $ putStrLn $ "delete chunk: " <> show dead_file
+        rel_dead_file <- Path.parseRelFile $ T.unpack $ TE.decodeUtf8 dead_file
+        removeFiles ([folder_chunk </> rel_dead_file])
+
+t2d :: MonadThrow m => T.Text -> m (Digest SHA256)
+t2d sha = do
+  sha_decoded <- case BS.decode $ TE.encodeUtf8 sha of
+    Left err ->
+      throwM $ userError $ "invalid sha: " <> T.unpack sha <> ", " <> err
+    Right sha' -> pure $ sha'
+
+  digest <- case digestFromByteString @SHA256 sha_decoded of
+    Nothing -> throwM $ userError $ "invalid sha: " <> T.unpack sha
+    Just digest -> pure digest
+
+  pure digest
+
+d2b :: Digest SHA256 -> BS.ByteString
+d2b = BA.convertToBase BA.Base16
+{-# INLINE d2b #-}
+

@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE CApiFFI #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
@@ -169,29 +170,29 @@ deriving instance MonadThrow m => MonadThrow (C.MonadReader m)
 tree_content :: Either (Path Path.Rel Path.File) (Path Path.Rel Path.Dir) -> Digest SHA256 -> BS.ByteString
 tree_content file_or_dir hash' =
   let
-    name = either (T.pack . Path.toFilePath . Path.filename) file_name' file_or_dir
+    name = either file_name' dir_name' file_or_dir
     t = either (const "file") (const "dir") file_or_dir
-  in t <> " " <> TE.encodeUtf8 name <> " " <> d2b hash'
+  in BS.concat [t, BS.singleton 0x20, name, BS.singleton 0x20, d2b hash', BS.singleton 0x0a]
+  where
+    file_name' :: Path r Path.File -> BS.ByteString
+    file_name' = BS.toStrict . BSB.toLazyByteString . BSB.stringUtf8 . Path.toFilePath . Path.filename
+    {-# INLINE file_name' #-}
 
-file_name' :: Path r Path.Dir -> T.Text
-file_name' = T.replace "/" "" . T.pack . Path.toFilePath . Path.dirname
+    dir_name' :: Path r Path.Dir -> BS.ByteString
+    dir_name' = BS.toStrict . BSB.toLazyByteString . BSB.stringUtf8 . init . Path.toFilePath . Path.dirname
+    {-# INLINE dir_name' #-}
 
-h_dir :: (MonadBackup m, MonadBaseControl IO m) => TBQueue (m ()) -> T.Text -> m (Digest SHA256)
-h_dir tbq tree_name = withEmptyTmpFile $ \file_name' -> do
-
-  rel_tree_name <- Path.parseRelDir $ T.unpack tree_name
+h_dir :: (MonadBackup m, MonadBaseControl IO m) => TBQueue (m ()) -> Path Path.Rel Path.Dir -> m (Digest SHA256)
+h_dir tbq rel_tree_name = withEmptyTmpFile $ \file_name' -> do
   
-  Un.withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
+  (dir_hash, ()) <- Un.withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
     Dir.readEither rel_tree_name
-      & S.mapM (\fod ->do
-          hash <- either (h_file tbq . T.pack . Path.fromRelFile . (rel_tree_name </>)) (h_dir tbq . T.pack . Path.fromRelDir . (rel_tree_name </>)) fod
-          pure $ tree_content fod hash
+      & S.parMapM (S.ordered True . S.eager True . S.maxBuffer 2) (\fod ->do
+          hash <- either (h_file tbq . (rel_tree_name </>)) (h_dir tbq . (rel_tree_name </>)) fod
+          pure $! tree_content fod hash
         )
-      & S.fold (F.drainMapM $ liftIO . BC.hPutStrLn fd)
+      & S.fold (F.tee hashByteStringFold (F.drainMapM $ liftIO . BC.hPutStr fd))
 
-  dir_hash <- File.readChunks (Path.fromAbsFile file_name')
-    & S.parEval (S.ordered True . S.eager True . S.maxBuffer 2)
-    & S.fold hashArrayFold
   atomically $ writeTBQueue tbq $ do
     Repo.addDir' dir_hash (File.readChunks (Path.fromAbsFile file_name'))
     `finally`
@@ -200,24 +201,22 @@ h_dir tbq tree_name = withEmptyTmpFile $ \file_name' -> do
 
 d2b :: Digest SHA256 -> BS.ByteString
 d2b = BA.convertToBase BA.Base16
+{-# INLINE d2b #-}
 
-h_file :: (MonadBackup m, MonadBaseControl IO m) => TBQueue (m ()) -> T.Text -> m (Digest SHA256)
-h_file tbq file_name = withEmptyTmpFile $ \file_name' -> do
+h_file :: (MonadBackup m, MonadBaseControl IO m) => TBQueue (m ()) -> Path Path.Rel Path.File -> m (Digest SHA256)
+h_file tbq rel_file_name = withEmptyTmpFile $ \file_name' -> do
 
-  Un.withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
-    File.readChunksWith (1024 * 1024) (T.unpack file_name)
+  (file_hash, ()) <- Un.withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
+    File.readChunksWith (1024 * 1024) (Path.fromRelFile rel_file_name)
       & S.filter ((0 /=) . Array.length)
       & S.parMapM (S.ordered True . S.eager True . S.maxBuffer 5) (\chunk -> do
         chunk_hash <- S.fromPure chunk & S.fold hashArrayFold
         atomically $ writeTBQueue tbq $ do
           Repo.addBlob' chunk_hash (S.fromPure chunk)
-        pure chunk_hash
+        pure $! d2b chunk_hash `BS.snoc` 0x0a
       )
-      & S.fold (F.drainMapM $ liftIO . BC.hPutStrLn fd . d2b)
+      & S.fold (F.tee hashByteStringFold (F.drainMapM $ liftIO . BC.hPutStr fd))
 
-  file_hash <- File.readChunks (Path.fromAbsFile file_name')
-    & S.parEval (S.ordered True . S.eager True . S.maxBuffer 2)
-    & S.fold hashArrayFold
   atomically $ writeTBQueue tbq $ do
     Repo.addFile' file_hash (File.readChunks (Path.fromAbsFile file_name'))
     `finally`
@@ -227,7 +226,8 @@ h_file tbq file_name = withEmptyTmpFile $ \file_name' -> do
 
 backup :: (MonadBackup m, MonadBaseControl IO m) => T.Text -> m Version
 backup dir = do
-  (root_hash, _) <- withEmitUnfoldr 50 (\tbq -> h_dir tbq dir)
+  rel_dir <- Path.parseRelDir $ T.unpack dir
+  (root_hash, _) <- withEmitUnfoldr 50 (\tbq -> h_dir tbq rel_dir)
     $ (\s -> s 
        & S.parSequence (S.maxBuffer 50 . S.eager True)
        & S.fold F.drain
@@ -362,7 +362,7 @@ main = do
       "cat-file-content":sha:to:_ -> do
         handle_cmd "cat-file-content" $ do
           cat_file sha
-            & S.concatMap (cat_object . object_name)
+            & S.concatMap (cat_object . chunk_name)
             & S.morphInner (flip runHbkT hbk)
             & S.fold (File.writeChunks $ T.unpack to)
         loop
@@ -375,6 +375,13 @@ main = do
           n' <- readIO $ T.unpack n	
           b <- getCurrentTime
           flip runHbkT hbk $ Repo.checksum n'
+          e <- getCurrentTime
+	  print $ nominalDiffTimeToSeconds $ diffUTCTime e b
+        loop
+      "gc":_ -> do
+        handle_cmd "gc" $ do
+          b <- getCurrentTime
+          flip runHbkT hbk $ Repo.garbageCollection
           e <- getCurrentTime
 	  print $ nominalDiffTimeToSeconds $ diffUTCTime e b
         loop
