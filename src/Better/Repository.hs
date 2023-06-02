@@ -156,20 +156,20 @@ data Version
 data Tree
   = Tree 
   { tree_name :: {-# UNPACK #-} T.Text
-  , tree_sha :: {-# UNPACK #-} T.Text -- TODO To Digest
+  , tree_sha :: {-# UNPACK #-} Digest SHA256
   }
   deriving (Show)
 
 data FFile
   = FFile
   { file_name :: {-# UNPACK #-} T.Text
-  , file_sha :: {-# UNPACK #-} T.Text -- TODO To Digest
+  , file_sha :: {-# UNPACK #-} Digest SHA256
   }
   deriving (Show)
 
 data Object
   = Object
-  { chunk_name :: {-# UNPACK #-} T.Text -- TODO To Digest
+  { chunk_name :: {-# UNPACK #-} Digest SHA256
   }
   deriving (Show)
 
@@ -376,8 +376,8 @@ catFile sha = cat_stuff_under folder_file sha
   & US.lines (fmap T.pack F.toList)
   & S.mapM parse_file_content
   where
-    parse_file_content :: Applicative m => T.Text -> m Object
-    parse_file_content = pure . Object
+    parse_file_content :: (MonadThrow m, Applicative m) => T.Text -> m Object
+    parse_file_content = fmap Object . t2d
 {-# INLINE catFile #-}
 
 catChunk :: (MonadThrow m, MonadIO m, MonadRepository m)
@@ -414,10 +414,13 @@ catTree sha = cat_stuff_under folder_tree sha
   where
     parse_tree_content :: MonadThrow m => T.Text -> m (Either Tree FFile)
     parse_tree_content buf = case T.splitOn " " buf of
-      ["dir", name, sha] -> pure $ Left $ Tree name sha
-      ["file", name, sha] -> pure $ Right $ FFile name sha
+      ["dir", name, sha] -> do
+        digest <- t2d sha
+        pure $ Left $ Tree name digest
+      ["file", name, sha] -> do
+        digest <- t2d sha
+        pure $ Right $ FFile name digest
       _ -> throwM $ userError $ "invalid dir content: " <> T.unpack buf
-
 
 newtype ArrayBA a = ArrayBA (Array.Array a)
 
@@ -543,7 +546,6 @@ garbageCollection = gc_tree >> gc_file >> gc_chunk
                 traversed_set' <- readIORef traverse_set
                 catTree e
                   & S.mapMaybe (either (Just . tree_sha) (const Nothing))
-                  & S.mapM t2d
                   & S.filter (flip Set.member traversed_set' . d2b)
                   & S.fold (F.drainMapM $ \s -> modifyIORef' to_set (Set.insert s))
                 cont
@@ -568,7 +570,6 @@ garbageCollection = gc_tree >> gc_file >> gc_chunk
             tree_digest <- t2d $ T.pack $ Path.fromRelFile $ tree_path
             pure $ catTree tree_digest
               & S.mapMaybe (either (const Nothing) (Just . file_sha))
-              & S.mapM t2d
           )
         & S.mapM (\file_digest -> do
     	    modifyIORef' traverse_set $ Set.delete (d2b file_digest)
@@ -594,7 +595,6 @@ garbageCollection = gc_tree >> gc_file >> gc_chunk
             file_digest <- t2d $ T.pack $ Path.fromRelFile $ tree_path
             pure $ catFile file_digest
               & fmap chunk_name
-              & S.mapM t2d
           )
         & S.mapM (\file_digest -> do
     	    modifyIORef' traverse_set $ Set.delete (d2b file_digest)

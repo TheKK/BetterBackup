@@ -187,10 +187,8 @@ t2d sha = do
   pure digest
 
 cat_object :: (MonadIO m, MonadThrow m, MonadRepository m)
-	=> T.Text -> S.Stream m (Array.Array Word8)
-cat_object sha = S.concatEffect $ do
-  digest <- t2d sha
-  pure $ catChunk digest
+	=> Digest SHA256 -> S.Stream m (Array.Array Word8)
+cat_object digest = catChunk digest
 {-# INLINE cat_object #-}
 
 tree_explorer :: (MonadIO m, MonadThrow m, MonadRepository m)
@@ -213,7 +211,7 @@ tree_explorer sha = do
             liftIO $ T.putStrLn $ "no such path: " <> p
 	    loop (s:ss)
           Just dir -> do
-            loop ((tree_sha dir):s:ss)
+            loop ((T.pack $ show $ tree_sha dir):s:ss)
       ["pwd"] -> do
         liftIO $ T.putStrLn $ T.intercalate "/" $ reverse (s:ss)
         loop (s:ss)
@@ -283,7 +281,8 @@ main = do
         loop
       "cat-object":sha:_ -> do
         handle_cmd "cat-object" $ do
-          cat_object sha
+          digest <- t2d sha
+          cat_object digest
             & S.morphInner (flip runHbkT hbk)
             & S.fold (Stdio.writeChunks)
         loop
