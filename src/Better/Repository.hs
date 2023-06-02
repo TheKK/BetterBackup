@@ -14,6 +14,7 @@
 module Better.Repository
    -- * Write
   ( initRepositoryStructure
+  , backup
   , addBlob
   , addBlob'
   , addFile
@@ -53,6 +54,8 @@ module Better.Repository
 
 import Prelude hiding (read)
 
+import Numeric.Natural
+
 import Data.Word
 import Data.Function
 import Data.Foldable
@@ -62,6 +65,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 
 import UnliftIO
+import qualified UnliftIO.IO.File as Un
 import qualified UnliftIO.Directory as Un
 
 import qualified Data.Text as T
@@ -78,9 +82,10 @@ import qualified Data.ByteString.UTF8 as UTF8
 
 import Text.Read (readMaybe)
 
+import Control.Applicative ((<|>))
 import Control.Monad
 import Control.Monad.Reader
-import Control.Monad.Catch
+import Control.Monad.Catch (MonadCatch, MonadThrow, MonadMask, throwM, handleIf)
 import Control.Monad.Trans.Control (MonadBaseControl)
 
 import qualified Streamly.Data.Array as Array
@@ -124,6 +129,7 @@ import Control.Monad.IO.Class
 import Data.ByteArray (ByteArrayAccess(..))
 
 import Better.Hash
+import Better.TempDir
 import Better.Repository.Class
 import qualified Better.Streamly.FileSystem.Dir as Dir
 
@@ -419,6 +425,71 @@ instance ByteArrayAccess (ArrayBA Word8) where
   length (ArrayBA arr) = Array.length arr
   withByteArray (ArrayBA arr) fp = Array.asPtrUnsafe (Array.castUnsafe arr) fp
 
+tree_content :: Either (Path Path.Rel Path.File) (Path Path.Rel Path.Dir) -> Digest SHA256 -> BS.ByteString
+tree_content file_or_dir hash' =
+  let
+    name = either file_name' dir_name' file_or_dir
+    t = either (const "file") (const "dir") file_or_dir
+  in BS.concat [t, BS.singleton 0x20, name, BS.singleton 0x20, d2b hash', BS.singleton 0x0a]
+  where
+    file_name' :: Path r Path.File -> BS.ByteString
+    file_name' = BS.toStrict . BB.toLazyByteString . BB.stringUtf8 . Path.toFilePath . Path.filename
+    {-# INLINE file_name' #-}
+
+    dir_name' :: Path r Path.Dir -> BS.ByteString
+    dir_name' = BS.toStrict . BB.toLazyByteString . BB.stringUtf8 . init . Path.toFilePath . Path.dirname
+    {-# INLINE dir_name' #-}
+
+h_dir :: (MonadRepository m, MonadTmp m, MonadCatch m, MonadIO m, MonadUnliftIO m, MonadBaseControl IO m) => TBQueue (m ()) -> Path Path.Rel Path.Dir -> m (Digest SHA256)
+h_dir tbq rel_tree_name = withEmptyTmpFile $ \file_name' -> do
+  (dir_hash, ()) <- Un.withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
+    Dir.readEither rel_tree_name
+      & S.parMapM (S.ordered True . S.eager True . S.maxBuffer 2) (\fod ->do
+          hash <- either (h_file tbq . (rel_tree_name </>)) (h_dir tbq . (rel_tree_name </>)) fod
+          pure $! tree_content fod hash
+        )
+      & S.fold (F.tee hashByteStringFold (F.drainMapM $ liftIO . BC.hPutStr fd))
+
+  atomically $ writeTBQueue tbq $ do
+    addDir' dir_hash (File.readChunks (Path.fromAbsFile file_name'))
+    `finally`
+      Un.removeFile (Path.fromAbsFile file_name')
+
+  pure dir_hash 
+
+h_file :: (MonadRepository m, MonadTmp m, MonadCatch m, MonadIO m, MonadUnliftIO m, MonadBaseControl IO m) => TBQueue (m ()) -> Path Path.Rel Path.File -> m (Digest SHA256)
+h_file tbq rel_file_name = withEmptyTmpFile $ \file_name' -> do
+  (file_hash, ()) <- Un.withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
+    File.readChunksWith (1024 * 1024) (Path.fromRelFile rel_file_name)
+      & S.filter ((0 /=) . Array.length)
+      & S.parMapM (S.ordered True . S.eager True . S.maxBuffer 5) (\chunk -> do
+        chunk_hash <- S.fromPure chunk & S.fold hashArrayFold
+        atomically $ writeTBQueue tbq $ do
+          addBlob' chunk_hash (S.fromPure chunk)
+        pure $! d2b chunk_hash `BS.snoc` 0x0a
+      )
+      & S.fold (F.tee hashByteStringFold (F.drainMapM $ liftIO . BC.hPutStr fd))
+
+  atomically $ writeTBQueue tbq $ do
+    addFile' file_hash (File.readChunks (Path.fromAbsFile file_name'))
+    `finally`
+      Un.removeFile (Path.fromAbsFile file_name')
+
+  pure file_hash
+
+backup :: (MonadRepository m, MonadTmp m, MonadCatch m, MonadIO m, MonadUnliftIO m, MonadBaseControl IO m)
+       => T.Text -> m Version
+backup dir = do
+  rel_dir <- Path.parseRelDir $ T.unpack dir
+  (root_hash, _) <- withEmitUnfoldr 50 (\tbq -> h_dir tbq rel_dir)
+    $ (\s -> s 
+         & S.parSequence (S.maxBuffer 50 . S.eager True)
+         & S.fold F.drain
+      )
+  version_id <- nextBackupVersionId
+  addVersion version_id root_hash
+  return $ Version version_id root_hash
+
 checksum :: (MonadIO m, MonadCatch m, MonadRepository m, MonadBaseControl IO m) => Int -> m ()
 checksum n = do
   S.fromList [folder_tree, folder_file, folder_chunk] 
@@ -553,3 +624,19 @@ d2b :: Digest SHA256 -> BS.ByteString
 d2b = BA.convertToBase BA.Base16
 {-# INLINE d2b #-}
 
+withEmitUnfoldr :: MonadUnliftIO m => Natural -> (TBQueue e -> m a) -> (S.Stream m e -> m b) -> m (a, b)
+withEmitUnfoldr q_size putter go = do
+  tbq <- newTBQueueIO q_size
+
+  withAsync (putter tbq) $ \h -> do
+    let 
+      f = do
+        e <- atomically $ (Just <$> readTBQueue tbq) <|> (Nothing <$ waitSTM h)
+        case e of
+          Just v -> pure (Just (v, ()))
+	  Nothing -> pure Nothing
+
+    link h
+    ret_b <- go $ S.unfoldrM (\() -> f) ()
+    ret_a <- wait h
+    pure (ret_a, ret_b)
