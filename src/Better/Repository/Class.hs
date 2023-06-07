@@ -26,6 +26,7 @@ import Path (Path)
 import Data.Word
 
 import Control.Monad.IO.Class
+import System.Posix.Types (FileOffset(..))
 
 class Monad m => MonadRepository m where
   mkPutFileFold :: forall n. (MonadIO n) => m (Path Path.Rel Path.File -> F.Fold n (Array.Array Word8) ())
@@ -33,5 +34,6 @@ class Monad m => MonadRepository m where
   -- TODO File mode?
   createDirectory :: Path Path.Rel Path.Dir -> m () 
   fileExists :: Path Path.Rel Path.File -> m Bool
+  fileSize :: Path Path.Rel Path.File -> m FileOffset
   mkRead :: forall n. (MonadIO n) => m (Path Path.Rel Path.File -> S.Stream n (Array.Array Word8))
   mkListFolderFiles :: forall n. (MonadIO n) => m (Path Path.Rel Path.Dir -> S.Stream n (Path Path.Rel Path.File))

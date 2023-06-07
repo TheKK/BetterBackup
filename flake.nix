@@ -16,9 +16,10 @@
 
       in {
         devShell = pkgs.mkShell {
-          LD_LIBRARY_PATH = "${pkgs.zlib}/lib;${pkgs.leveldb}/lib;";
+          LD_LIBRARY_PATH = "${pkgs.zlib}/lib;${pkgs.leveldb}/lib;${pkgs.fuse3}/lib;";
+          PKG_CONFIG_PATH = "${pkgs.fuse3}/lib/pkgconfig";
           inputsFrom = [ ];
-          buildInputs = [ pkgs.zlib pkgs.leveldb ];
+          buildInputs = [ pkgs.zlib pkgs.leveldb pkgs.fuse3 ];
           nativeBuildInputs = [ pkgs.haskellPackages.hsc2hs ];
         };
       });

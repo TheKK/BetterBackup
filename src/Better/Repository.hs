@@ -25,9 +25,11 @@ module Better.Repository
   , nextBackupVersionId
   -- * Read
   , catVersion
+  , tryCatingVersion
   , catTree
   , catFile
   , catChunk
+  , getChunkSize
   , listFolderFiles
   , listVersions
   , checksum
@@ -99,6 +101,7 @@ import qualified Streamly.Unicode.Stream as US
 import qualified Streamly.Internal.Unicode.Stream as US
 
 import System.IO.Error (isDoesNotExistError)
+import System.Posix.Types (FileOffset(..))
 
 import qualified System.Posix.Files as P
 import qualified System.Posix.Directory as P
@@ -142,6 +145,7 @@ data Repository = Repository
    -- TODO File mode?
    , _repo_createDirectory :: Path Path.Rel Path.Dir -> IO () 
    , _repo_fileExists :: Path Path.Rel Path.File -> IO Bool
+   , _repo_fileSize :: Path Path.Rel Path.File -> IO FileOffset
    , _repo_read :: Path Path.Rel Path.File -> S.Stream IO (Array.Array Word8)
    , _repo_listFolderFiles :: Path Path.Rel Path.Dir -> S.Stream IO (Path Path.Rel Path.File)
    }
@@ -193,6 +197,10 @@ instance (C.HasReader "repo" Repository m, MonadIO m) => MonadRepository (TheMon
     f <- C.asks @"repo" _repo_fileExists
     liftIO $ f file
 
+  fileSize file = TheMonadRepository $ do
+    f <- C.asks @"repo" _repo_fileSize
+    liftIO $ f file
+
   mkRead = TheMonadRepository $ do
     f <- C.asks @"repo" _repo_read
     pure $ S.morphInner liftIO . f
@@ -222,6 +230,17 @@ listVersions =
       catVersion v'
     )
 
+tryCatingVersion :: (MonadThrow m, MonadIO m, MonadRepository m) => Integer -> m (Maybe Version)
+tryCatingVersion vid = do
+  path_vid <- Path.parseRelFile $ show vid
+  -- TODO using fileExists could cause issue of TOCTOU,
+  -- but trying to get "file does not exist" info from catVersion require all Repository throws
+  -- specific exception, which is also hard to achieve.
+  exists <- fileExists $ folder_version </> path_vid
+  if exists
+  then Just <$> catVersion vid
+  else pure Nothing
+
   -- hbk <- C.asks @"hbk" hbk_path
   -- let ver_path = T.unpack $ hbk <> "/version"
   -- pure $ Dir.readFiles ver_path
@@ -248,6 +267,7 @@ localRepo root = Repository
   (mapM_ $ (handleIf isDoesNotExistError (const $ pure ())) . Un.removeFile . Path.fromAbsFile . (root </>))
   (flip P.createDirectory 700 . Path.fromAbsDir . (root </>))
   (P.fileExist . Path.fromAbsFile . (root </>))
+  (fmap P.fileSize . P.getFileStatus . Path.fromAbsFile . (root </>))
   (File.readChunks . Path.fromAbsFile . (root </>))
   (S.mapM Path.parseRelFile . Dir.read . (root </>))
 
@@ -385,6 +405,13 @@ catChunk :: (MonadThrow m, MonadIO m, MonadRepository m)
 catChunk sha = cat_stuff_under folder_chunk sha
 {-# INLINE catChunk #-}
 
+getChunkSize :: (MonadThrow m, MonadIO m, MonadRepository m)
+	=> Digest SHA256 -> m FileOffset
+getChunkSize sha = do
+  sha_path <- Path.parseRelFile $ show sha
+  fileSize $ folder_chunk </> sha_path
+{-# INLINE getChunkSize #-}
+
 catVersion :: (MonadThrow m, MonadIO m, MonadRepository m)
 	=> Integer -> m Version
 catVersion vid = do
@@ -407,8 +434,7 @@ catVersion vid = do
 catTree :: (MonadThrow m, MonadIO m, MonadRepository m)
 	=> Digest SHA256 -> S.Stream m (Either Tree FFile)
 catTree sha = cat_stuff_under folder_tree sha
-  & S.unfoldMany Array.reader
-  & US.decodeLatin1
+  & US.decodeUtf8Chunks
   & US.lines (fmap T.pack F.toList)
   & S.mapM parse_tree_content
   where
