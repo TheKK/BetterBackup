@@ -73,8 +73,6 @@ import Control.Monad
 import Control.Monad.Reader
 import Control.Monad.IO.Class
 import Control.Monad.Catch
-import Control.Monad.Base
-import Control.Monad.Trans.Control (MonadBaseControl)
 
 import UnliftIO (MonadUnliftIO(..))
 import UnliftIO.Async
@@ -138,8 +136,6 @@ newtype HbkT m a = HbkT { runHbkT :: Hbk (HbkT m) -> m a }
     , MonadCatch
     , MonadThrow
     , MonadMask
-    , MonadBase m'
-    , MonadBaseControl m'
     , MonadUnliftIO
     ) via (ReaderT (Hbk (HbkT m)) m)
   deriving 

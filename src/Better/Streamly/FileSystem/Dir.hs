@@ -16,7 +16,6 @@ import Data.Function
 import Data.Either (isLeft, fromLeft)
 
 import Control.Monad.Catch
-import Control.Monad.Trans.Control (MonadBaseControl)
 
 import qualified Streamly.Data.Stream.Prelude as S
 import qualified Streamly.Data.Unfold as UF
@@ -30,7 +29,7 @@ import qualified Path
 
 import Control.Monad.IO.Class
 
-read :: (MonadIO m, MonadBaseControl IO m, MonadCatch m)
+read :: (MonadIO m, MonadCatch m)
      => Path rel_or_abs Path.Dir -> S.Stream m FilePath 
 read = S.unfold reader
 {-# INLINE read #-}
@@ -39,7 +38,7 @@ readFile :: (MonadIO m, MonadCatch m)
        => Path rel_or_abs Path.Dir -> S.Stream m (Path Path.Rel Path.File)
 readFile = S.unfold fileReader
 
-readEither :: (MonadIO m, MonadBaseControl IO m, MonadCatch m)
+readEither :: (MonadIO m, MonadCatch m)
            => (Path rel_or_abs Path.Dir) -> S.Stream m (Either (Path Path.Rel Path.File) (Path Path.Rel Path.Dir)) 
 readEither = S.unfold eitherReader
 {-# INLINE readEither #-}

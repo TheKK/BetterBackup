@@ -88,7 +88,6 @@ import Control.Applicative ((<|>))
 import Control.Monad
 import Control.Monad.Reader
 import Control.Monad.Catch (MonadCatch, MonadThrow, MonadMask, throwM, handleIf)
-import Control.Monad.Trans.Control (MonadBaseControl)
 
 import qualified Streamly.Data.Array as Array
 import qualified Streamly.Internal.Data.Array as Array (asPtrUnsafe, castUnsafe) 
@@ -469,7 +468,7 @@ tree_content file_or_dir hash' =
     dir_name' = BS.toStrict . BB.toLazyByteString . BB.stringUtf8 . init . Path.toFilePath . Path.dirname
     {-# INLINE dir_name' #-}
 
-h_dir :: (MonadRepository m, MonadTmp m, MonadCatch m, MonadIO m, MonadUnliftIO m, MonadBaseControl IO m) => TBQueue (m ()) -> Path Path.Rel Path.Dir -> m (Digest SHA256)
+h_dir :: (MonadRepository m, MonadTmp m, MonadCatch m, MonadIO m, MonadUnliftIO m) => TBQueue (m ()) -> Path Path.Rel Path.Dir -> m (Digest SHA256)
 h_dir tbq rel_tree_name = withEmptyTmpFile $ \file_name' -> do
   (dir_hash, ()) <- Un.withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
     Dir.readEither rel_tree_name
@@ -486,7 +485,7 @@ h_dir tbq rel_tree_name = withEmptyTmpFile $ \file_name' -> do
 
   pure dir_hash 
 
-h_file :: (MonadRepository m, MonadTmp m, MonadCatch m, MonadIO m, MonadUnliftIO m, MonadBaseControl IO m) => TBQueue (m ()) -> Path Path.Rel Path.File -> m (Digest SHA256)
+h_file :: (MonadRepository m, MonadTmp m, MonadCatch m, MonadIO m, MonadUnliftIO m) => TBQueue (m ()) -> Path Path.Rel Path.File -> m (Digest SHA256)
 h_file tbq rel_file_name = withEmptyTmpFile $ \file_name' -> do
   (file_hash, ()) <- Un.withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
     File.readChunksWith (1024 * 1024) (Path.fromRelFile rel_file_name)
@@ -506,7 +505,7 @@ h_file tbq rel_file_name = withEmptyTmpFile $ \file_name' -> do
 
   pure file_hash
 
-backup :: (MonadRepository m, MonadTmp m, MonadCatch m, MonadIO m, MonadUnliftIO m, MonadBaseControl IO m)
+backup :: (MonadRepository m, MonadTmp m, MonadCatch m, MonadIO m, MonadUnliftIO m)
        => T.Text -> m Version
 backup dir = do
   rel_dir <- Path.parseRelDir $ T.unpack dir
@@ -519,7 +518,7 @@ backup dir = do
   addVersion version_id root_hash
   return $ Version version_id root_hash
 
-checksum :: (MonadIO m, MonadCatch m, MonadRepository m, MonadBaseControl IO m) => Int -> m ()
+checksum :: (MonadThrow m, MonadUnliftIO m, MonadRepository m) => Int -> m ()
 checksum n = do
   S.fromList [folder_tree, folder_file, folder_chunk] 
     & S.concatMap (\p ->

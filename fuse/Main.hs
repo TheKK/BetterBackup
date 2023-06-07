@@ -76,9 +76,7 @@ import Control.Applicative ((<|>))
 import Control.Monad
 import Control.Monad.Reader
 import Control.Monad.State
-import Control.Monad.Base
 import Control.Monad.Catch (MonadCatch, MonadThrow, MonadMask, throwM, handleIf)
-import Control.Monad.Trans.Control (MonadBaseControl)
 
 import qualified Streamly.Data.Array as Array
 import qualified Streamly.Internal.Data.Array as Array (asPtrUnsafe, castUnsafe) 
@@ -261,8 +259,6 @@ newtype HbkT m a = HbkT { unHbkT :: ReaderT Hbk m a }
     , MonadCatch
     , MonadThrow
     , MonadMask
-    , MonadBase m'
-    , MonadBaseControl m'
     , MonadUnliftIO
     ) via (ReaderT Hbk m)
   deriving 
