@@ -95,4 +95,4 @@ executable ff
     main-is:          Main.hs
     hs-source-dirs:   app
     default-language: Haskell2010
-    build-depends:  better-core, optparse-applicative
+    build-depends:  better-core, optparse-applicative, tomland

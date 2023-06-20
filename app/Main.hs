@@ -77,6 +77,7 @@ import Control.Monad.Catch
 import UnliftIO (MonadUnliftIO(..))
 import UnliftIO.Async
 import UnliftIO.STM
+import UnliftIO.Exception (throwString)
 
 import Crypto.Hash
 import Crypto.Hash.Algorithms
@@ -108,6 +109,8 @@ import qualified Better.Streamly.FileSystem.Dir as Dir
 
 import Data.ByteArray (ByteArrayAccess(..))
 import qualified Data.ByteArray.Encoding as BA
+
+import qualified Config
 
 newtype ArrayBA a = ArrayBA (Array.Array a)
 
@@ -217,14 +220,27 @@ tree_explorer sha = do
         loop []
       _ -> loop (s:ss)
 
+parse_abs_or_rel_dir :: FilePath -> Maybe (Either (Path Path.Abs Path.Dir) (Path Path.Rel Path.Dir))
+parse_abs_or_rel_dir p = opt_abs_dir <|> opt_rel_dir
+  where
+    opt_abs_dir = Left <$> Path.parseAbsDir p
+    opt_rel_dir = Right <$> Path.parseRelDir p
+
 main :: IO ()
 main = do
   cwd <- P.getWorkingDirectory >>= Path.parseAbsDir
+  let config_path = cwd </> [Path.relfile|config.toml|]
+
+  optConfig <- Config.parseConfig <$> (T.readFile $ Path.fromAbsFile config_path)
+  repository <- case optConfig of
+    Left err -> throwString $ T.unpack err
+    Right config -> case Config.config_repoType config of
+      Config.Local l -> pure $ localRepo $ either id (cwd </>) (Config.local_repo_path l)
   
   hbk <- pure $ MkHbk
       [Path.absdir|/tmp|]
       cwd
-      (localRepo $ cwd </> [Path.reldir|bkp|])
+      repository
       [Path.absdir|/tmp|]
       (pure ())
 
