@@ -29,86 +29,49 @@
 
 module Main ( main ) where
 
-import Katip
-
-import System.Environment
-
-import GHC.Stack
 import GHC.Generics
 import Debug.Trace
 
 import Data.Time
 
 import Data.Function
-import Data.Char
-import Data.List
-import Data.Kind
 import Data.Word
-import Data.IORef
-import Data.Maybe
-import Data.Bifunctor
-import Data.Foldable
-import GHC.TypeLits
-import System.IO
-import System.IO.Error
-
-import Text.Read
 
 import qualified Path
-import Path (Path(..), (</>))
+import Path (Path, (</>))
 
-import qualified System.Posix.IO as P
-import qualified System.Posix.Files as P
 import qualified System.Posix.Directory as P
-import qualified System.Posix.Temp as P
 
-import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base16 as BS
-import qualified Data.ByteString.Char8 as BC
 
 import qualified Capability.Reader as C
-import qualified Capability.Source as C
 
 import Control.Monad
 import Control.Monad.Reader
-import Control.Monad.IO.Class
 import Control.Monad.Catch
 
 import UnliftIO (MonadUnliftIO(..))
-import UnliftIO.Async
-import UnliftIO.STM
 import UnliftIO.Exception (throwString)
 
 import Crypto.Hash
-import Crypto.Hash.Algorithms
-
-import qualified Data.List.NonEmpty as NE
 
 import qualified Streamly.Data.Array as Array
 import qualified Streamly.Internal.Data.Array as Array (asPtrUnsafe, castUnsafe) 
 
-import qualified Streamly.Internal.FileSystem.Event.Linux as L
 import qualified Streamly.Data.Stream.Prelude as S
-import qualified Streamly.Internal.Data.Stream.Time as S
 import qualified Streamly.Data.Fold as F
 import qualified Streamly.FileSystem.File as File
 import qualified Streamly.Console.Stdio as Stdio
-import qualified Streamly.Unicode.Stream as US
-import qualified Streamly.Internal.Unicode.Stream as US
 
-import           Control.Applicative
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import qualified Data.Text.Encoding as TE
 
-import Better.Hash
 import Better.TempDir
 import Better.Repository
 import qualified Better.Repository as Repo
-import qualified Better.Streamly.FileSystem.Dir as Dir
 
 import Data.ByteArray (ByteArrayAccess(..))
-import qualified Data.ByteArray.Encoding as BA
 
 import qualified Config
 
@@ -126,8 +89,6 @@ data Hbk m = MkHbk
   , what :: m ()
   }
   deriving (Generic)
-
-type MonadBackup m = (MonadRepository m, MonadMask m, MonadUnliftIO m, MonadTmp m)
 
 newtype HbkT m a = HbkT { runHbkT :: Hbk (HbkT m) -> m a }
   deriving (Generic)
@@ -147,14 +108,14 @@ newtype HbkT m a = HbkT { runHbkT :: Hbk (HbkT m) -> m a }
          (C.Rename "hbk_repo"
          (C.Field "hbk_repo" ()
          (C.MonadReader
-	 (ReaderT (Hbk (HbkT m)) m))))
+         (ReaderT (Hbk (HbkT m)) m))))
   deriving 
     ( MonadTmp
     ) via TheMonadTmp
          (C.Rename "hbk_tmpdir"
          (C.Field "hbk_tmpdir" ()
          (C.MonadReader
-	 (ReaderT (Hbk (HbkT m)) m))))
+         (ReaderT (Hbk (HbkT m)) m))))
 
 deriving instance MonadUnliftIO m => MonadUnliftIO (C.Rename k m)
 deriving instance MonadUnliftIO m => MonadUnliftIO (C.Field k k' m)
@@ -163,10 +124,12 @@ deriving instance MonadThrow m => MonadThrow (C.Rename k m)
 deriving instance MonadThrow m => MonadThrow (C.Field k k' m)
 deriving instance MonadThrow m => MonadThrow (C.MonadReader m)
 
+cat_dir :: (MonadThrow m, MonadIO m, MonadRepository m) => T.Text -> S.Stream m (Either Tree FFile)
 cat_dir sha = S.concatEffect $ do
   sha' <- t2d sha
   pure $ Repo.catTree sha'
 
+cat_file :: (MonadThrow m, MonadIO m, MonadRepository m) => T.Text -> S.Stream m Object 
 cat_file sha = S.concatEffect $ do
   digest <- t2d sha
   pure $ Repo.catFile digest
@@ -186,12 +149,12 @@ t2d sha = do
   pure digest
 
 cat_object :: (MonadIO m, MonadThrow m, MonadRepository m)
-	=> Digest SHA256 -> S.Stream m (Array.Array Word8)
+           => Digest SHA256 -> S.Stream m (Array.Array Word8)
 cat_object digest = catChunk digest
 {-# INLINE cat_object #-}
 
 tree_explorer :: (MonadIO m, MonadThrow m, MonadRepository m)
-	      => T.Text -> m ()
+              => T.Text -> m ()
 tree_explorer sha = do
   flip fix [sha] $ \(~loop) stack -> when (not $ null stack) $ do
     let (s:ss) = stack
@@ -203,8 +166,8 @@ tree_explorer sha = do
         loop (s:ss)
       ["cd", p] -> do
         optTree <- cat_dir s
-	  & S.mapMaybe (either Just (const Nothing))
-	  & S.fold (F.find $ (p ==) . tree_name)
+          & S.mapMaybe (either Just (const Nothing))
+          & S.fold (F.find $ (p ==) . tree_name)
 	case optTree of
           Nothing -> do
             liftIO $ T.putStrLn $ "no such path: " <> p
@@ -219,12 +182,6 @@ tree_explorer sha = do
       ["q"] -> do
         loop []
       _ -> loop (s:ss)
-
-parse_abs_or_rel_dir :: FilePath -> Maybe (Either (Path Path.Abs Path.Dir) (Path Path.Rel Path.Dir))
-parse_abs_or_rel_dir p = opt_abs_dir <|> opt_rel_dir
-  where
-    opt_abs_dir = Left <$> Path.parseAbsDir p
-    opt_rel_dir = Right <$> Path.parseRelDir p
 
 main :: IO ()
 main = do
