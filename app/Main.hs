@@ -74,6 +74,7 @@ import qualified Better.Repository as Repo
 import Data.ByteArray (ByteArrayAccess(..))
 
 import qualified Config
+import qualified Cli
 
 newtype ArrayBA a = ArrayBA (Array.Array a)
 
@@ -284,4 +285,3 @@ main = do
       "q":_ -> pure ()
       l:_ -> T.putStrLn ("no such command: " <> l) >> loop
       [] -> loop
-

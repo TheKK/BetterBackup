@@ -66,7 +66,7 @@ common warnings
       -- -fplugin=Fusion.Plugin
 
 common deps
-    build-depends:    base ^>=4.16, text, streamly, streamly-core, containers, unix, time, stm, async, unliftio, unliftio-core, fusion-plugin, memory, cryptonite, bytestring, capability, exceptions, base16-bytestring, katip, path, mtl, utf8-string
+    build-depends:    base ^>=4.16, text, streamly, streamly-core, containers, unix, time, stm, async, unliftio, unliftio-core, fusion-plugin, memory, cryptonite, bytestring, capability, exceptions, base16-bytestring, katip, path, mtl, utf8-string, directory
 
 
 library better-core
