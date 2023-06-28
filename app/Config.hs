@@ -17,8 +17,6 @@ import qualified Data.Text as T
 import qualified Path
 import Path (Path)
 
-import Control.Applicative
-
 import Toml (TomlCodec, (.=))
 import qualified Toml
 
@@ -46,23 +44,18 @@ data Config = Config
   deriving Show
 
 data LocalRepoConfig = LocalRepoConfig
-  { local_repo_path :: (Either (Path Path.Abs Path.Dir) (Path Path.Rel Path.Dir))
+  { local_repo_path :: Path Path.Abs Path.Dir
   }
   deriving Show
 
 local_repo_config_codec :: TomlCodec LocalRepoConfig
 local_repo_config_codec = LocalRepoConfig
-  <$> Toml.match _RepoPath "path" .= local_repo_path 
+  <$> abs_dir_codec "path" .= local_repo_path 
 
--- TODO Maybe there's a better way that we could reuse Toml.text?
-_RepoPath :: Toml.TomlBiMap (Either (Path Path.Abs Path.Dir) (Path Path.Rel Path.Dir)) Toml.AnyValue
-_RepoPath = Toml.invert $ Toml.prism
-  (Toml.AnyValue . Toml.Text . T.pack . either Path.toFilePath Path.toFilePath)
-  (\v -> case v of
-    Toml.AnyValue (Toml.Text p) -> case parse (T.unpack p) of
-      Just p' -> Right p'
-      Nothing -> Left $ Toml.ArbitraryError $ "Invalid path: " <> p
-    _ -> Left $ Toml.WrongValue $ Toml.MatchError Toml.TText v
-  )
+abs_dir_codec :: Toml.Key -> TomlCodec (Path Path.Abs Path.Dir)
+abs_dir_codec = Toml.textBy to_text from_text
   where
-    parse p = (Left <$> Path.parseAbsDir p) <|> (Right <$> Path.parseRelDir p)
+    to_text = T.pack . Path.fromAbsDir
+
+    from_text :: T.Text -> Either T.Text (Path Path.Abs Path.Dir)
+    from_text t = Bi.first (const $ "'"<> t <> "'" <> " is not in format of absolute directory, which is expected") . Path.parseAbsDir . T.unpack $ t

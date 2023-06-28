@@ -11,7 +11,7 @@ import Control.Exception (Exception(displayException))
 import Data.Foldable
 import Data.Bifunctor (first)
 
-import Path (Path, Rel, Abs, Dir)
+import Path (Path, Abs, Dir)
 import qualified Path
 
 import Config (Config(..))
@@ -57,16 +57,10 @@ parser_info_init_local = info (helper <*> parser) infoMod
 
 p_local_repo_config :: Parser Config.RepoType
 p_local_repo_config = (Config.Local . Config.LocalRepoConfig)
-  <$> (argument dir_read (metavar "REPO_PATH" <> help "path to store your backup"))
+  <$> (argument abs_dir_read (metavar "REPO_PATH" <> help "path to store your backup"))
 
 some_base_dir_read :: ReadM (Path.SomeBase Dir)
 some_base_dir_read = eitherReader $ first displayException . Path.parseSomeDir
-
-dir_read :: ReadM (Either (Path Abs Dir) (Path Rel Dir))
-dir_read = fmap Right rel_dir_read <|> fmap Left abs_dir_read
-
-rel_dir_read :: ReadM (Path Rel Dir)
-rel_dir_read = eitherReader $ first displayException . Path.parseRelDir
 
 abs_dir_read :: ReadM (Path Abs Dir)
 abs_dir_read = eitherReader $ first displayException . Path.parseAbsDir
