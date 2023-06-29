@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE Strict #-}
 
@@ -14,6 +15,8 @@ import Control.Exception (Exception(displayException))
 import Data.Foldable
 import Data.Function ((&))
 import Data.Bifunctor (first)
+
+import qualified Data.Text as T
 
 import qualified Streamly.Data.Stream.Prelude as S
 import qualified Streamly.Data.Fold as F
@@ -39,6 +42,7 @@ cmds = info (helper <*> parser) infoMod
     parser = subparser $ fold
       [ (command "init" parser_info_init)
       , (command "versions" parser_info_versions)
+      , (command "backup" parser_info_backup)
       ]
 
 parser_info_init :: ParserInfo (IO ())
@@ -80,6 +84,25 @@ parser_info_versions = info (helper <*> parser) infoMod
       Repo.listVersions
         & S.morphInner (flip M.runHbkT hbk)
         & S.fold (F.drainMapM print)
+
+parser_info_backup :: ParserInfo (IO ())
+parser_info_backup = info (helper <*> parser) infoMod
+  where
+    infoMod = fold
+      [ progDesc "Construct new version"
+      ]
+
+    parser = go
+      <$> argument some_base_dir_read (fold
+            [ metavar "BACKUP_ROOT"
+            , help "directory you'd like to backup"
+            ])
+
+    go dir_to_backup = do
+      hbk <- mk_hbk_from_cwd
+      version <- flip M.runHbkT hbk $ do
+        Repo.backup $ T.pack $ Path.fromSomeDir dir_to_backup
+      print version
 
 p_local_repo_config :: Parser Config.RepoType
 p_local_repo_config = (Config.Local . Config.LocalRepoConfig)
