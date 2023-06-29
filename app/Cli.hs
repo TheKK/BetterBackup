@@ -43,6 +43,7 @@ cmds = info (helper <*> parser) infoMod
       [ (command "init" parser_info_init)
       , (command "versions" parser_info_versions)
       , (command "backup" parser_info_backup)
+      , (command "gc" parser_info_gc)
       ]
 
 parser_info_init :: ParserInfo (IO ())
@@ -103,6 +104,19 @@ parser_info_backup = info (helper <*> parser) infoMod
       version <- flip M.runHbkT hbk $ do
         Repo.backup $ T.pack $ Path.fromSomeDir dir_to_backup
       print version
+
+parser_info_gc :: ParserInfo (IO ())
+parser_info_gc = info (helper <*> parser) infoMod
+  where
+    infoMod = fold
+      [ progDesc "Running garbage collection to release unused data"
+      ]
+
+    parser = pure go
+
+    go = do
+      hbk <- mk_hbk_from_cwd
+      flip M.runHbkT hbk $ Repo.garbageCollection
 
 p_local_repo_config :: Parser Config.RepoType
 p_local_repo_config = (Config.Local . Config.LocalRepoConfig)
