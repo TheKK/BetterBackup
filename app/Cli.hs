@@ -76,20 +76,7 @@ parser_info_versions = info (helper <*> parser) infoMod
     parser = pure go
 
     go = do
-      cwd <- P.getWorkingDirectory >>= Path.parseAbsDir
-      config <- LocalCache.readConfig cwd
-
-      let
-        repository = case Config.config_repoType config of
-          Config.Local l -> Repo.localRepo $ Config.local_repo_path l
-
-      hbk <- pure $ M.MkHbk
-          [Path.absdir|/tmp|]
-          cwd
-          repository
-          [Path.absdir|/tmp|]
-          (pure ())
-
+      hbk <- mk_hbk_from_cwd
       Repo.listVersions
         & S.morphInner (flip M.runHbkT hbk)
         & S.fold (F.drainMapM print)
@@ -103,3 +90,19 @@ some_base_dir_read = eitherReader $ first displayException . Path.parseSomeDir
 
 abs_dir_read :: ReadM (Path Abs Dir)
 abs_dir_read = eitherReader $ first displayException . Path.parseAbsDir
+
+mk_hbk_from_cwd :: Applicative m => IO (M.Hbk m)
+mk_hbk_from_cwd = do
+  cwd <- P.getWorkingDirectory >>= Path.parseAbsDir
+  config <- LocalCache.readConfig cwd
+
+  let
+    repository = case Config.config_repoType config of
+      Config.Local l -> Repo.localRepo $ Config.local_repo_path l
+
+  pure $ M.MkHbk
+    [Path.absdir|/tmp|]
+    cwd
+    repository
+    [Path.absdir|/tmp|]
+    (pure ())
