@@ -1,23 +1,39 @@
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE QuasiQuotes #-}
+{-# LANGUAGE Strict #-}
 
 module Cli
   ( cmds
   ) where
 
+import qualified System.Posix.Directory as P
+
 import Options.Applicative
 
 import Control.Exception (Exception(displayException))
 
+import UnliftIO.Exception (throwString)
+
 import Data.Foldable
+import Data.Function ((&))
 import Data.Bifunctor (first)
 
-import Path (Path, Abs, Dir)
+import qualified Data.Text as T
+import qualified Data.Text.IO as T
+
+import qualified Streamly.Data.Stream.Prelude as S
+import qualified Streamly.Data.Fold as F
+
+import Path (Path, Abs, Dir, (</>))
 import qualified Path
 
 import Config (Config(..))
 import qualified Config
 
+import qualified Better.Repository as Repo
+
 import qualified LocalCache
+import qualified Monad as M
 
 cmds :: ParserInfo (IO ())
 cmds = info (helper <*> parser) infoMod
@@ -28,6 +44,7 @@ cmds = info (helper <*> parser) infoMod
 
     parser = subparser $ fold
       [ (command "init" parser_info_init)
+      , (command "versions" parser_info_versions)
       ]
 
 parser_info_init :: ParserInfo (IO ())
@@ -54,6 +71,36 @@ parser_info_init_local = info (helper <*> parser) infoMod
             , help "path to store your local cache"
             ])
       <*> (Config <$> p_local_repo_config)
+
+parser_info_versions :: ParserInfo (IO ())
+parser_info_versions = info (helper <*> parser) infoMod
+  where
+    infoMod = fold
+      [ progDesc "List backuped versions"
+      ]
+
+    parser = pure go
+
+    go = do
+      cwd <- P.getWorkingDirectory >>= Path.parseAbsDir
+      let config_path = cwd </> [Path.relfile|config.toml|]
+
+      optConfig <- Config.parseConfig <$> (T.readFile $ Path.fromAbsFile config_path)
+      repository <- case optConfig of
+        Left err -> throwString $ T.unpack err
+        Right config -> case Config.config_repoType config of
+          Config.Local l -> pure $ Repo.localRepo $ Config.local_repo_path l
+
+      hbk <- pure $ M.MkHbk
+          [Path.absdir|/tmp|]
+          cwd
+          repository
+          [Path.absdir|/tmp|]
+          (pure ())
+
+      Repo.listVersions
+        & S.morphInner (flip M.runHbkT hbk)
+        & S.fold (F.drainMapM print)
 
 p_local_repo_config :: Parser Config.RepoType
 p_local_repo_config = (Config.Local . Config.LocalRepoConfig)
