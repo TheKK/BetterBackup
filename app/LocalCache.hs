@@ -5,10 +5,12 @@
 
 module LocalCache
   ( initialize
+  , readConfig
   ) where
 
 import Control.Monad (when, unless)
 
+import qualified Data.Text as T
 import qualified Data.Text.IO as T
 
 import Path (Path, Abs, Rel, File, Dir, (</>), relfile)
@@ -35,6 +37,14 @@ initialize cache_p config = do
       Un.throwString $ "config file '" <> config_path <> "' has already existed" 
 
     initialize_config repo_path config
+
+readConfig :: Path Abs Dir -> IO Config
+readConfig cwd = do
+  let config_path = cwd </> config_filename
+  parse_result <- Config.parseConfig <$> (T.readFile $ Path.fromAbsFile config_path)
+  case parse_result of
+    Left err -> Un.throwString $ T.unpack err
+    Right config -> pure config
 
 initialize_config :: Path Abs Dir -> Config -> IO ()
 initialize_config repo_path = T.writeFile (Path.toFilePath $ repo_path </> config_filename) . Config.renderConfig

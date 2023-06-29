@@ -1,4 +1,3 @@
-{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE Strict #-}
 
@@ -12,19 +11,14 @@ import Options.Applicative
 
 import Control.Exception (Exception(displayException))
 
-import UnliftIO.Exception (throwString)
-
 import Data.Foldable
 import Data.Function ((&))
 import Data.Bifunctor (first)
 
-import qualified Data.Text as T
-import qualified Data.Text.IO as T
-
 import qualified Streamly.Data.Stream.Prelude as S
 import qualified Streamly.Data.Fold as F
 
-import Path (Path, Abs, Dir, (</>))
+import Path (Path, Abs, Dir)
 import qualified Path
 
 import Config (Config(..))
@@ -83,13 +77,11 @@ parser_info_versions = info (helper <*> parser) infoMod
 
     go = do
       cwd <- P.getWorkingDirectory >>= Path.parseAbsDir
-      let config_path = cwd </> [Path.relfile|config.toml|]
+      config <- LocalCache.readConfig cwd
 
-      optConfig <- Config.parseConfig <$> (T.readFile $ Path.fromAbsFile config_path)
-      repository <- case optConfig of
-        Left err -> throwString $ T.unpack err
-        Right config -> case Config.config_repoType config of
-          Config.Local l -> pure $ Repo.localRepo $ Config.local_repo_path l
+      let
+        repository = case Config.config_repoType config of
+          Config.Local l -> Repo.localRepo $ Config.local_repo_path l
 
       hbk <- pure $ M.MkHbk
           [Path.absdir|/tmp|]
