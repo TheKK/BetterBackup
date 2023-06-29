@@ -193,7 +193,7 @@ main = do
   repository <- case optConfig of
     Left err -> throwString $ T.unpack err
     Right config -> case Config.config_repoType config of
-      Config.Local l -> pure $ localRepo $ either id (cwd </>) (Config.local_repo_path l)
+      Config.Local l -> pure $ localRepo $ Config.local_repo_path l
   
   hbk <- pure $ MkHbk
       [Path.absdir|/tmp|]
