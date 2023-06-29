@@ -44,6 +44,7 @@ cmds = info (helper <*> parser) infoMod
       , (command "versions" parser_info_versions)
       , (command "backup" parser_info_backup)
       , (command "gc" parser_info_gc)
+      , (command "integrity-check" parser_info_integrity_check)
       ]
 
 parser_info_init :: ParserInfo (IO ())
@@ -117,6 +118,19 @@ parser_info_gc = info (helper <*> parser) infoMod
     go = do
       hbk <- mk_hbk_from_cwd
       flip M.runHbkT hbk $ Repo.garbageCollection
+
+parser_info_integrity_check :: ParserInfo (IO ())
+parser_info_integrity_check = info (helper <*> parser) infoMod
+  where
+    infoMod = fold
+      [ progDesc "Verify and handle corrupted data"
+      ]
+
+    parser = pure go
+
+    go = do
+      hbk <- mk_hbk_from_cwd
+      flip M.runHbkT hbk $ Repo.checksum 8
 
 p_local_repo_config :: Parser Config.RepoType
 p_local_repo_config = (Config.Local . Config.LocalRepoConfig)
