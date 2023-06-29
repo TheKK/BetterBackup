@@ -1,35 +1,12 @@
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE CApiFFI #-}
-{-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE ConstraintKinds #-}
-{-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE FunctionalDependencies #-}
-{-# LANGUAGE AllowAmbiguousTypes #-}
-{-# LANGUAGE GeneralisedNewtypeDeriving #-}
-{-# LANGUAGE DerivingVia #-}
-{-# LANGUAGE PatternSynonyms #-}
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE TypeOperators #-}
-{-# LANGUAGE PolyKinds #-}
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE KindSignatures #-}
-{-# LANGUAGE GADTs #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE TypeApplications #-}
-{-# LANGUAGE BangPatterns #-}
-{-# LANGUAGE DeriveFunctor #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE Strict #-}
 
 module Main ( main ) where
 
-import GHC.Generics
 import Debug.Trace
 
 import Data.Time
@@ -38,19 +15,16 @@ import Data.Function
 import Data.Word
 
 import qualified Path
-import Path (Path, (</>))
+import Path ((</>))
 
 import qualified System.Posix.Directory as P
 
 import qualified Data.ByteString.Base16 as BS
 
-import qualified Capability.Reader as C
-
 import Control.Monad
 import Control.Monad.Reader
 import Control.Monad.Catch
 
-import UnliftIO (MonadUnliftIO(..))
 import UnliftIO.Exception (throwString)
 
 import Crypto.Hash
@@ -67,7 +41,6 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import qualified Data.Text.Encoding as TE
 
-import Better.TempDir
 import Better.Repository
 import qualified Better.Repository as Repo
 
@@ -75,55 +48,13 @@ import Data.ByteArray (ByteArrayAccess(..))
 
 import qualified Config
 import qualified Cli
+import Monad (Hbk(MkHbk), runHbkT)
 
 newtype ArrayBA a = ArrayBA (Array.Array a)
 
 instance ByteArrayAccess (ArrayBA Word8) where
   length (ArrayBA arr) = Array.length arr
   withByteArray (ArrayBA arr) fp = Array.asPtrUnsafe (Array.castUnsafe arr) fp
-
-data Hbk m = MkHbk
-  { hbk_path :: Path Path.Abs Path.Dir
-  , hbk_cwd :: Path Path.Abs Path.Dir
-  , hbk_repo :: Repository
-  , hbk_tmpdir :: Path Path.Abs Path.Dir
-  , what :: m ()
-  }
-  deriving (Generic)
-
-newtype HbkT m a = HbkT { runHbkT :: Hbk (HbkT m) -> m a }
-  deriving (Generic)
-  deriving
-    ( Functor
-    , Applicative
-    , Monad
-    , MonadIO
-    , MonadCatch
-    , MonadThrow
-    , MonadMask
-    , MonadUnliftIO
-    ) via (ReaderT (Hbk (HbkT m)) m)
-  deriving 
-    ( MonadRepository
-    ) via TheMonadRepository
-         (C.Rename "hbk_repo"
-         (C.Field "hbk_repo" ()
-         (C.MonadReader
-         (ReaderT (Hbk (HbkT m)) m))))
-  deriving 
-    ( MonadTmp
-    ) via TheMonadTmp
-         (C.Rename "hbk_tmpdir"
-         (C.Field "hbk_tmpdir" ()
-         (C.MonadReader
-         (ReaderT (Hbk (HbkT m)) m))))
-
-deriving instance MonadUnliftIO m => MonadUnliftIO (C.Rename k m)
-deriving instance MonadUnliftIO m => MonadUnliftIO (C.Field k k' m)
-deriving instance MonadUnliftIO m => MonadUnliftIO (C.MonadReader m)
-deriving instance MonadThrow m => MonadThrow (C.Rename k m)
-deriving instance MonadThrow m => MonadThrow (C.Field k k' m)
-deriving instance MonadThrow m => MonadThrow (C.MonadReader m)
 
 cat_dir :: (MonadThrow m, MonadIO m, MonadRepository m) => T.Text -> S.Stream m (Either Tree FFile)
 cat_dir sha = S.concatEffect $ do
