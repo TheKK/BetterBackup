@@ -40,6 +40,8 @@ import qualified Better.Repository as Repo
 import qualified LocalCache
 import qualified Monad as M
 
+-- TODO add ability to put trace markers
+-- TODO add ability to collect running statistics
 cmds :: ParserInfo (IO ())
 cmds = info (helper <*> parser) infoMod
   where
