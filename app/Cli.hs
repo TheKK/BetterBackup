@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE Strict #-}
 
@@ -12,14 +13,21 @@ import Options.Applicative
 
 import Control.Exception (Exception(displayException))
 
+import Crypto.Hash (Digest, SHA256, digestFromByteString)
+
+import Data.String (fromString)
 import Data.Foldable
 import Data.Function ((&))
 import Data.Bifunctor (first)
 
 import qualified Data.Text as T
+import qualified Data.Text.IO as T
+
+import qualified Data.ByteString.Base16 as BSBase16
 
 import qualified Streamly.Data.Stream.Prelude as S
 import qualified Streamly.Data.Fold as F
+import qualified Streamly.Console.Stdio as Stdio
 
 import Path (Path, Abs, Dir)
 import qualified Path
@@ -45,6 +53,10 @@ cmds = info (helper <*> parser) infoMod
       , (command "backup" parser_info_backup)
       , (command "gc" parser_info_gc)
       , (command "integrity-check" parser_info_integrity_check)
+      , (command "cat-chunk" parser_info_cat_chunk)
+      , (command "cat-file" parser_info_cat_file)
+      , (command "cat-file-chunks" parser_info_cat_file_chunks)
+      , (command "cat-tree" parser_info_cat_tree)
       ]
 
 parser_info_init :: ParserInfo (IO ())
@@ -132,6 +144,84 @@ parser_info_integrity_check = info (helper <*> parser) infoMod
       hbk <- mk_hbk_from_cwd
       flip M.runHbkT hbk $ Repo.checksum 8
 
+parser_info_cat_chunk :: ParserInfo (IO ())
+parser_info_cat_chunk = info (helper <*> parser) infoMod
+  where
+    infoMod = fold
+      [ progDesc "Display content of single chunk"
+      ]
+
+    parser = go
+      <$> argument digest_read (fold
+            [ metavar "SHA"
+            , help "SHA of chunk"
+            ])
+
+    go sha = do
+      hbk <- mk_hbk_from_cwd
+      Repo.catChunk sha
+        & S.morphInner (flip M.runHbkT hbk)
+        & S.fold (Stdio.writeChunks)
+
+parser_info_cat_file :: ParserInfo (IO ())
+parser_info_cat_file = info (helper <*> parser) infoMod
+  where
+    infoMod = fold
+      [ progDesc "Display content of single file"
+      ]
+
+    parser = go
+      <$> argument digest_read (fold
+            [ metavar "SHA"
+            , help "SHA of file"
+            ])
+
+    go sha = do
+      hbk <- mk_hbk_from_cwd
+      Repo.catFile sha
+        & S.concatMap (Repo.catChunk . Repo.chunk_name)
+        & S.morphInner (flip M.runHbkT hbk)
+        & S.fold (Stdio.writeChunks)
+
+parser_info_cat_file_chunks :: ParserInfo (IO ())
+parser_info_cat_file_chunks = info (helper <*> parser) infoMod
+  where
+    infoMod = fold
+      [ progDesc "Display chunks a single file references to"
+      ]
+
+    parser = go
+      <$> argument digest_read (fold
+            [ metavar "SHA"
+            , help "SHA of file"
+            ])
+
+    go sha = do
+      hbk <- mk_hbk_from_cwd
+      Repo.catFile sha
+        & fmap (show . Repo.chunk_name)
+        & S.morphInner (flip M.runHbkT hbk)
+        & S.fold (F.drainMapM putStrLn)
+
+parser_info_cat_tree :: ParserInfo (IO ())
+parser_info_cat_tree = info (helper <*> parser) infoMod
+  where
+    infoMod = fold
+      [ progDesc "Display content of tree"
+      ]
+
+    parser = go
+      <$> argument digest_read (fold
+            [ metavar "SHA"
+            , help "SHA of tree"
+            ])
+
+    go sha = do
+      hbk <- mk_hbk_from_cwd
+      Repo.catTree sha
+        & S.morphInner (flip M.runHbkT hbk)
+        & S.fold (F.drainMapM $ T.putStrLn . T.pack . show)
+
 p_local_repo_config :: Parser Config.RepoType
 p_local_repo_config = (Config.Local . Config.LocalRepoConfig)
   <$> (argument abs_dir_read (metavar "REPO_PATH" <> help "path to store your backup"))
@@ -141,6 +231,18 @@ some_base_dir_read = eitherReader $ first displayException . Path.parseSomeDir
 
 abs_dir_read :: ReadM (Path Abs Dir)
 abs_dir_read = eitherReader $ first displayException . Path.parseAbsDir
+
+digest_read :: ReadM (Digest SHA256)
+digest_read = eitherReader $ \raw_sha -> do
+  sha_decoded <- case BSBase16.decode $ fromString raw_sha of
+    Left err -> Left $ "invalid sha256: " <> raw_sha <> ", " <> err
+    Right sha' -> pure $ sha'
+
+  digest <- case digestFromByteString @SHA256 sha_decoded of
+    Nothing -> Left $ "invalid sha256: " <> raw_sha <> ", incorrect length" 
+    Just digest -> pure digest
+
+  pure digest
 
 mk_hbk_from_cwd :: Applicative m => IO (M.Hbk m)
 mk_hbk_from_cwd = do
