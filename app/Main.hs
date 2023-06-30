@@ -7,6 +7,8 @@
 
 module Main ( main ) where
 
+import qualified Options.Applicative as O
+
 import Debug.Trace
 
 import Data.Time
@@ -116,7 +118,10 @@ tree_explorer sha = do
       _ -> loop (s:ss)
 
 main :: IO ()
-main = do
+main = join $ O.customExecParser (O.prefs $ O.showHelpOnError <> O.showHelpOnEmpty) Cli.cmds
+
+main' :: IO ()
+main' = do
   cwd <- P.getWorkingDirectory >>= Path.parseAbsDir
   let config_path = cwd </> [Path.relfile|config.toml|]
 
