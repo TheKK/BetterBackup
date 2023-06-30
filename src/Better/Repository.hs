@@ -1,4 +1,5 @@
 {-# LANGUAGE Strict #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -452,6 +453,11 @@ instance ByteArrayAccess (ArrayBA Word8) where
   length (ArrayBA arr) = Array.length arr
   withByteArray (ArrayBA arr) fp = Array.asPtrUnsafe (Array.castUnsafe arr) fp
 
+data UploadTask
+  = UploadTree {-# UNPACK #-}  !(Digest SHA256) {-# UNPACK #-} !(Path Path.Abs Path.File)
+  | UploadFile {-# UNPACK #-}  !(Digest SHA256) {-# UNPACK #-} !(Path Path.Abs Path.File)
+  | UploadChunk {-# UNPACK #-} !(Digest SHA256) {-# UNPACK #-} !(Array.Array Word8)
+
 tree_content :: Either (Path Path.Rel Path.File) (Path Path.Rel Path.Dir) -> Digest SHA256 -> BS.ByteString
 tree_content file_or_dir hash' =
   let
@@ -467,25 +473,22 @@ tree_content file_or_dir hash' =
     dir_name' = BS.toStrict . BB.toLazyByteString . BB.stringUtf8 . init . Path.toFilePath . Path.dirname
     {-# INLINE dir_name' #-}
 
-backup_dir :: (MonadRepository m, MonadTmp m, MonadCatch m, MonadIO m, MonadUnliftIO m) => TBQueue (m ()) -> Path Path.Rel Path.Dir -> m (Digest SHA256)
+backup_dir :: (MonadRepository m, MonadTmp m, MonadCatch m, MonadIO m, MonadUnliftIO m) => TBQueue UploadTask -> Path Path.Rel Path.Dir -> m (Digest SHA256)
 backup_dir tbq rel_tree_name = withEmptyTmpFile $ \file_name' -> do
   (dir_hash, ()) <- Un.withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
     Dir.readEither rel_tree_name
       -- TODO reduce memory/thread overhead
-      & S.parMapM (S.ordered True . S.eager True . S.maxBuffer 2) (\fod ->do
+      & S.parMapM (S.ordered True . S.eager True . S.maxBuffer 2) (\fod -> do
           hash <- either (backup_file tbq . (rel_tree_name </>)) (backup_dir tbq . (rel_tree_name </>)) fod
           pure $ tree_content fod hash
         )
       & S.fold (F.tee hashByteStringFold (F.drainMapM $ liftIO . BC.hPutStr fd))
 
-  atomically $ writeTBQueue tbq $ do
-    addDir' dir_hash (File.readChunks (Path.fromAbsFile file_name'))
-    `finally`
-      Un.removeFile (Path.fromAbsFile file_name')
+  atomically $ writeTBQueue tbq $ UploadTree dir_hash file_name'
 
   pure dir_hash 
 
-backup_file :: (MonadRepository m, MonadTmp m, MonadCatch m, MonadIO m, MonadUnliftIO m) => TBQueue (m ()) -> Path Path.Rel Path.File -> m (Digest SHA256)
+backup_file :: (MonadRepository m, MonadTmp m, MonadCatch m, MonadIO m, MonadUnliftIO m) => TBQueue UploadTask -> Path Path.Rel Path.File -> m (Digest SHA256)
 backup_file tbq rel_file_name = withEmptyTmpFile $ \file_name' -> do
   (file_hash, ()) <- Un.withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
     File.readChunksWith (1024 * 1024) (Path.fromRelFile rel_file_name)
@@ -493,28 +496,48 @@ backup_file tbq rel_file_name = withEmptyTmpFile $ \file_name' -> do
       & S.parMapM (S.ordered True . S.eager True . S.maxBuffer 5) (backup_chunk tbq)
       & S.fold (F.tee hashByteStringFold (F.drainMapM $ liftIO . BC.hPutStr fd))
 
-  atomically $ writeTBQueue tbq $ do
-    addFile' file_hash (File.readChunks (Path.fromAbsFile file_name'))
-    `finally`
-      Un.removeFile (Path.fromAbsFile file_name')
+  atomically $ writeTBQueue tbq $ UploadFile file_hash file_name'
 
   pure file_hash
 
 backup_chunk :: (MonadRepository m, MonadTmp m, MonadCatch m, MonadIO m, MonadUnliftIO m)
-             => TBQueue (m ()) -> Array.Array Word8 -> m (UTF8.ByteString)
+             => TBQueue UploadTask -> Array.Array Word8 -> m (UTF8.ByteString)
 backup_chunk tbq chunk = do
   chunk_hash <- S.fromPure chunk & S.fold hashArrayFold
-  atomically $ writeTBQueue tbq $ do
-    addBlob' chunk_hash (S.fromPure chunk)
+  atomically $ writeTBQueue tbq $ UploadChunk chunk_hash chunk
   pure $! d2b chunk_hash `BS.snoc` 0x0a
 
 backup :: (MonadRepository m, MonadTmp m, MonadCatch m, MonadIO m, MonadUnliftIO m)
        => T.Text -> m Version
 backup dir = do
+  let
+    mk_uniq_gate = do
+      running_set <- newTVarIO $ Set.empty @(Digest SHA256)
+      pure $ \hash' m -> do
+        other_is_running <- atomically $ stateTVar running_set $ \set ->
+          (Set.member hash' set, Set.insert hash' set)
+        unless other_is_running $
+          m `finally` (atomically $ modifyTVar running_set (Set.delete hash'))
+
+  unique_chunk_gate <- mk_uniq_gate
+  unique_tree_gate <- mk_uniq_gate
+  unique_file_gate <- mk_uniq_gate
+
   rel_dir <- Path.parseRelDir $ T.unpack dir
-  (root_hash, _) <- withEmitUnfoldr 50 (\tbq -> backup_dir tbq rel_dir)
+  (root_hash, _) <- withEmitUnfoldr 10 (\tbq -> backup_dir tbq rel_dir)
     $ (\s -> s 
-         & S.parSequence (S.maxBuffer 50 . S.eager True)
+         & S.parMapM (S.maxBuffer 50 . S.eager True) (\case
+           UploadTree dir_hash file_name' -> unique_tree_gate dir_hash $ do
+             addDir' dir_hash (File.readChunks (Path.fromAbsFile file_name'))
+             `finally` Un.removeFile (Path.fromAbsFile file_name')
+
+           UploadFile file_hash file_name' -> unique_file_gate file_hash $ do
+             addFile' file_hash (File.readChunks (Path.fromAbsFile file_name'))
+             `finally` Un.removeFile (Path.fromAbsFile file_name')
+
+           UploadChunk chunk_hash chunk -> unique_chunk_gate chunk_hash $ do
+             addBlob' chunk_hash (S.fromPure chunk)
+         )
          & S.fold F.drain
       )
   version_id <- nextBackupVersionId
