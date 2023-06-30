@@ -152,28 +152,28 @@ data Repository = Repository
 
 data Version
   = Version
-  { ver_id :: {-# UNPACK #-} Integer
-  , ver_root :: {-# UNPACK #-} Digest SHA256
+  { ver_id :: {-# UNPACK #-} !Integer
+  , ver_root :: {-# UNPACK #-} !(Digest SHA256)
   }
   deriving (Show)
 
 data Tree
   = Tree 
-  { tree_name :: {-# UNPACK #-} T.Text
-  , tree_sha :: {-# UNPACK #-} Digest SHA256
+  { tree_name :: {-# UNPACK #-} !T.Text
+  , tree_sha :: {-# UNPACK #-} !(Digest SHA256)
   }
   deriving (Show)
 
 data FFile
   = FFile
-  { file_name :: {-# UNPACK #-} T.Text
-  , file_sha :: {-# UNPACK #-} Digest SHA256
+  { file_name :: {-# UNPACK #-} !T.Text
+  , file_sha :: {-# UNPACK #-} !(Digest SHA256)
   }
   deriving (Show)
 
 data Object
   = Object
-  { chunk_name :: {-# UNPACK #-} Digest SHA256
+  { chunk_name :: {-# UNPACK #-} !(Digest SHA256)
   }
   deriving (Show)
 
