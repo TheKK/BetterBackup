@@ -401,7 +401,7 @@ catFile sha = cat_stuff_under folder_file sha
 
 catChunk :: (MonadThrow m, MonadIO m, MonadRepository m)
 	=> Digest SHA256 -> S.Stream m (Array.Array Word8)
-catChunk sha = cat_stuff_under folder_chunk sha
+catChunk = cat_stuff_under folder_chunk
 {-# INLINE catChunk #-}
 
 getChunkSize :: (MonadThrow m, MonadIO m, MonadRepository m)
