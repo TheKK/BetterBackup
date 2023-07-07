@@ -43,12 +43,9 @@ module Better.Repository
   , TheMonadRepository(..)
   -- * Types
   , Repository
-  , Version(..)
 
   -- * Version
-  , Version
-  , ver_id
-  , ver_root
+  , Version(..)
 
   , Tree(..)
   , FFile(..)
@@ -64,7 +61,6 @@ import Data.Function
 import Data.Foldable
 import Data.Maybe (fromMaybe, isJust, fromJust)
 
-import Data.Set (Set)
 import qualified Data.Set as Set
 
 import UnliftIO
@@ -79,7 +75,6 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base16 as BS
 import qualified Data.ByteString.Builder as BB
 import qualified Data.ByteString.Char8 as BC
-import qualified Data.ByteString.Lazy as BL
 
 import qualified Data.ByteString.UTF8 as UTF8
 
@@ -87,49 +82,30 @@ import Text.Read (readMaybe)
 
 import Control.Applicative ((<|>))
 import Control.Monad
-import Control.Monad.Reader
 import Control.Monad.Catch (MonadCatch, MonadThrow, MonadMask, throwM, handleIf)
 
 import qualified Streamly.Data.Array as Array
 import qualified Streamly.Internal.Data.Array as Array (asPtrUnsafe, castUnsafe) 
 
-import qualified Streamly.Data.Stream.Prelude as S
-import qualified Streamly.Data.Fold as F
-import qualified Streamly.Data.Unfold as U
 import qualified Streamly.FileSystem.File as File
 import qualified Streamly.Unicode.Stream as US
 import qualified Streamly.Internal.Unicode.Stream as US
 
 import System.IO.Error (isDoesNotExistError)
-import System.Posix.Types (FileOffset(..))
+import System.Posix.Types (FileOffset)
 
 import qualified System.Posix.Files as P
 import qualified System.Posix.Directory as P
-import qualified System.Posix.Temp as P
 
 import Path (Path, (</>))
 import qualified Path
 
 import Crypto.Hash
 
-import GHC.Generics
-
-import qualified Streamly.Data.Array as Array
-
 import qualified Streamly.Data.Stream.Prelude as S
 import qualified Streamly.Data.Fold as F
 
 import qualified Capability.Reader as C
-import qualified Capability.Source as C
-
-import qualified Path
-import Path (Path)
-
-import Data.Word
-import Data.Coerce (coerce)
-
-import Control.Monad.IO.Class
-import Data.ByteArray (ByteArrayAccess(..))
 
 import Better.Hash
 import Better.TempDir
@@ -221,8 +197,7 @@ read p = S.concatEffect $ do
   f <- mkRead
   pure $ f p
 
-listVersions :: (MonadThrow m, MonadIO m, MonadRepository m)
-	      => S.Stream m Version
+listVersions :: (MonadThrow m, MonadIO m, MonadRepository m) => S.Stream m Version
 listVersions =
   listFolderFiles folder_version
     & S.mapM (\v -> do
@@ -277,8 +252,8 @@ put_file_in_repo :: (MonadCatch m, MonadIO m, MonadRepository m)
   -> m (Digest SHA256)
 put_file_in_repo subdir chunks = do
   chunk_hash <- chunks & S.fold hashArrayFold
-  file_name <- Path.parseRelFile $ show chunk_hash
-  let f = subdir </> file_name
+  file_name' <- Path.parseRelFile $ show chunk_hash
+  let f = subdir </> file_name'
   exist <- fileExists f
   unless exist $ do
     putFileFold <- mkPutFileFold
@@ -313,8 +288,8 @@ addBlob' :: (MonadCatch m, MonadIO m, MonadRepository m)
   -> S.Stream m (Array.Array Word8)
   -> m ()
 addBlob' digest chunks = do
-  file_name <- Path.parseRelFile $ show digest
-  let f = folder_chunk </> file_name
+  file_name' <- Path.parseRelFile $ show digest
+  let f = folder_chunk </> file_name'
   exist <- fileExists f
   unless exist $ do
     putFileFold <- mkPutFileFold
@@ -325,8 +300,8 @@ addFile' :: (MonadCatch m, MonadIO m, MonadRepository m)
   -> S.Stream m (Array.Array Word8)
   -> m ()
 addFile' digest chunks = do
-  file_name <- Path.parseRelFile $ show digest
-  let f = folder_file </> file_name
+  file_name' <- Path.parseRelFile $ show digest
+  let f = folder_file </> file_name'
   exist <- fileExists f
   unless exist $ do
     putFileFold <- mkPutFileFold
@@ -337,8 +312,8 @@ addDir' :: (MonadCatch m, MonadIO m, MonadRepository m)
   -> S.Stream m (Array.Array Word8)
   -> m ()
 addDir' digest chunks = do
-  file_name <- Path.parseRelFile $ show digest
-  let f = folder_tree </> file_name
+  file_name' <- Path.parseRelFile $ show digest
+  let f = folder_tree </> file_name'
   exist <- fileExists f
   unless exist $ do
     putFileFold <- mkPutFileFold
@@ -380,15 +355,14 @@ nextBackupVersionId = do
     & fmap (succ . fromMaybe 0)
 
 cat_stuff_under :: (Show a, MonadThrow m, MonadIO m, MonadRepository m)
-	=> Path Path.Rel Path.Dir -> a -> S.Stream m (Array.Array Word8)
+                => Path Path.Rel Path.Dir -> a -> S.Stream m (Array.Array Word8)
 cat_stuff_under folder stuff = S.concatEffect $ do
   stuff_path <- Path.parseRelFile $ show stuff
   read_blob <- mkRead
   pure $ read_blob (folder </> stuff_path)
 {-# INLINE cat_stuff_under #-}
 
-catFile :: (MonadThrow m, MonadIO m, MonadRepository m)
-	=> Digest SHA256 -> S.Stream m Object
+catFile :: (MonadThrow m, MonadIO m, MonadRepository m) => Digest SHA256 -> S.Stream m Object
 catFile sha = cat_stuff_under folder_file sha
   & S.unfoldMany Array.reader
   & US.decodeLatin1
@@ -400,19 +374,17 @@ catFile sha = cat_stuff_under folder_file sha
 {-# INLINE catFile #-}
 
 catChunk :: (MonadThrow m, MonadIO m, MonadRepository m)
-	=> Digest SHA256 -> S.Stream m (Array.Array Word8)
+         => Digest SHA256 -> S.Stream m (Array.Array Word8)
 catChunk = cat_stuff_under folder_chunk
 {-# INLINE catChunk #-}
 
-getChunkSize :: (MonadThrow m, MonadIO m, MonadRepository m)
-	=> Digest SHA256 -> m FileOffset
+getChunkSize :: (MonadThrow m, MonadIO m, MonadRepository m) => Digest SHA256 -> m FileOffset
 getChunkSize sha = do
   sha_path <- Path.parseRelFile $ show sha
   fileSize $ folder_chunk </> sha_path
 {-# INLINE getChunkSize #-}
 
-catVersion :: (MonadThrow m, MonadIO m, MonadRepository m)
-	=> Integer -> m Version
+catVersion :: (MonadThrow m, MonadIO m, MonadRepository m) => Integer -> m Version
 catVersion vid = do
   optSha <- cat_stuff_under folder_version vid
     & fmap (BB.toLazyByteString . foldMap BB.word8 . Array.toList)
@@ -430,9 +402,8 @@ catVersion vid = do
   pure $ Version vid digest
 {-# INLINE catVersion #-}
 
-catTree :: (MonadThrow m, MonadIO m, MonadRepository m)
-	=> Digest SHA256 -> S.Stream m (Either Tree FFile)
-catTree sha = cat_stuff_under folder_tree sha
+catTree :: (MonadThrow m, MonadIO m, MonadRepository m) => Digest SHA256 -> S.Stream m (Either Tree FFile)
+catTree tree_sha' = cat_stuff_under folder_tree tree_sha'
   & US.decodeUtf8Chunks
   & US.lines (fmap T.pack F.toList)
   & S.mapM parse_tree_content
@@ -479,8 +450,8 @@ backup_dir tbq rel_tree_name = withEmptyTmpFile $ \file_name' -> do
     Dir.readEither rel_tree_name
       -- TODO reduce memory/thread overhead
       & S.parMapM (S.ordered True . S.eager True . S.maxBuffer 2) (\fod -> do
-          hash <- either (backup_file tbq . (rel_tree_name </>)) (backup_dir tbq . (rel_tree_name </>)) fod
-          pure $ tree_content fod hash
+          sub_hash <- either (backup_file tbq . (rel_tree_name </>)) (backup_dir tbq . (rel_tree_name </>)) fod
+          pure $ tree_content fod sub_hash
         )
       & S.fold (F.tee hashByteStringFold (F.drainMapM $ liftIO . BC.hPutStr fd))
 
@@ -553,7 +524,7 @@ checksum n = do
     )
     & S.parMapM (S.maxBuffer (n + 1) . S.maxThreads n . S.eager True) (\(expected_sha, f) -> do
          actual_sha <- read f
-	   & S.parEval (S.ordered True . S.eager True . S.maxBuffer 2)
+           & S.parEval (S.ordered True . S.eager True . S.maxBuffer 2)
            & S.fold hashArrayFold
          pure $
            if show actual_sha == expected_sha
@@ -623,7 +594,7 @@ garbageCollection = gc_tree >> gc_file >> gc_chunk
               & S.mapMaybe (either (const Nothing) (Just . file_sha))
           )
         & S.mapM (\file_digest -> do
-    	    modifyIORef' traverse_set $ Set.delete (d2b file_digest)
+            modifyIORef' traverse_set $ Set.delete (d2b file_digest)
             )
         & S.fold F.drain
 
@@ -648,7 +619,7 @@ garbageCollection = gc_tree >> gc_file >> gc_chunk
               & fmap chunk_name
           )
         & S.mapM (\file_digest -> do
-    	    modifyIORef' traverse_set $ Set.delete (d2b file_digest)
+            modifyIORef' traverse_set $ Set.delete (d2b file_digest)
             )
         & S.fold F.drain
 
@@ -685,7 +656,7 @@ withEmitUnfoldr q_size putter go = do
         e <- atomically $ (Just <$> readTBQueue tbq) <|> (Nothing <$ waitSTM h)
         case e of
           Just v -> pure (Just (v, ()))
-	  Nothing -> pure Nothing
+          Nothing -> pure Nothing
 
     link h
     ret_b <- go $ S.unfoldrM (\() -> f) ()
