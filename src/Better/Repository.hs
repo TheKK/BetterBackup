@@ -473,7 +473,7 @@ tree_content file_or_dir hash' =
     dir_name' = BS.toStrict . BB.toLazyByteString . BB.stringUtf8 . init . Path.toFilePath . Path.dirname
     {-# INLINE dir_name' #-}
 
-backup_dir :: (MonadRepository m, MonadTmp m, MonadCatch m, MonadIO m, MonadUnliftIO m) => TBQueue UploadTask -> Path Path.Rel Path.Dir -> m (Digest SHA256)
+backup_dir :: (MonadTmp m, MonadCatch m, MonadUnliftIO m) => TBQueue UploadTask -> Path Path.Rel Path.Dir -> m (Digest SHA256)
 backup_dir tbq rel_tree_name = withEmptyTmpFile $ \file_name' -> do
   (dir_hash, ()) <- Un.withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
     Dir.readEither rel_tree_name
@@ -488,7 +488,7 @@ backup_dir tbq rel_tree_name = withEmptyTmpFile $ \file_name' -> do
 
   pure dir_hash 
 
-backup_file :: (MonadRepository m, MonadTmp m, MonadCatch m, MonadIO m, MonadUnliftIO m) => TBQueue UploadTask -> Path Path.Rel Path.File -> m (Digest SHA256)
+backup_file :: (MonadTmp m, MonadCatch m, MonadUnliftIO m) => TBQueue UploadTask -> Path Path.Rel Path.File -> m (Digest SHA256)
 backup_file tbq rel_file_name = withEmptyTmpFile $ \file_name' -> do
   (file_hash, ()) <- Un.withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
     File.readChunksWith (1024 * 1024) (Path.fromRelFile rel_file_name)
@@ -500,14 +500,14 @@ backup_file tbq rel_file_name = withEmptyTmpFile $ \file_name' -> do
 
   pure file_hash
 
-backup_chunk :: (MonadRepository m, MonadTmp m, MonadCatch m, MonadIO m, MonadUnliftIO m)
+backup_chunk :: (MonadUnliftIO m)
              => TBQueue UploadTask -> Array.Array Word8 -> m (UTF8.ByteString)
 backup_chunk tbq chunk = do
   chunk_hash <- S.fromPure chunk & S.fold hashArrayFold
   atomically $ writeTBQueue tbq $ UploadChunk chunk_hash chunk
   pure $! d2b chunk_hash `BS.snoc` 0x0a
 
-backup :: (MonadRepository m, MonadTmp m, MonadCatch m, MonadIO m, MonadUnliftIO m)
+backup :: (MonadRepository m, MonadTmp m, MonadCatch m, MonadUnliftIO m)
        => T.Text -> m Version
 backup dir = do
   let
