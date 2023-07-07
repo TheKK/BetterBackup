@@ -54,16 +54,13 @@ common warnings
     ghc-options:
       -Wall
       -fllvm
-      -g
       -eventlog
       -threaded
       -rtsopts
       -fdicts-strict
       -fmax-worker-args=16
       -fspec-constr-recursive=16
-      -finfo-table-map
-      -fdistinct-constructor-tables
-      -- -fplugin=Fusion.Plugin
+      -fplugin=Fusion.Plugin
 
 common deps
     build-depends:    base ^>=4.16, text, streamly, streamly-core, containers, unix, time, stm, async, unliftio, unliftio-core, fusion-plugin, memory, cryptonite, bytestring, capability, exceptions, base16-bytestring, katip, path, mtl, utf8-string, directory
