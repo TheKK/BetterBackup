@@ -26,11 +26,11 @@ hashArray = hashWith SHA256 . ArrayBA
 
 hashByteStringFold :: (Monad m) => F.Fold m BS.ByteString (Digest SHA256)
 hashByteStringFold = fmap hashFinalize $ (F.foldl' hashUpdate hashInit)
-{-# INLINEABLE hashByteStringFold #-}
+{-# INLINE hashByteStringFold #-}
 
 hashArrayFold :: (Monad m) => F.Fold m (Array.Array Word8) (Digest SHA256)
 hashArrayFold = F.lmap ArrayBA $ fmap hashFinalize $ (F.foldl' hashUpdate hashInit)
-{-# INLINEABLE hashArrayFold #-}
+{-# INLINE hashArrayFold #-}
 
 newtype ArrayBA a = ArrayBA (Array.Array a)
 
