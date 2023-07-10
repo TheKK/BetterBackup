@@ -16,11 +16,8 @@ module Better.Repository
    -- * Write
   ( initRepositoryStructure
   , backup
-  , addBlob
   , addBlob'
-  , addFile
   , addFile'
-  , addDir
   , addDir'
   , addVersion
   , nextBackupVersionId
@@ -321,24 +318,6 @@ addDir' digest chunks = do
   unless exist $ do
     putFileFold <- mkPutFileFold
     chunks & S.fold (putFileFold f)
-
-addBlob :: (MonadCatch m, MonadIO m, MonadRepository m)
-  => S.Stream m (Array.Array Word8)
-  -> m (Digest SHA256)
-addBlob = put_file_in_repo folder_chunk
-{-# INLINE addBlob #-}
-
-addFile :: (MonadCatch m, MonadIO m, MonadRepository m)
-  => S.Stream m (Array.Array Word8)
-  -> m (Digest SHA256)
-addFile = put_file_in_repo folder_file
-{-# INLINE addFile #-}
-
-addDir :: (MonadCatch m, MonadIO m, MonadRepository m)
-  => S.Stream m (Array.Array Word8)
-  -> m (Digest SHA256)
-addDir = put_file_in_repo folder_tree
-{-# INLINE addDir #-}
 
 addVersion :: (MonadIO m, MonadCatch m, MonadRepository m)
   => Integer -> Digest SHA256 -> m ()
