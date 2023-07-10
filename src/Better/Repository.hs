@@ -283,6 +283,7 @@ initRepositoryStructure = do pure ()
   --   , folder_version
   --   ]
   --
+{-# INLINE addBlob' #-}
 addBlob' :: (MonadCatch m, MonadIO m, MonadRepository m)
   => Digest SHA256
   -> S.Stream m (Array.Array Word8)
@@ -295,6 +296,7 @@ addBlob' digest chunks = do
     putFileFold <- mkPutFileFold
     chunks & S.fold (putFileFold f)
 
+{-# INLINE addFile' #-}
 addFile' :: (MonadCatch m, MonadIO m, MonadRepository m)
   => Digest SHA256
   -> S.Stream m (Array.Array Word8)
@@ -307,6 +309,7 @@ addFile' digest chunks = do
     putFileFold <- mkPutFileFold
     chunks & S.fold (putFileFold f)
 
+{-# INLINE addDir' #-}
 addDir' :: (MonadCatch m, MonadIO m, MonadRepository m)
   => Digest SHA256
   -> S.Stream m (Array.Array Word8)
@@ -456,6 +459,7 @@ backup_file tbq rel_file_name = withEmptyTmpFile $ \file_name' -> do
 
   pure file_hash
 
+{-# INLINE backup_chunk #-}
 backup_chunk :: (MonadUnliftIO m)
              => TBQueue UploadTask -> [Array.Array Word8] -> m (UTF8.ByteString)
 backup_chunk tbq chunk = do
