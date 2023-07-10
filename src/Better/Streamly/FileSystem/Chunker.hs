@@ -59,8 +59,9 @@ gearHash (GearHashConfig mask) file = File.withFile file ReadMode $ \h ->
     $ \arr -> S.Stream step (h, 0, 0, 0, arr)
   )
   where
+    -- WARN st might be `undefined` therefore we'd like to keep it lazy here.
     {-# INLINE[0] step #-}
-    step st (h, last_hash, chunk_begin', read_bytes, arr') = do
+    step ~st (h, last_hash, chunk_begin', read_bytes, arr') = do
       arr <- if MA.byteLength arr' == 0
         then unsafe_refill_mutarray arr' h
         else pure arr'
