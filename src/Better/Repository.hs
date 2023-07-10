@@ -86,8 +86,10 @@ import Control.Monad.Catch (MonadCatch, MonadThrow, MonadMask, throwM, handleIf)
 
 import qualified Streamly.Data.Array as Array
 import qualified Streamly.Internal.Data.Array as Array (asPtrUnsafe, castUnsafe) 
+import Streamly.Internal.System.IO (defaultChunkSize)
 
 import qualified Streamly.FileSystem.File as File
+import qualified Streamly.Internal.FileSystem.File as File
 import qualified Streamly.Unicode.Stream as US
 import qualified Streamly.Internal.Unicode.Stream as US
 
@@ -110,6 +112,7 @@ import qualified Capability.Reader as C
 import Better.Hash
 import Better.TempDir
 import Better.Repository.Class
+import qualified Better.Streamly.FileSystem.Chunker as Chunker
 import qualified Better.Streamly.FileSystem.Dir as Dir
 
 import Data.ByteArray (ByteArrayAccess(..))
@@ -427,7 +430,7 @@ instance ByteArrayAccess (ArrayBA Word8) where
 data UploadTask
   = UploadTree {-# UNPACK #-}  !(Digest SHA256) {-# UNPACK #-} !(Path Path.Abs Path.File)
   | UploadFile {-# UNPACK #-}  !(Digest SHA256) {-# UNPACK #-} !(Path Path.Abs Path.File)
-  | UploadChunk {-# UNPACK #-} !(Digest SHA256) {-# UNPACK #-} !(Array.Array Word8)
+  | UploadChunk {-# UNPACK #-} !(Digest SHA256) [(Array.Array Word8)]
 
 tree_content :: Either (Path Path.Rel Path.File) (Path Path.Rel Path.Dir) -> Digest SHA256 -> BS.ByteString
 tree_content file_or_dir hash' =
@@ -462,8 +465,11 @@ backup_dir tbq rel_tree_name = withEmptyTmpFile $ \file_name' -> do
 backup_file :: (MonadTmp m, MonadCatch m, MonadUnliftIO m) => TBQueue UploadTask -> Path Path.Rel Path.File -> m (Digest SHA256)
 backup_file tbq rel_file_name = withEmptyTmpFile $ \file_name' -> do
   (file_hash, ()) <- Un.withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
-    File.readChunksWith (1024 * 1024) (Path.fromRelFile rel_file_name)
-      & S.filter ((0 /=) . Array.length)
+    Chunker.gearHash Chunker.defaultGearHashConfig (Path.fromRelFile rel_file_name)
+      & S.mapM (\(Chunker.Chunk b e) ->
+          S.unfold File.chunkReaderFromToWith (b, e, defaultChunkSize, (Path.fromRelFile rel_file_name))
+            & S.fold F.toList
+        )
       & S.parMapM (S.ordered True . S.eager True . S.maxBuffer 5) (backup_chunk tbq)
       & S.fold (F.tee hashByteStringFold (F.drainMapM $ liftIO . BC.hPutStr fd))
 
@@ -472,9 +478,9 @@ backup_file tbq rel_file_name = withEmptyTmpFile $ \file_name' -> do
   pure file_hash
 
 backup_chunk :: (MonadUnliftIO m)
-             => TBQueue UploadTask -> Array.Array Word8 -> m (UTF8.ByteString)
+             => TBQueue UploadTask -> [Array.Array Word8] -> m (UTF8.ByteString)
 backup_chunk tbq chunk = do
-  chunk_hash <- S.fromPure chunk & S.fold hashArrayFold
+  chunk_hash <- S.fromList chunk & S.fold hashArrayFold
   atomically $ writeTBQueue tbq $ UploadChunk chunk_hash chunk
   pure $! d2b chunk_hash `BS.snoc` 0x0a
 
@@ -507,7 +513,7 @@ backup dir = do
              `finally` Un.removeFile (Path.fromAbsFile file_name')
 
            UploadChunk chunk_hash chunk -> unique_chunk_gate chunk_hash $ do
-             addBlob' chunk_hash (S.fromPure chunk)
+             addBlob' chunk_hash (S.fromList chunk)
          )
          & S.fold F.drain
       )
@@ -659,6 +665,7 @@ withEmitUnfoldr q_size putter go = do
           Nothing -> pure Nothing
 
     link h
+
     ret_b <- go $ S.unfoldrM (\() -> f) ()
     ret_a <- wait h
     pure (ret_a, ret_b)
