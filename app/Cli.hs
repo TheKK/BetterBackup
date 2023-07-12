@@ -11,6 +11,8 @@ import qualified System.Posix.Directory as P
 
 import Options.Applicative
 
+import qualified UnliftIO.STM as Un
+
 import Control.Exception (Exception(displayException))
 
 import Crypto.Hash (Digest, SHA256, digestFromByteString)
@@ -255,9 +257,22 @@ mk_hbk_from_cwd = do
     repository = case Config.config_repoType config of
       Config.Local l -> Repo.localRepo $ Config.local_repo_path l
 
+  process_file_count <- Un.newTVarIO 0
+  total_file_count <- Un.newTVarIO 0
+  process_dir_count <- Un.newTVarIO 0
+  total_dir_count <- Un.newTVarIO 0
+  process_chunk_count <- Un.newTVarIO 0
+  uploaded_bytes <- Un.newTVarIO 0
+
   pure $ M.MkHbk
     [Path.absdir|/tmp|]
     cwd
     repository
     [Path.absdir|/tmp|]
     (pure ())
+    process_file_count
+    total_file_count
+    process_dir_count
+    total_dir_count
+    process_chunk_count
+    uploaded_bytes

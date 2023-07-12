@@ -14,6 +14,9 @@ module Monad
 
 import GHC.Generics (Generic(..))
 
+import Data.Word (Word64)
+import Control.Concurrent.STM.TVar (TVar)
+
 import qualified Path
 import Path (Path)
 
@@ -27,6 +30,7 @@ import UnliftIO (MonadUnliftIO(..))
 
 import Better.Repository (Repository, MonadRepository, TheMonadRepository(..))
 import Better.TempDir (MonadTmp, TheMonadTmp(..))
+import qualified Better.Statistics.Backup.Class as BackupSt
 
 data Hbk m = MkHbk
   { hbk_path :: Path Path.Abs Path.Dir
@@ -34,6 +38,12 @@ data Hbk m = MkHbk
   , hbk_repo :: Repository
   , hbk_tmpdir :: Path Path.Abs Path.Dir
   , what :: m ()
+  , hbk_processedFileCount :: TVar Word64
+  , hbk_processedDirCount :: TVar Word64
+  , hbk_totalFileCount :: TVar Word64
+  , hbk_totalDirCount :: TVar Word64
+  , hbk_processChunkCount :: TVar Word64
+  , hbk_uploadedBytes :: TVar Word64
   }
   deriving (Generic)
 
@@ -63,6 +73,17 @@ newtype HbkT m a = HbkT { runHbkT :: Hbk (HbkT m) -> m a }
          (C.Field "hbk_tmpdir" ()
          (C.MonadReader
          (ReaderT (Hbk (HbkT m)) m))))
+
+instance MonadUnliftIO m => BackupSt.MonadBackupStat (HbkT m) where
+  processedFileCount = HbkT $ \hbk -> pure $ hbk_processedFileCount hbk
+  totalFileCount = HbkT $ \hbk -> pure $ hbk_totalFileCount hbk
+
+  processedDirCount = HbkT $ \hbk -> pure $ hbk_processedDirCount hbk
+  totalDirCount = HbkT $ \hbk -> pure $ hbk_totalDirCount hbk
+
+  processedChunkCount = HbkT $ \hbk -> pure $ hbk_processChunkCount hbk
+
+  uploadedBytes = HbkT $ \hbk -> pure $ hbk_uploadedBytes hbk
 
 deriving instance MonadUnliftIO m => MonadUnliftIO (C.Rename k m)
 deriving instance MonadUnliftIO m => MonadUnliftIO (C.Field k k' m)
