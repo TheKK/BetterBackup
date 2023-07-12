@@ -84,6 +84,7 @@ import Control.Monad
 import Control.Monad.Catch (MonadCatch, MonadThrow, MonadMask, throwM, handleIf)
 
 import qualified Streamly.Data.Array as Array
+import qualified Streamly.Internal.Data.Array.Type as Array (byteLength)
 import qualified Streamly.Internal.Data.Array as Array (asPtrUnsafe, castUnsafe) 
 import Streamly.Internal.System.IO (defaultChunkSize)
 
@@ -491,17 +492,26 @@ backup dir = do
     withAsync (collect_dir_and_file_statistics rel_dir) $ \stat_collector ->
     withEmitUnfoldr 10 (\tbq -> backup_dir tbq rel_dir <* wait stat_collector)
     $ (\s -> s 
-         & S.parMapM (S.maxBuffer 50 . S.eager True) (\case
-           UploadTree dir_hash file_name' -> unique_tree_gate dir_hash $ do
-             addDir' dir_hash (File.readChunks (Path.fromAbsFile file_name'))
-             `finally` Un.removeFile (Path.fromAbsFile file_name')
+         & S.parMapM (S.maxBuffer 10 . S.eager True) (\case
+           UploadTree dir_hash file_name' -> do
+             unique_tree_gate dir_hash $ do
+               addDir' dir_hash (File.readChunks (Path.fromAbsFile file_name'))
+               `finally` Un.removeFile (Path.fromAbsFile file_name')
+             BackupSt.modifyStatistic' BackupSt.processedDirCount (+ 1)
 
-           UploadFile file_hash file_name' -> unique_file_gate file_hash $ do
-             addFile' file_hash (File.readChunks (Path.fromAbsFile file_name'))
-             `finally` Un.removeFile (Path.fromAbsFile file_name')
+           UploadFile file_hash file_name' -> do
+             unique_file_gate file_hash $ do
+               addFile' file_hash (File.readChunks (Path.fromAbsFile file_name'))
+               `finally` Un.removeFile (Path.fromAbsFile file_name')
+             BackupSt.modifyStatistic' BackupSt.processedFileCount (+ 1)
 
-           UploadChunk chunk_hash chunk -> unique_chunk_gate chunk_hash $ do
-             addBlob' chunk_hash (S.fromList chunk)
+           UploadChunk chunk_hash chunk -> do
+             unique_chunk_gate chunk_hash $ do
+               do_work <- addBlob' chunk_hash (S.fromList chunk)
+               when do_work $
+                 BackupSt.modifyStatistic' BackupSt.uploadedBytes $
+                   (+ (fromIntegral $ sum $ fmap Array.byteLength chunk))
+             BackupSt.modifyStatistic' BackupSt.processedChunkCount (+ 1)
          )
          & S.fold F.drain
       )
