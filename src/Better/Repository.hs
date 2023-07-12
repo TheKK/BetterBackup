@@ -63,6 +63,8 @@ import qualified Data.Set as Set
 import UnliftIO
 import qualified UnliftIO.IO.File as Un
 import qualified UnliftIO.Directory as Un
+import qualified UnliftIO.Concurrent as Un
+import qualified UnliftIO.Exception as Un
 
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
@@ -111,6 +113,9 @@ import Better.TempDir
 import Better.Repository.Class
 import qualified Better.Streamly.FileSystem.Chunker as Chunker
 import qualified Better.Streamly.FileSystem.Dir as Dir
+
+import Better.Statistics.Backup (MonadBackupStat)
+import qualified Better.Statistics.Backup as BackupSt
 
 import Data.ByteArray (ByteArrayAccess(..))
 import qualified Data.ByteArray.Encoding as BA
@@ -415,6 +420,18 @@ tree_content file_or_dir hash' =
     dir_name' = BS.toStrict . BB.toLazyByteString . BB.stringUtf8 . init . Path.toFilePath . Path.dirname
     {-# INLINE dir_name' #-}
 
+collect_dir_and_file_statistics
+  :: (MonadBackupStat m, MonadCatch m)
+  => Path Path.Rel Path.Dir -> m ()
+collect_dir_and_file_statistics rel_tree_name = do
+  Dir.readEither rel_tree_name
+    & S.mapM (either
+        (const $ BackupSt.modifyStatistic' BackupSt.totalFileCount (+ 1))
+        (collect_dir_and_file_statistics . (rel_tree_name </>))
+    )
+    & S.fold F.drain
+  BackupSt.modifyStatistic' BackupSt.totalDirCount (+ 1)
+
 backup_dir :: (MonadTmp m, MonadCatch m, MonadUnliftIO m) => TBQueue UploadTask -> Path Path.Rel Path.Dir -> m (Digest SHA256)
 backup_dir tbq rel_tree_name = withEmptyTmpFile $ \file_name' -> do
   (dir_hash, ()) <- Un.withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
@@ -453,7 +470,7 @@ backup_chunk tbq chunk = do
   atomically $ writeTBQueue tbq $ UploadChunk chunk_hash chunk
   pure $! d2b chunk_hash `BS.snoc` 0x0a
 
-backup :: (MonadRepository m, MonadTmp m, MonadCatch m, MonadUnliftIO m)
+backup :: (MonadBackupStat m, MonadRepository m, MonadTmp m, MonadCatch m, MonadUnliftIO m)
        => T.Text -> m Version
 backup dir = do
   let
@@ -470,7 +487,9 @@ backup dir = do
   unique_file_gate <- mk_uniq_gate
 
   rel_dir <- Path.parseRelDir $ T.unpack dir
-  (root_hash, _) <- withEmitUnfoldr 10 (\tbq -> backup_dir tbq rel_dir)
+  (root_hash, _) <-
+    withAsync (collect_dir_and_file_statistics rel_dir) $ \stat_collector ->
+    withEmitUnfoldr 10 (\tbq -> backup_dir tbq rel_dir <* wait stat_collector)
     $ (\s -> s 
          & S.parMapM (S.maxBuffer 50 . S.eager True) (\case
            UploadTree dir_hash file_name' -> unique_tree_gate dir_hash $ do
