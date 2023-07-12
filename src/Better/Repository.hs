@@ -287,7 +287,7 @@ initRepositoryStructure = do pure ()
 addBlob' :: (MonadCatch m, MonadIO m, MonadRepository m)
   => Digest SHA256
   -> S.Stream m (Array.Array Word8)
-  -> m ()
+  -> m Bool -- ^ True if we actually upload this chunk, otherwise False.
 addBlob' digest chunks = do
   file_name' <- Path.parseRelFile $ show digest
   let f = folder_chunk </> file_name'
@@ -295,6 +295,7 @@ addBlob' digest chunks = do
   unless exist $ do
     putFileFold <- mkPutFileFold
     chunks & S.fold (putFileFold f)
+  pure $! not exist
 
 {-# INLINE addFile' #-}
 addFile' :: (MonadCatch m, MonadIO m, MonadRepository m)
