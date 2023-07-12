@@ -449,7 +449,7 @@ backup_file tbq rel_file_name = withEmptyTmpFile $ \file_name' -> do
   (file_hash, ()) <- Un.withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
     Chunker.gearHash Chunker.defaultGearHashConfig (Path.fromRelFile rel_file_name)
       & S.mapM (\(Chunker.Chunk b e) ->
-          S.unfold File.chunkReaderFromToWith (b, e, defaultChunkSize, (Path.fromRelFile rel_file_name))
+          S.unfold File.chunkReaderFromToWith (b, (e - 1), defaultChunkSize, (Path.fromRelFile rel_file_name))
             & S.fold F.toList
         )
       & S.parMapM (S.ordered True . S.eager True . S.maxBuffer 5) (backup_chunk tbq)
