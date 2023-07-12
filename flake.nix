@@ -20,7 +20,9 @@
           PKG_CONFIG_PATH = "${pkgs.fuse3}/lib/pkgconfig";
           inputsFrom = [ ];
           buildInputs = [ pkgs.zlib pkgs.leveldb pkgs.fuse3 ];
-          nativeBuildInputs = [ pkgs.haskellPackages.hsc2hs ];
+          nativeBuildInputs = [
+            pkgs.haskell.compiler.ghc92
+          ];
         };
       });
 }
