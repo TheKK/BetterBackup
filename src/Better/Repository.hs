@@ -246,21 +246,6 @@ localRepo root = Repository
   (File.readChunks . Path.fromAbsFile . (root </>))
   (S.mapM Path.parseRelFile . Dir.read . (root </>))
 
-put_file_in_repo :: (MonadCatch m, MonadIO m, MonadRepository m)
-  => Path Path.Rel Path.Dir
-  -> S.Stream m (Array.Array Word8)
-  -> m (Digest SHA256)
-put_file_in_repo subdir chunks = do
-  chunk_hash <- chunks & S.fold hashArrayFold
-  file_name' <- Path.parseRelFile $ show chunk_hash
-  let f = subdir </> file_name'
-  exist <- fileExists f
-  unless exist $ do
-    putFileFold <- mkPutFileFold
-    chunks & S.fold (putFileFold f)
-  pure chunk_hash 
-{-# INLINE put_file_in_repo #-}
-
 folder_chunk :: Path Path.Rel Path.Dir
 folder_chunk = [Path.reldir|chunk|]
 
