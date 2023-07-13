@@ -12,7 +12,12 @@ import qualified System.Posix.Directory as P
 import Options.Applicative
 
 import qualified UnliftIO.STM as Un
+import qualified UnliftIO.Concurrent as Un
+import qualified UnliftIO.Async as Un
+import qualified UnliftIO.Exception as Un
 
+import Control.Monad (forever)
+import Control.Monad.IO.Class (MonadIO(liftIO))
 import Control.Exception (Exception(displayException))
 
 import Crypto.Hash (Digest, SHA256, digestFromByteString)
@@ -38,6 +43,8 @@ import Config (Config(..))
 import qualified Config
 
 import qualified Better.Repository as Repo
+import Better.Statistics.Backup (MonadBackupStat)
+import qualified Better.Statistics.Backup as BackupSt
 
 import qualified LocalCache
 import qualified Monad as M
@@ -119,8 +126,32 @@ parser_info_backup = info (helper <*> parser) infoMod
     go dir_to_backup = do
       hbk <- mk_hbk_from_cwd
       version <- flip M.runHbkT hbk $ do
-        Repo.backup $ T.pack $ Path.fromSomeDir dir_to_backup
+        let 
+          process_reporter = forever $ do
+            Un.mask_ $ report_backup_stat
+            Un.threadDelay (1000 * 1000)
+
+        Un.withAsync process_reporter $ \_ -> do
+          v <- Repo.backup $ T.pack $ Path.fromSomeDir dir_to_backup
+          liftIO (putStrLn "result:") >> report_backup_stat
+          pure v
+
       print version
+
+report_backup_stat :: (MonadBackupStat m, MonadIO m) => m ()
+report_backup_stat = do
+  process_file_count <- BackupSt.readStatistics BackupSt.processedFileCount
+  total_file_count <- BackupSt.readStatistics BackupSt.totalFileCount
+  process_dir_count <- BackupSt.readStatistics BackupSt.processedDirCount
+  total_dir_count <- BackupSt.readStatistics BackupSt.totalDirCount
+  process_chunk_count <- BackupSt.readStatistics BackupSt.processedChunkCount
+  upload_bytes <- BackupSt.readStatistics BackupSt.uploadedBytes
+  liftIO $ putStrLn $ fold
+    [ show process_file_count, "/", show total_file_count, " files, "
+    , show process_dir_count, "/", show total_dir_count, " dirs, "
+    , show process_chunk_count, " chunks, "
+    , show upload_bytes, " bytes"
+    ]
 
 parser_info_gc :: ParserInfo (IO ())
 parser_info_gc = info (helper <*> parser) infoMod
