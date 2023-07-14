@@ -75,13 +75,11 @@ library better-core
       Better.Hash
       Better.TempDir
       Better.TempDir.Class
-      Better.Database.Level.FFI
       Better.Statistics.Backup
       Better.Statistics.Backup.Class
     build-depends:  vector, random, splitmix
     hs-source-dirs:   src
     default-language: Haskell2010
-    extra-libraries: leveldb
 
 executable fuse
     import:           warnings, deps
