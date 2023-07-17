@@ -100,7 +100,7 @@ executable ff
       Monad
     hs-source-dirs:   app
     default-language: Haskell2010
-    build-depends:  better-core, optparse-applicative, tomland
+    build-depends:  better-core, optparse-applicative, tomland, leveldb-haskell
 
 benchmark cdc
     import:           warnings

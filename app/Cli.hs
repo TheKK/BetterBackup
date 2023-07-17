@@ -7,7 +7,9 @@ module Cli
   ( cmds
   ) where
 
+import qualified System.IO.Error as IOE
 import qualified System.Posix.Directory as P
+import qualified System.Directory as D
 
 import Options.Applicative
 
@@ -16,7 +18,9 @@ import qualified UnliftIO.Concurrent as Un
 import qualified UnliftIO.Async as Un
 import qualified UnliftIO.Exception as Un
 
-import Control.Monad (forever)
+import Control.Monad (forever, void)
+import Control.Monad.Reader (runReaderT)
+import Control.Monad.Catch (MonadThrow())
 import Control.Monad.IO.Class (MonadIO(liftIO))
 import Control.Exception (Exception(displayException))
 
@@ -35,6 +39,8 @@ import qualified Data.ByteString.Base16 as BSBase16
 import qualified Streamly.Data.Stream.Prelude as S
 import qualified Streamly.Data.Fold as F
 import qualified Streamly.Console.Stdio as Stdio
+
+import qualified Database.LevelDB.Base as LV
 
 import Path (Path, Abs, Dir)
 import qualified Path
@@ -104,11 +110,9 @@ parser_info_versions = info (helper <*> parser) infoMod
 
     parser = pure go
 
-    go = do
-      hbk <- mk_hbk_from_cwd
+    go = run_readonly_repo_t_from_cwd $ do
       Repo.listVersions
-        & S.morphInner (flip M.runHbkT hbk)
-        & S.fold (F.drainMapM print)
+        & S.fold (F.drainMapM $ liftIO . print)
 
 parser_info_backup :: ParserInfo (IO ())
 parser_info_backup = info (helper <*> parser) infoMod
@@ -123,20 +127,16 @@ parser_info_backup = info (helper <*> parser) infoMod
             , help "directory you'd like to backup"
             ])
 
-    go dir_to_backup = do
-      hbk <- mk_hbk_from_cwd
-      version <- flip M.runHbkT hbk $ do
-        let 
-          process_reporter = forever $ do
-            Un.mask_ $ report_backup_stat
-            Un.threadDelay (1000 * 1000)
+    go dir_to_backup = run_hbkt_from_cwd $ do
+      let
+        process_reporter = forever $ do
+          Un.mask_ $ report_backup_stat
+          Un.threadDelay (1000 * 1000)
 
-        Un.withAsync process_reporter $ \_ -> do
-          v <- Repo.backup $ T.pack $ Path.fromSomeDir dir_to_backup
-          liftIO (putStrLn "result:") >> report_backup_stat
-          pure v
-
-      print version
+      Un.withAsync process_reporter $ \_ -> do
+        v <- Repo.backup $ T.pack $ Path.fromSomeDir dir_to_backup
+        liftIO (putStrLn "result:") >> report_backup_stat
+        liftIO $ print v
 
 report_backup_stat :: (MonadBackupStat m, MonadIO m) => m ()
 report_backup_stat = do
@@ -162,9 +162,9 @@ parser_info_gc = info (helper <*> parser) infoMod
 
     parser = pure go
 
-    go = do
-      hbk <- mk_hbk_from_cwd
-      flip M.runHbkT hbk $ Repo.garbageCollection
+    -- TODO GC is not readonly operation.
+    go = run_readonly_repo_t_from_cwd $ do
+      Repo.garbageCollection
 
 parser_info_integrity_check :: ParserInfo (IO ())
 parser_info_integrity_check = info (helper <*> parser) infoMod
@@ -175,9 +175,8 @@ parser_info_integrity_check = info (helper <*> parser) infoMod
 
     parser = pure go
 
-    go = do
-      hbk <- mk_hbk_from_cwd
-      flip M.runHbkT hbk $ Repo.checksum 8
+    go = run_readonly_repo_t_from_cwd $ do
+      Repo.checksum 8
 
 parser_info_cat_chunk :: ParserInfo (IO ())
 parser_info_cat_chunk = info (helper <*> parser) infoMod
@@ -192,10 +191,8 @@ parser_info_cat_chunk = info (helper <*> parser) infoMod
             , help "SHA of chunk"
             ])
 
-    go sha = do
-      hbk <- mk_hbk_from_cwd
+    go sha = run_readonly_repo_t_from_cwd $ do
       Repo.catChunk sha
-        & S.morphInner (flip M.runHbkT hbk)
         & S.fold (Stdio.writeChunks)
 
 parser_info_cat_file :: ParserInfo (IO ())
@@ -211,11 +208,9 @@ parser_info_cat_file = info (helper <*> parser) infoMod
             , help "SHA of file"
             ])
 
-    go sha = do
-      hbk <- mk_hbk_from_cwd
+    go sha = run_readonly_repo_t_from_cwd $ do
       Repo.catFile sha
         & S.concatMap (Repo.catChunk . Repo.chunk_name)
-        & S.morphInner (flip M.runHbkT hbk)
         & S.fold (Stdio.writeChunks)
 
 parser_info_cat_file_chunks :: ParserInfo (IO ())
@@ -232,11 +227,10 @@ parser_info_cat_file_chunks = info (helper <*> parser) infoMod
             ])
 
     go sha = do
-      hbk <- mk_hbk_from_cwd
-      Repo.catFile sha
-        & fmap (show . Repo.chunk_name)
-        & S.morphInner (flip M.runHbkT hbk)
-        & S.fold (F.drainMapM putStrLn)
+      run_readonly_repo_t_from_cwd $ do
+        Repo.catFile sha
+          & fmap (show . Repo.chunk_name)
+          & S.fold (F.drainMapM $ liftIO . putStrLn)
 
 parser_info_cat_tree :: ParserInfo (IO ())
 parser_info_cat_tree = info (helper <*> parser) infoMod
@@ -252,10 +246,9 @@ parser_info_cat_tree = info (helper <*> parser) infoMod
             ])
 
     go sha = do
-      hbk <- mk_hbk_from_cwd
-      Repo.catTree sha
-        & S.morphInner (flip M.runHbkT hbk)
-        & S.fold (F.drainMapM $ T.putStrLn . T.pack . show)
+      run_readonly_repo_t_from_cwd $ do
+        Repo.catTree sha
+          & S.fold (F.drainMapM $ liftIO . T.putStrLn . T.pack . show)
 
 p_local_repo_config :: Parser Config.RepoType
 p_local_repo_config = (Config.Local . Config.LocalRepoConfig)
@@ -274,19 +267,36 @@ digest_read = eitherReader $ \raw_sha -> do
     Right sha' -> pure $ sha'
 
   digest <- case digestFromByteString @SHA256 sha_decoded of
-    Nothing -> Left $ "invalid sha256: " <> raw_sha <> ", incorrect length" 
+    Nothing -> Left $ "invalid sha256: " <> raw_sha <> ", incorrect length"
     Just digest -> pure digest
 
   pure digest
 
-mk_hbk_from_cwd :: Applicative m => IO (M.Hbk m)
-mk_hbk_from_cwd = do
-  cwd <- P.getWorkingDirectory >>= Path.parseAbsDir
-  config <- LocalCache.readConfig cwd
+run_readonly_repo_t_from_cwd :: (MonadIO m, MonadThrow m) => M.ReadonlyRepoT m a -> m a
+run_readonly_repo_t_from_cwd m = do
+  cwd <- liftIO P.getWorkingDirectory >>= Path.parseAbsDir
+  config <- liftIO $ LocalCache.readConfig cwd
 
   let
     repository = case Config.config_repoType config of
       Config.Local l -> Repo.localRepo $ Config.local_repo_path l
+
+  let
+    env = M.ReadonlyRepoEnv
+      [Path.absdir|/tmp|]
+      cwd
+      repository
+      [Path.absdir|/tmp|]
+
+  flip runReaderT env $ M.runReadonlyRepoT $ m
+
+run_hbkt_from_cwd :: M.HbkT IO a -> IO a
+run_hbkt_from_cwd m = do
+  cwd <- P.getWorkingDirectory >>= Path.parseAbsDir
+  config <- LocalCache.readConfig cwd
+
+  let repository = case Config.config_repoType config of
+        Config.Local l -> Repo.localRepo $ Config.local_repo_path l
 
   process_file_count <- Un.newTVarIO 0
   total_file_count <- Un.newTVarIO 0
@@ -295,15 +305,38 @@ mk_hbk_from_cwd = do
   process_chunk_count <- Un.newTVarIO 0
   uploaded_bytes <- Un.newTVarIO 0
 
-  pure $ M.MkHbk
-    [Path.absdir|/tmp|]
-    cwd
-    repository
-    [Path.absdir|/tmp|]
-    (pure ())
-    process_file_count
-    total_file_count
-    process_dir_count
-    total_dir_count
-    process_chunk_count
-    uploaded_bytes
+  let
+    try_removing p =
+      void $ Un.tryJust (\e -> if IOE.isDoesNotExistError e then Just e else Nothing) $
+        D.removeDirectoryRecursive p
+
+  -- Remove cur before using it to prevent dirty env.
+  try_removing "cur"
+
+  ret <- (`Un.onException` try_removing "cur") $
+    LV.withDB "prev" (LV.defaultOptions {LV.createIfMissing = True}) $ \prev ->
+    LV.withDB "cur" (LV.defaultOptions {LV.createIfMissing = True, LV.errorIfExists = True}) $ \cur ->
+      M.runHbkT m $
+        M.MkHbk
+          [Path.absdir|/tmp|]
+          cwd
+          repository
+          [Path.absdir|/tmp|]
+          (pure ())
+          process_file_count
+          total_file_count
+          process_dir_count
+          total_dir_count
+          process_chunk_count
+          uploaded_bytes
+          prev
+          cur
+
+  -- TODO Remove cur on error/exception
+
+  try_removing "prev_bac"
+  D.renameDirectory "prev" "prev.bac"
+  D.renameDirectory "cur" "prev"
+  D.removeDirectoryRecursive "prev.bac"
+
+  pure ret

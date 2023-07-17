@@ -7,8 +7,6 @@ module Better.Statistics.Backup
   , modifyStatistic'
   ) where
 
-import Data.Word (Word64)
-
 import qualified UnliftIO as Un
 
 import qualified Better.Statistics.Backup.Class as Base
