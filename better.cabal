@@ -72,12 +72,14 @@ library better-core
       Better.Streamly.FileSystem.Chunker
       Better.Repository
       Better.Repository.Class
+      Better.Repository.BackupCache.Class
+      Better.Repository.BackupCache.LevelDB
       Better.Hash
       Better.TempDir
       Better.TempDir.Class
       Better.Statistics.Backup
       Better.Statistics.Backup.Class
-    build-depends:  vector, random, splitmix
+    build-depends:  vector, random, splitmix, leveldb-haskell, binary
     hs-source-dirs:   src
     default-language: Haskell2010
 
