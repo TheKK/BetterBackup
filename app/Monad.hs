@@ -11,7 +11,8 @@
 
 module Monad
   ( Hbk(..)
-  , HbkT(..)
+  , HbkT()
+  , runHbkT
   , ReadonlyRepoEnv(..)
   , ReadonlyRepoT(..)
   ) where
@@ -95,7 +96,7 @@ data Hbk m = MkHbk
   }
   deriving (Generic)
 
-newtype HbkT m a = HbkT { runHbkT :: Hbk (HbkT m) -> m a }
+newtype HbkT m a = HbkT { _unHbkT :: ReaderT (Hbk (HbkT m)) m a }
   deriving (Generic)
   deriving
     ( Functor
@@ -134,18 +135,22 @@ newtype HbkT m a = HbkT { runHbkT :: Hbk (HbkT m) -> m a }
          (C.MonadReader
          (ReaderT (Hbk (HbkT m)) m)))
 
+{-# INLINE runHbkT #-}
+runHbkT :: HbkT m a -> Hbk (HbkT m) -> m a
+runHbkT m env = flip runReaderT env $ _unHbkT m
+
 deriving via (TheLevelDBBackupCache (HbkT m)) instance (MonadIO m) => MonadBackupCache (HbkT m)
 
 instance MonadUnliftIO m => BackupSt.MonadBackupStat (HbkT m) where
-  processedFileCount = HbkT $ \hbk -> pure $ hbk_processedFileCount hbk
-  totalFileCount = HbkT $ \hbk -> pure $ hbk_totalFileCount hbk
+  processedFileCount = HbkT . ReaderT $ \hbk -> pure $ hbk_processedFileCount hbk
+  totalFileCount = HbkT . ReaderT $ \hbk -> pure $ hbk_totalFileCount hbk
 
-  processedDirCount = HbkT $ \hbk -> pure $ hbk_processedDirCount hbk
-  totalDirCount = HbkT $ \hbk -> pure $ hbk_totalDirCount hbk
+  processedDirCount = HbkT . ReaderT $ \hbk -> pure $ hbk_processedDirCount hbk
+  totalDirCount = HbkT . ReaderT$ \hbk -> pure $ hbk_totalDirCount hbk
 
-  processedChunkCount = HbkT $ \hbk -> pure $ hbk_processChunkCount hbk
+  processedChunkCount = HbkT . ReaderT$ \hbk -> pure $ hbk_processChunkCount hbk
 
-  uploadedBytes = HbkT $ \hbk -> pure $ hbk_uploadedBytes hbk
+  uploadedBytes = HbkT . ReaderT$ \hbk -> pure $ hbk_uploadedBytes hbk
 
 deriving instance MonadUnliftIO m => MonadUnliftIO (C.Rename k m)
 deriving instance MonadUnliftIO m => MonadUnliftIO (C.Field k k' m)
