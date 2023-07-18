@@ -10,9 +10,9 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 
 module Monad
-  ( Hbk(..)
-  , HbkT()
-  , runHbkT
+  ( BackupRepoEnv(BackupRepoEnv)
+  , BackupRepoT()
+  , runBackupRepoT
   , ReadonlyRepoEnv(..)
   , ReadonlyRepoT(..)
   ) where
@@ -79,23 +79,23 @@ newtype ReadonlyRepoT m a = ReadonlyRepoT { runReadonlyRepoT :: ReaderT Readonly
          (C.MonadReader
          (ReaderT ReadonlyRepoEnv m))))
 
-data Hbk = MkHbk
-  { hbk_path :: Path Path.Abs Path.Dir
-  , hbk_cwd :: Path Path.Abs Path.Dir
-  , hbk_repo :: Repository
-  , hbk_tmpdir :: Path Path.Abs Path.Dir
-  , hbk_processedFileCount :: TVar Word64
-  , hbk_processedDirCount :: TVar Word64
-  , hbk_totalFileCount :: TVar Word64
-  , hbk_totalDirCount :: TVar Word64
-  , hbk_processChunkCount :: TVar Word64
-  , hbk_uploadedBytes :: TVar Word64
-  , hbk_previousBackupCache :: LV.DB
-  , hbk_currentBackupCache :: LV.DB
+data BackupRepoEnv = BackupRepoEnv
+  { backup_repo_path :: Path Path.Abs Path.Dir
+  , backup_repo_cwd :: Path Path.Abs Path.Dir
+  , backup_repo_repo :: Repository
+  , backup_repo_tmpdir :: Path Path.Abs Path.Dir
+  , backup_repo_processedFileCount :: TVar Word64
+  , backup_repo_processedDirCount :: TVar Word64
+  , backup_repo_totalFileCount :: TVar Word64
+  , backup_repo_totalDirCount :: TVar Word64
+  , backup_repo_processChunkCount :: TVar Word64
+  , backup_repo_uploadedBytes :: TVar Word64
+  , backup_repo_previousBackupCache :: LV.DB
+  , backup_repo_currentBackupCache :: LV.DB
   }
   deriving (Generic)
 
-newtype HbkT m a = HbkT { _unHbkT :: ReaderT Hbk m a }
+newtype BackupRepoT m a = BackupRepoT { _unBackupRepoT :: ReaderT BackupRepoEnv m a }
   deriving (Generic)
   deriving
     ( Functor
@@ -106,50 +106,50 @@ newtype HbkT m a = HbkT { _unHbkT :: ReaderT Hbk m a }
     , MonadThrow
     , MonadMask
     , MonadUnliftIO
-    ) via (ReaderT Hbk m)
+    ) via (ReaderT BackupRepoEnv m)
   deriving
     ( MonadRepository
     ) via TheMonadRepository
-         (C.Rename "hbk_repo"
-         (C.Field "hbk_repo" ()
+         (C.Rename "backup_repo_repo"
+         (C.Field "backup_repo_repo" ()
          (C.MonadReader
-         (ReaderT Hbk m))))
+         (ReaderT BackupRepoEnv m))))
   deriving
     ( MonadTmp
     ) via TheMonadTmp
-         (C.Rename "hbk_tmpdir"
-         (C.Field "hbk_tmpdir" ()
+         (C.Rename "backup_repo_tmpdir"
+         (C.Field "backup_repo_tmpdir" ()
          (C.MonadReader
-         (ReaderT Hbk m))))
+         (ReaderT BackupRepoEnv m))))
   deriving
     ( C.HasSource "prev_db" LV.DB, C.HasReader "prev_db" LV.DB
-    ) via C.Rename "hbk_previousBackupCache"
-         (C.Field "hbk_previousBackupCache" ()
+    ) via C.Rename "backup_repo_previousBackupCache"
+         (C.Field "backup_repo_previousBackupCache" ()
          (C.MonadReader
-         (ReaderT Hbk m)))
+         (ReaderT BackupRepoEnv m)))
   deriving
     ( C.HasSource "cur_db" LV.DB, C.HasReader "cur_db" LV.DB
-    ) via C.Rename "hbk_currentBackupCache"
-         (C.Field "hbk_currentBackupCache" ()
+    ) via C.Rename "backup_repo_currentBackupCache"
+         (C.Field "backup_repo_currentBackupCache" ()
          (C.MonadReader
-         (ReaderT Hbk m)))
+         (ReaderT BackupRepoEnv m)))
 
-{-# INLINE runHbkT #-}
-runHbkT :: HbkT m a -> Hbk -> m a
-runHbkT m env = flip runReaderT env $ _unHbkT m
+{-# INLINE runBackupRepoT #-}
+runBackupRepoT :: BackupRepoT m a -> BackupRepoEnv -> m a
+runBackupRepoT m env = flip runReaderT env $ _unBackupRepoT m
 
-deriving via (TheLevelDBBackupCache (HbkT m)) instance (MonadIO m) => MonadBackupCache (HbkT m)
+deriving via (TheLevelDBBackupCache (BackupRepoT m)) instance (MonadIO m) => MonadBackupCache (BackupRepoT m)
 
-instance MonadUnliftIO m => BackupSt.MonadBackupStat (HbkT m) where
-  processedFileCount = HbkT . ReaderT $ \hbk -> pure $ hbk_processedFileCount hbk
-  totalFileCount = HbkT . ReaderT $ \hbk -> pure $ hbk_totalFileCount hbk
+instance MonadUnliftIO m => BackupSt.MonadBackupStat (BackupRepoT m) where
+  processedFileCount = BackupRepoT . ReaderT $ \env -> pure $ backup_repo_processedFileCount env
+  totalFileCount = BackupRepoT . ReaderT $ \env -> pure $ backup_repo_totalFileCount env
 
-  processedDirCount = HbkT . ReaderT $ \hbk -> pure $ hbk_processedDirCount hbk
-  totalDirCount = HbkT . ReaderT$ \hbk -> pure $ hbk_totalDirCount hbk
+  processedDirCount = BackupRepoT . ReaderT $ \env -> pure $ backup_repo_processedDirCount env
+  totalDirCount = BackupRepoT . ReaderT $ \env -> pure $ backup_repo_totalDirCount env
 
-  processedChunkCount = HbkT . ReaderT$ \hbk -> pure $ hbk_processChunkCount hbk
+  processedChunkCount = BackupRepoT . ReaderT $ \env -> pure $ backup_repo_processChunkCount env
 
-  uploadedBytes = HbkT . ReaderT$ \hbk -> pure $ hbk_uploadedBytes hbk
+  uploadedBytes = BackupRepoT . ReaderT $ \env -> pure $ backup_repo_uploadedBytes env
 
 deriving instance MonadUnliftIO m => MonadUnliftIO (C.Rename k m)
 deriving instance MonadUnliftIO m => MonadUnliftIO (C.Field k k' m)

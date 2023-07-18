@@ -127,7 +127,7 @@ parser_info_backup = info (helper <*> parser) infoMod
             , help "directory you'd like to backup"
             ])
 
-    go dir_to_backup = run_hbkt_from_cwd $ do
+    go dir_to_backup = run_backup_repo_t_from_cwd $ do
       let
         process_reporter = forever $ do
           Un.mask_ $ report_backup_stat
@@ -290,8 +290,8 @@ run_readonly_repo_t_from_cwd m = do
 
   flip runReaderT env $ M.runReadonlyRepoT $ m
 
-run_hbkt_from_cwd :: M.HbkT IO a -> IO a
-run_hbkt_from_cwd m = do
+run_backup_repo_t_from_cwd :: M.BackupRepoT IO a -> IO a
+run_backup_repo_t_from_cwd m = do
   cwd <- P.getWorkingDirectory >>= Path.parseAbsDir
   config <- LocalCache.readConfig cwd
 
@@ -316,8 +316,8 @@ run_hbkt_from_cwd m = do
   ret <- (`Un.onException` try_removing "cur") $
     LV.withDB "prev" (LV.defaultOptions {LV.createIfMissing = True}) $ \prev ->
     LV.withDB "cur" (LV.defaultOptions {LV.createIfMissing = True, LV.errorIfExists = True}) $ \cur ->
-      M.runHbkT m $
-        M.MkHbk
+      M.runBackupRepoT m $
+        M.BackupRepoEnv
           [Path.absdir|/tmp|]
           cwd
           repository
