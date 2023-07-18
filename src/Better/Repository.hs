@@ -423,7 +423,7 @@ tree_content file_or_dir hash' =
     {-# INLINE dir_name' #-}
 
 collect_dir_and_file_statistics
-  :: (MonadBackupStat m, MonadCatch m)
+  :: (MonadBackupStat m, MonadCatch m, MonadUnliftIO m)
   => Path Path.Rel Path.Dir -> m ()
 collect_dir_and_file_statistics rel_tree_name = do
   Dir.readEither rel_tree_name

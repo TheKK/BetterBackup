@@ -19,10 +19,6 @@ module Monad
 
 import GHC.Generics (Generic(..))
 
-import Data.Word (Word64)
-
-import Control.Concurrent.STM.TVar (TVar)
-
 import qualified Path
 import Path (Path)
 
@@ -39,7 +35,9 @@ import qualified Database.LevelDB.Base as LV
 
 import Better.Repository (Repository, MonadRepository, TheMonadRepository(..))
 import Better.TempDir (MonadTmp, TheMonadTmp(..))
-import qualified Better.Statistics.Backup.Class as BackupSt
+import Better.Statistics.Backup.Class (MonadBackupStat)
+import Better.Statistics.Backup.Default (TheTVarBackupStatistics)
+import qualified Better.Statistics.Backup.Default as BackupSt
 
 import Better.Repository.BackupCache.Class (MonadBackupCache())
 import Better.Repository.BackupCache.LevelDB (TheLevelDBBackupCache(TheLevelDBBackupCache))
@@ -84,12 +82,7 @@ data BackupRepoEnv = BackupRepoEnv
   , backup_repo_cwd :: Path Path.Abs Path.Dir
   , backup_repo_repo :: Repository
   , backup_repo_tmpdir :: Path Path.Abs Path.Dir
-  , backup_repo_processedFileCount :: TVar Word64
-  , backup_repo_processedDirCount :: TVar Word64
-  , backup_repo_totalFileCount :: TVar Word64
-  , backup_repo_totalDirCount :: TVar Word64
-  , backup_repo_processChunkCount :: TVar Word64
-  , backup_repo_uploadedBytes :: TVar Word64
+  , backup_repo_statistic :: BackupSt.Statistics
   , backup_repo_previousBackupCache :: LV.DB
   , backup_repo_currentBackupCache :: LV.DB
   }
@@ -133,6 +126,12 @@ newtype BackupRepoT m a = BackupRepoT { _unBackupRepoT :: ReaderT BackupRepoEnv 
          (C.Field "backup_repo_currentBackupCache" ()
          (C.MonadReader
          (ReaderT BackupRepoEnv m)))
+  deriving
+    ( C.HasSource "backup_st" BackupSt.Statistics, C.HasReader "backup_st" BackupSt.Statistics
+    ) via C.Rename "backup_repo_statistic"
+         (C.Field "backup_repo_statistic" ()
+         (C.MonadReader
+         (ReaderT BackupRepoEnv m)))
 
 {-# INLINE runBackupRepoT #-}
 runBackupRepoT :: BackupRepoT m a -> BackupRepoEnv -> m a
@@ -140,16 +139,7 @@ runBackupRepoT m env = flip runReaderT env $ _unBackupRepoT m
 
 deriving via (TheLevelDBBackupCache (BackupRepoT m)) instance (MonadIO m) => MonadBackupCache (BackupRepoT m)
 
-instance MonadUnliftIO m => BackupSt.MonadBackupStat (BackupRepoT m) where
-  processedFileCount = BackupRepoT . ReaderT $ \env -> pure $ backup_repo_processedFileCount env
-  totalFileCount = BackupRepoT . ReaderT $ \env -> pure $ backup_repo_totalFileCount env
-
-  processedDirCount = BackupRepoT . ReaderT $ \env -> pure $ backup_repo_processedDirCount env
-  totalDirCount = BackupRepoT . ReaderT $ \env -> pure $ backup_repo_totalDirCount env
-
-  processedChunkCount = BackupRepoT . ReaderT $ \env -> pure $ backup_repo_processChunkCount env
-
-  uploadedBytes = BackupRepoT . ReaderT $ \env -> pure $ backup_repo_uploadedBytes env
+deriving via (TheTVarBackupStatistics (BackupRepoT m)) instance (MonadIO m) => MonadBackupStat (BackupRepoT m)
 
 deriving instance MonadUnliftIO m => MonadUnliftIO (C.Rename k m)
 deriving instance MonadUnliftIO m => MonadUnliftIO (C.Field k k' m)

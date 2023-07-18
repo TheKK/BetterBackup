@@ -13,7 +13,7 @@ import qualified System.Directory as D
 
 import Options.Applicative
 
-import qualified UnliftIO.STM as Un
+import UnliftIO (MonadUnliftIO)
 import qualified UnliftIO.Concurrent as Un
 import qualified UnliftIO.Async as Un
 import qualified UnliftIO.Exception as Un
@@ -51,6 +51,7 @@ import qualified Config
 import qualified Better.Repository as Repo
 import Better.Statistics.Backup (MonadBackupStat)
 import qualified Better.Statistics.Backup as BackupSt
+import qualified Better.Statistics.Backup.Default as BackupSt
 
 import qualified LocalCache
 import qualified Monad as M
@@ -138,7 +139,7 @@ parser_info_backup = info (helper <*> parser) infoMod
         liftIO (putStrLn "result:") >> report_backup_stat
         liftIO $ print v
 
-report_backup_stat :: (MonadBackupStat m, MonadIO m) => m ()
+report_backup_stat :: (MonadBackupStat m, MonadUnliftIO m) => m ()
 report_backup_stat = do
   process_file_count <- BackupSt.readStatistics BackupSt.processedFileCount
   total_file_count <- BackupSt.readStatistics BackupSt.totalFileCount
@@ -298,17 +299,12 @@ run_backup_repo_t_from_cwd m = do
   let repository = case Config.config_repoType config of
         Config.Local l -> Repo.localRepo $ Config.local_repo_path l
 
-  process_file_count <- Un.newTVarIO 0
-  total_file_count <- Un.newTVarIO 0
-  process_dir_count <- Un.newTVarIO 0
-  total_dir_count <- Un.newTVarIO 0
-  process_chunk_count <- Un.newTVarIO 0
-  uploaded_bytes <- Un.newTVarIO 0
-
   let
     try_removing p =
       void $ Un.tryJust (\e -> if IOE.isDoesNotExistError e then Just e else Nothing) $
         D.removeDirectoryRecursive p
+
+  statistics <- BackupSt.initStatistics
 
   -- Remove cur before using it to prevent dirty env.
   try_removing "cur"
@@ -322,12 +318,7 @@ run_backup_repo_t_from_cwd m = do
           cwd
           repository
           [Path.absdir|/tmp|]
-          process_file_count
-          total_file_count
-          process_dir_count
-          total_dir_count
-          process_chunk_count
-          uploaded_bytes
+          statistics
           prev
           cur
 
