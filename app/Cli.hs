@@ -322,7 +322,6 @@ run_hbkt_from_cwd m = do
           cwd
           repository
           [Path.absdir|/tmp|]
-          (pure ())
           process_file_count
           total_file_count
           process_dir_count

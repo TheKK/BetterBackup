@@ -79,12 +79,11 @@ newtype ReadonlyRepoT m a = ReadonlyRepoT { runReadonlyRepoT :: ReaderT Readonly
          (C.MonadReader
          (ReaderT ReadonlyRepoEnv m))))
 
-data Hbk m = MkHbk
+data Hbk = MkHbk
   { hbk_path :: Path Path.Abs Path.Dir
   , hbk_cwd :: Path Path.Abs Path.Dir
   , hbk_repo :: Repository
   , hbk_tmpdir :: Path Path.Abs Path.Dir
-  , what :: m ()
   , hbk_processedFileCount :: TVar Word64
   , hbk_processedDirCount :: TVar Word64
   , hbk_totalFileCount :: TVar Word64
@@ -96,7 +95,7 @@ data Hbk m = MkHbk
   }
   deriving (Generic)
 
-newtype HbkT m a = HbkT { _unHbkT :: ReaderT (Hbk (HbkT m)) m a }
+newtype HbkT m a = HbkT { _unHbkT :: ReaderT Hbk m a }
   deriving (Generic)
   deriving
     ( Functor
@@ -107,36 +106,36 @@ newtype HbkT m a = HbkT { _unHbkT :: ReaderT (Hbk (HbkT m)) m a }
     , MonadThrow
     , MonadMask
     , MonadUnliftIO
-    ) via (ReaderT (Hbk (HbkT m)) m)
+    ) via (ReaderT Hbk m)
   deriving
     ( MonadRepository
     ) via TheMonadRepository
          (C.Rename "hbk_repo"
          (C.Field "hbk_repo" ()
          (C.MonadReader
-         (ReaderT (Hbk (HbkT m)) m))))
+         (ReaderT Hbk m))))
   deriving
     ( MonadTmp
     ) via TheMonadTmp
          (C.Rename "hbk_tmpdir"
          (C.Field "hbk_tmpdir" ()
          (C.MonadReader
-         (ReaderT (Hbk (HbkT m)) m))))
+         (ReaderT Hbk m))))
   deriving
     ( C.HasSource "prev_db" LV.DB, C.HasReader "prev_db" LV.DB
     ) via C.Rename "hbk_previousBackupCache"
          (C.Field "hbk_previousBackupCache" ()
          (C.MonadReader
-         (ReaderT (Hbk (HbkT m)) m)))
+         (ReaderT Hbk m)))
   deriving
     ( C.HasSource "cur_db" LV.DB, C.HasReader "cur_db" LV.DB
     ) via C.Rename "hbk_currentBackupCache"
          (C.Field "hbk_currentBackupCache" ()
          (C.MonadReader
-         (ReaderT (Hbk (HbkT m)) m)))
+         (ReaderT Hbk m)))
 
 {-# INLINE runHbkT #-}
-runHbkT :: HbkT m a -> Hbk (HbkT m) -> m a
+runHbkT :: HbkT m a -> Hbk -> m a
 runHbkT m env = flip runReaderT env $ _unHbkT m
 
 deriving via (TheLevelDBBackupCache (HbkT m)) instance (MonadIO m) => MonadBackupCache (HbkT m)
