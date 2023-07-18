@@ -5,7 +5,6 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE DerivingVia #-}
-{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE QuasiQuotes #-}
@@ -63,8 +62,6 @@ import qualified Data.Set as Set
 import UnliftIO
 import qualified UnliftIO.IO.File as Un
 import qualified UnliftIO.Directory as Un
-import qualified UnliftIO.Concurrent as Un
-import qualified UnliftIO.Exception as Un
 
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
@@ -85,7 +82,7 @@ import Control.Monad.Catch (MonadCatch, MonadThrow, MonadMask, throwM, handleIf)
 
 import qualified Streamly.Data.Array as Array
 import qualified Streamly.Internal.Data.Array.Type as Array (byteLength)
-import qualified Streamly.Internal.Data.Array as Array (asPtrUnsafe, castUnsafe) 
+import qualified Streamly.Internal.Data.Array as Array (asPtrUnsafe, castUnsafe)
 import Streamly.Internal.System.IO (defaultChunkSize)
 
 import qualified Streamly.FileSystem.File as File
@@ -115,6 +112,9 @@ import Better.Repository.Class
 import qualified Better.Streamly.FileSystem.Chunker as Chunker
 import qualified Better.Streamly.FileSystem.Dir as Dir
 
+import Better.Repository.BackupCache.Class (MonadBackupCache)
+import qualified Better.Repository.BackupCache.Class as BackupCache
+
 import Better.Statistics.Backup (MonadBackupStat)
 import qualified Better.Statistics.Backup as BackupSt
 
@@ -125,7 +125,7 @@ data Repository = Repository
    { _repo_putFile :: Path Path.Rel Path.File -> F.Fold IO (Array.Array Word8) ()
    , _repo_removeFiles :: [Path Path.Rel Path.File] -> IO ()
    -- TODO File mode?
-   , _repo_createDirectory :: Path Path.Rel Path.Dir -> IO () 
+   , _repo_createDirectory :: Path Path.Rel Path.Dir -> IO ()
    , _repo_fileExists :: Path Path.Rel Path.File -> IO Bool
    , _repo_fileSize :: Path Path.Rel Path.File -> IO FileOffset
    , _repo_read :: Path Path.Rel Path.File -> S.Stream IO (Array.Array Word8)
@@ -140,7 +140,7 @@ data Version
   deriving (Show)
 
 data Tree
-  = Tree 
+  = Tree
   { tree_name :: {-# UNPACK #-} !T.Text
   , tree_sha :: {-# UNPACK #-} !(Digest SHA256)
   }
@@ -243,7 +243,7 @@ tryCatingVersion vid = do
   --   )
 
 localRepo :: Path Path.Abs Path.Dir -> Repository
-localRepo root = Repository 
+localRepo root = Repository
   (File.writeChunks . Path.fromAbsFile . (root </>))
   (mapM_ $ (handleIf isDoesNotExistError (const $ pure ())) . Un.removeFile . Path.fromAbsFile . (root </>))
   (flip P.createDirectory 700 . Path.fromAbsDir . (root </>))
@@ -320,7 +320,7 @@ addVersion v_id v_root = do
   ver_id_file_name <- Path.parseRelFile $ show v_id
   let f = folder_version </> ver_id_file_name
   putFileFold <- mkPutFileFold
-  liftIO $ 
+  liftIO $
     S.fromPure (Array.fromList $ BS.unpack $ TE.encodeUtf8 $ T.pack $ show v_root)
       & S.fold (putFileFold f)
 
@@ -403,8 +403,9 @@ instance ByteArrayAccess (ArrayBA Word8) where
 
 data UploadTask
   = UploadTree {-# UNPACK #-}  !(Digest SHA256) {-# UNPACK #-} !(Path Path.Abs Path.File)
-  | UploadFile {-# UNPACK #-}  !(Digest SHA256) {-# UNPACK #-} !(Path Path.Abs Path.File)
+  | UploadFile {-# UNPACK #-}  !(Digest SHA256) {-# UNPACK #-} !(Path Path.Abs Path.File) !(Path Path.Rel Path.File)
   | UploadChunk {-# UNPACK #-} !(Digest SHA256) [(Array.Array Word8)]
+  | FindNoChangeFile !(Digest SHA256) !(Path Path.Rel Path.File)
 
 tree_content :: Either (Path Path.Rel Path.File) (Path Path.Rel Path.Dir) -> Digest SHA256 -> BS.ByteString
 tree_content file_or_dir hash' =
@@ -433,7 +434,7 @@ collect_dir_and_file_statistics rel_tree_name = do
     & S.fold F.drain
   BackupSt.modifyStatistic' BackupSt.totalDirCount (+ 1)
 
-backup_dir :: (MonadTmp m, MonadCatch m, MonadUnliftIO m) => TBQueue UploadTask -> Path Path.Rel Path.Dir -> m (Digest SHA256)
+backup_dir :: (MonadBackupCache m, MonadTmp m, MonadMask m, MonadUnliftIO m) => TBQueue UploadTask -> Path Path.Rel Path.Dir -> m (Digest SHA256)
 backup_dir tbq rel_tree_name = withEmptyTmpFile $ \file_name' -> do
   (dir_hash, ()) <- Un.withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
     Dir.readEither rel_tree_name
@@ -442,26 +443,34 @@ backup_dir tbq rel_tree_name = withEmptyTmpFile $ \file_name' -> do
           sub_hash <- either (backup_file tbq . (rel_tree_name </>)) (backup_dir tbq . (rel_tree_name </>)) fod
           pure $ tree_content fod sub_hash
         )
-      & S.fold (F.tee hashByteStringFold (F.drainMapM $ liftIO . BC.hPutStr fd))
+      & S.fold (F.tee hashByteStringFold (F.drainMapM $ liftIO . BC.hPut fd))
 
   atomically $ writeTBQueue tbq $ UploadTree dir_hash file_name'
 
-  pure dir_hash 
+  pure dir_hash
 
-backup_file :: (MonadTmp m, MonadCatch m, MonadUnliftIO m) => TBQueue UploadTask -> Path Path.Rel Path.File -> m (Digest SHA256)
-backup_file tbq rel_file_name = withEmptyTmpFile $ \file_name' -> do
-  (file_hash, ()) <- Un.withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
-    Chunker.gearHash Chunker.defaultGearHashConfig (Path.fromRelFile rel_file_name)
-      & S.mapM (\(Chunker.Chunk b e) ->
-          S.unfold File.chunkReaderFromToWith (b, (e - 1), defaultChunkSize, (Path.fromRelFile rel_file_name))
-            & S.fold F.toList
-        )
-      & S.parMapM (S.ordered True . S.eager True . S.maxBuffer 5) (backup_chunk tbq)
-      & S.fold (F.tee hashByteStringFold (F.drainMapM $ liftIO . BC.hPutStr fd))
+backup_file :: (MonadBackupCache m, MonadTmp m, MonadMask m, MonadUnliftIO m) => TBQueue UploadTask -> Path Path.Rel Path.File -> m (Digest SHA256)
+backup_file tbq rel_file_name = do
+  st <- liftIO (P.getFileStatus $ Path.fromRelFile rel_file_name)
+  to_scan <- BackupCache.tryReadingCacheHash st
+  case to_scan of
+    Just cached_digest -> do
+      atomically $ writeTBQueue tbq $ FindNoChangeFile cached_digest rel_file_name
+      pure cached_digest
 
-  atomically $ writeTBQueue tbq $ UploadFile file_hash file_name'
+    Nothing -> withEmptyTmpFile $ \file_name' -> do
+      (file_hash, ()) <- Un.withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
+        Chunker.gearHash Chunker.defaultGearHashConfig (Path.fromRelFile rel_file_name)
+          & S.mapM (\(Chunker.Chunk b e) ->
+              S.unfold File.chunkReaderFromToWith (b, (e - 1), defaultChunkSize, (Path.fromRelFile rel_file_name))
+                & S.fold F.toList
+            )
+          & S.parMapM (S.ordered True . S.eager True . S.maxBuffer 5) (backup_chunk tbq)
+          & S.fold (F.tee hashByteStringFold (F.drainMapM $ liftIO . BC.hPut fd))
 
-  pure file_hash
+      atomically $ writeTBQueue tbq $ UploadFile file_hash file_name' rel_file_name
+
+      pure file_hash
 
 {-# INLINE backup_chunk #-}
 backup_chunk :: (MonadUnliftIO m)
@@ -471,7 +480,7 @@ backup_chunk tbq chunk = do
   atomically $ writeTBQueue tbq $ UploadChunk chunk_hash chunk
   pure $! d2b chunk_hash `BS.snoc` 0x0a
 
-backup :: (MonadBackupStat m, MonadRepository m, MonadTmp m, MonadCatch m, MonadUnliftIO m)
+backup :: (MonadBackupCache m, MonadBackupStat m, MonadRepository m, MonadTmp m, MonadMask m, MonadUnliftIO m)
        => T.Text -> m Version
 backup dir = do
   let
@@ -491,7 +500,7 @@ backup dir = do
   (root_hash, _) <-
     withAsync (collect_dir_and_file_statistics rel_dir) $ \stat_collector ->
     withEmitUnfoldr 10 (\tbq -> backup_dir tbq rel_dir <* wait stat_collector)
-    $ (\s -> s 
+    $ (\s -> s
          & S.parMapM (S.maxBuffer 10 . S.eager True) (\case
            UploadTree dir_hash file_name' -> do
              unique_tree_gate dir_hash $ do
@@ -499,11 +508,18 @@ backup dir = do
                `finally` Un.removeFile (Path.fromAbsFile file_name')
              BackupSt.modifyStatistic' BackupSt.processedDirCount (+ 1)
 
-           UploadFile file_hash file_name' -> do
+           UploadFile file_hash file_name' rel_file_name -> do
              unique_file_gate file_hash $ do
                addFile' file_hash (File.readChunks (Path.fromAbsFile file_name'))
                `finally` Un.removeFile (Path.fromAbsFile file_name')
              BackupSt.modifyStatistic' BackupSt.processedFileCount (+ 1)
+             st <- liftIO $ P.getFileStatus $ Path.fromRelFile rel_file_name
+             BackupCache.saveCurrentFileHash st file_hash
+
+           FindNoChangeFile file_hash rel_file_name -> do
+             BackupSt.modifyStatistic' BackupSt.processedFileCount (+ 1)
+             st <- liftIO $ P.getFileStatus $ Path.fromRelFile rel_file_name
+             BackupCache.saveCurrentFileHash st file_hash
 
            UploadChunk chunk_hash chunk -> do
              unique_chunk_gate chunk_hash $ do
@@ -521,7 +537,7 @@ backup dir = do
 
 checksum :: (MonadThrow m, MonadUnliftIO m, MonadRepository m) => Int -> m ()
 checksum n = do
-  S.fromList [folder_tree, folder_file, folder_chunk] 
+  S.fromList [folder_tree, folder_file, folder_chunk]
     & S.concatMap (\p ->
       listFolderFiles p
         & fmap (\f -> (Path.fromRelFile f, p </> f))
@@ -554,12 +570,12 @@ garbageCollection = gc_tree >> gc_file >> gc_chunk
       traverse_set <- newIORef all_tree_file_set
       to_set <- newIORef Set.empty
 
-      listVersions 
+      listVersions
         & fmap (ver_root)
         & S.fold (F.drainMapM $ \sha -> modifyIORef' to_set (Set.insert sha))
 
       fix $ \(~cont) -> do
-        to <- readIORef to_set 
+        to <- readIORef to_set
         case Set.lookupMin to of
           Nothing -> pure ()
           Just e -> do
