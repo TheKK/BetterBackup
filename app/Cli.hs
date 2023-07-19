@@ -309,9 +309,11 @@ run_backup_repo_t_from_cwd m = do
   -- Remove cur before using it to prevent dirty env.
   try_removing "cur"
 
-  ret <- (`Un.onException` try_removing "cur") $
+  ret <-
     LV.withDB "prev" (LV.defaultOptions {LV.createIfMissing = True}) $ \prev ->
     LV.withDB "cur" (LV.defaultOptions {LV.createIfMissing = True, LV.errorIfExists = True}) $ \cur ->
+    -- Remove cur if failed to backup and keep prev intact.
+    (`Un.onException` try_removing "cur") $ do
       M.runBackupRepoT m $
         M.BackupRepoEnv
           [Path.absdir|/tmp|]
@@ -321,8 +323,6 @@ run_backup_repo_t_from_cwd m = do
           statistics
           prev
           cur
-
-  -- TODO Remove cur on error/exception
 
   try_removing "prev_bac"
   D.renameDirectory "prev" "prev.bac"
