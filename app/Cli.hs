@@ -9,6 +9,7 @@ module Cli
 
 import qualified System.IO.Error as IOE
 import qualified System.Posix.Directory as P
+import qualified System.Posix.Process as P
 import qualified System.Directory as D
 
 import Options.Applicative
@@ -17,6 +18,7 @@ import UnliftIO (MonadUnliftIO)
 import qualified UnliftIO.Concurrent as Un
 import qualified UnliftIO.Async as Un
 import qualified UnliftIO.Exception as Un
+import qualified UnliftIO.Temporary as Un
 
 import Control.Monad (forever, void)
 import Control.Monad.Reader (runReaderT)
@@ -304,6 +306,7 @@ run_backup_repo_t_from_cwd m = do
       void $ Un.tryJust (\e -> if IOE.isDoesNotExistError e then Just e else Nothing) $
         D.removeDirectoryRecursive p
 
+  pid <- P.getProcessID
   statistics <- BackupSt.initStatistics
 
   -- Remove cur before using it to prevent dirty env.
@@ -314,12 +317,14 @@ run_backup_repo_t_from_cwd m = do
     LV.withDB "cur" (LV.defaultOptions {LV.createIfMissing = True, LV.errorIfExists = True}) $ \cur ->
     -- Remove cur if failed to backup and keep prev intact.
     (`Un.onException` try_removing "cur") $ do
+    Un.withSystemTempDirectory ("better-tmp-" <> show pid <> "-") $ \raw_tmp_dir -> do
+      abs_tmp_dir <- Path.parseAbsDir raw_tmp_dir
       M.runBackupRepoT m $
         M.BackupRepoEnv
-          [Path.absdir|/tmp|]
+          abs_tmp_dir
           cwd
           repository
-          [Path.absdir|/tmp|]
+          abs_tmp_dir
           statistics
           prev
           cur
