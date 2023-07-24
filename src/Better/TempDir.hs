@@ -41,14 +41,14 @@ runTheMonadTmp (TheMonadTmp m) = m
 
 instance (C.HasReader "tmp_dir" (Path Path.Abs Path.Dir) m, MonadUnliftIO m) => MonadTmp (TheMonadTmp m) where
   withEmptyTmpFile run = TheMonadTmp $ do
-    tmp_dir <- C.ask @"tmp_dir" 
-    let p = tmp_dir </> [Path.relfile|file|]
-  
+    tmp_dir <- C.ask @"tmp_dir"
+    let p = tmp_dir </> [Path.relfile|file-|]
+
     bracketOnError
       (do
-        (filename, fd) <- liftIO $ P.mkstemp $ Path.fromAbsFile p
-        hClose fd
-        pure filename
+         (filename, fd) <- liftIO $ P.mkstemp $ Path.fromAbsFile p
+         hClose fd
+         pure filename
       )
       removeFile
       ((runTheMonadTmp . run) <=< (liftIO . Path.parseAbsFile))
