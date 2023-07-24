@@ -442,7 +442,7 @@ backup_dir tbq rel_tree_name = withEmptyTmpFile $ \file_name' -> do
   (dir_hash, ()) <- Un.withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
     Dir.readEither rel_tree_name
       -- TODO reduce memory/thread overhead
-      & S.parMapM (S.ordered True . S.maxBuffer 2) (\fod -> do
+      & S.parMapM (S.ordered True . S.eager True . S.maxBuffer 2) (\fod -> do
           sub_hash <- either (backup_file tbq . (rel_tree_name </>)) (backup_dir tbq . (rel_tree_name </>)) fod
           pure $ tree_content fod sub_hash
         )
