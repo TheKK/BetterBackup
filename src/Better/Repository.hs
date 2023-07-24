@@ -63,6 +63,8 @@ import UnliftIO
 import qualified UnliftIO.IO.File as Un
 import qualified UnliftIO.Directory as Un
 
+import qualified Ki.Unlifted as Ki
+
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import qualified Data.Text.Encoding as TE
@@ -497,11 +499,12 @@ backup dir = do
   unique_file_gate <- mk_uniq_gate
 
   rel_dir <- Path.parseRelDir $ T.unpack dir
-  (root_hash, _) <-
-    withAsync (collect_dir_and_file_statistics rel_dir) $ \stat_collector ->
-    withEmitUnfoldr 10 (\tbq -> backup_dir tbq rel_dir <* wait stat_collector)
-    $ (\s -> s
-         & S.parMapM (S.maxBuffer 10 . S.eager True) (\case
+
+  (root_hash, _) <- Ki.scoped $ \scope -> do
+    _ <- Ki.fork scope (collect_dir_and_file_statistics rel_dir)
+    ret <- withEmitUnfoldr 50 (\tbq -> backup_dir tbq rel_dir)
+      (\s -> s
+         & S.parMapM (S.maxBuffer 20 . S.eager True) (\case
            UploadTree dir_hash file_name' -> do
              unique_tree_gate dir_hash $ do
                addDir' dir_hash (File.readChunks (Path.fromAbsFile file_name'))
@@ -531,6 +534,9 @@ backup dir = do
          )
          & S.fold F.drain
       )
+    atomically $ Ki.awaitAll scope
+    pure ret
+
   version_id <- nextBackupVersionId
   addVersion version_id root_hash
   return $ Version version_id root_hash
@@ -670,16 +676,19 @@ withEmitUnfoldr :: MonadUnliftIO m => Natural -> (TBQueue e -> m a) -> (S.Stream
 withEmitUnfoldr q_size putter go = do
   tbq <- newTBQueueIO q_size
 
-  withAsync (putter tbq) $ \h -> do
-    let 
+  Ki.scoped $ \scope -> do
+    thread_putter <- Ki.fork scope $ putter tbq
+
+    let
       f = do
-        e <- atomically $ (Just <$> readTBQueue tbq) <|> (Nothing <$ waitSTM h)
+        e <- atomically $ (Just <$> readTBQueue tbq) <|> (Nothing <$ Ki.await thread_putter)
         case e of
           Just v -> pure (Just (v, ()))
           Nothing -> pure Nothing
 
-    link h
+    thread_solver <- Ki.fork scope $ go $ S.unfoldrM (\() -> f) ()
 
-    ret_b <- go $ S.unfoldrM (\() -> f) ()
-    ret_a <- wait h
-    pure (ret_a, ret_b)
+    ret_putter <- atomically $ Ki.await thread_putter
+    ret_solver <- atomically $ Ki.await thread_solver
+
+    pure (ret_putter, ret_solver)

@@ -14,9 +14,10 @@ import qualified System.Directory as D
 
 import Options.Applicative
 
+import qualified Ki.Unlifted as Ki
+
 import UnliftIO (MonadUnliftIO)
 import qualified UnliftIO.Concurrent as Un
-import qualified UnliftIO.Async as Un
 import qualified UnliftIO.Exception as Un
 import qualified UnliftIO.Temporary as Un
 
@@ -136,10 +137,12 @@ parser_info_backup = info (helper <*> parser) infoMod
           Un.mask_ $ report_backup_stat
           Un.threadDelay (1000 * 1000)
 
-      Un.withAsync process_reporter $ \_ -> do
-        v <- Repo.backup $ T.pack $ Path.fromSomeDir dir_to_backup
-        liftIO (putStrLn "result:") >> report_backup_stat
-        liftIO $ print v
+      v <- Ki.scoped $ \scope -> do
+        _ <- Ki.fork scope process_reporter
+        Repo.backup $ T.pack $ Path.fromSomeDir dir_to_backup
+
+      liftIO (putStrLn "result:") >> report_backup_stat
+      liftIO $ print v
 
 report_backup_stat :: (MonadBackupStat m, MonadUnliftIO m) => m ()
 report_backup_stat = do

@@ -15,7 +15,7 @@ import Data.ByteArray (ByteArrayAccess(..))
 import qualified Data.ByteString as BS
 
 import qualified Streamly.Data.Array as Array
-import qualified Streamly.Internal.Data.Array as Array (asPtrUnsafe, castUnsafe) 
+import qualified Streamly.Internal.Data.Array as Array (asPtrUnsafe, castUnsafe)
 import qualified Streamly.Data.Fold as F
 
 import Crypto.Hash
