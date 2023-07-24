@@ -21,7 +21,7 @@ import qualified UnliftIO.Concurrent as Un
 import qualified UnliftIO.Exception as Un
 import qualified UnliftIO.Temporary as Un
 
-import Control.Monad (forever, void)
+import Control.Monad (forever, void, replicateM_)
 import Control.Monad.Reader (runReaderT)
 import Control.Monad.Catch (MonadThrow())
 import Control.Monad.IO.Class (MonadIO(liftIO))
@@ -58,6 +58,7 @@ import qualified Better.Statistics.Backup.Default as BackupSt
 
 import qualified LocalCache
 import qualified Monad as M
+import qualified System.Directory as P
 
 -- TODO add ability to put trace markers
 -- TODO add ability to collect running statistics
@@ -324,8 +325,12 @@ run_backup_repo_t_from_cwd m = do
     LV.withDB "prev" (LV.defaultOptions {LV.createIfMissing = True}) $ \prev ->
     LV.withDB "cur" (LV.defaultOptions {LV.createIfMissing = True, LV.errorIfExists = True}) $ \cur ->
     -- Remove cur if failed to backup and keep prev intact.
-    (`Un.onException` try_removing "cur") $ do
-    Un.withSystemTempDirectory ("better-tmp-" <> show pid <> "-") $ \raw_tmp_dir -> do
+    (`Un.onException` try_removing "cur") $
+    Un.withSystemTempDirectory ("better-tmp-" <> show pid <> "-") $ \raw_tmp_dir ->
+    -- XXX Streamly does LEAK thread so it's possible for removing raw_tmp_dirand
+    -- and creating tmp file run concurrently when process is canceled by async exception. So try
+    -- removing it 10 times and hope it works for now as workaround.
+    (`Un.finally` (replicateM_ 10 (P.removeDirectoryRecursive raw_tmp_dir) `Un.catchAny` print)) $ do
       abs_tmp_dir <- Path.parseAbsDir raw_tmp_dir
       M.runBackupRepoT m $
         M.BackupRepoEnv
