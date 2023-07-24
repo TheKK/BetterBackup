@@ -1,14 +1,11 @@
 {-# LANGUAGE Strict #-}
-{-# LANGUAGE TypeApplications #-}
 
 module Better.Streamly.FileSystem.Chunker
   ( Chunk(..)
   , GearHashConfig
   , defaultGearHashConfig
-  , gearHash 
+  , gearHash
   ) where
-
-import Control.Monad.Catch (MonadCatch)
 
 import qualified Data.Bits as Bits
 import Data.Function (fix)
@@ -17,8 +14,6 @@ import qualified Data.Vector.Unboxed as UV
 
 import qualified System.Random as Rng
 import qualified System.Random.SplitMix as Rng
-
-import UnliftIO (MonadUnliftIO, MonadIO(liftIO))
 
 import Streamly.Internal.System.IO (defaultChunkSize)
 import qualified Streamly.Data.MutArray as MA
@@ -52,8 +47,7 @@ defaultGearHashConfig = GearHashConfig
   }
 
 {-# INLINE gearHash #-}
-gearHash :: (MonadUnliftIO m, MonadCatch m)
-          => GearHashConfig -> FilePath -> S.Stream m Chunk
+gearHash :: GearHashConfig -> FilePath -> S.Stream IO Chunk
 gearHash (GearHashConfig mask) file = File.withFile file ReadMode $ \h ->
   (S.bracket (MA.newPinnedBytes defaultChunkSize) (const $ pure ())
     $ \arr -> S.Stream step (h, 0, 0, 0, arr)
@@ -61,7 +55,8 @@ gearHash (GearHashConfig mask) file = File.withFile file ReadMode $ \h ->
   where
     -- WARN st might be `undefined` therefore we'd like to keep it lazy here.
     {-# INLINE[0] step #-}
-    step ~st (h, last_hash, chunk_begin', read_bytes, arr') = do
+    step :: st -> (Handle, Word64, Int, Int, MA.MutArray Word8) -> IO (S.Step (Handle, Word64, Int, Int, MA.MutArray Word8) Chunk)
+    step ~_ (h, last_hash, chunk_begin', read_bytes, arr') = do
       arr <- if MA.byteLength arr' == 0
         then unsafe_refill_mutarray arr' h
         else pure arr'
@@ -90,7 +85,7 @@ gearHash (GearHashConfig mask) file = File.withFile file ReadMode $ \h ->
            case breakpoint_offset_and_hash of
              -- No breakpoing was found in arr, try next block
              (Nothing, new_gear) -> do
-               step st
+               pure $ S.Skip
                  ( h
                  , new_gear
                  , chunk_begin'
@@ -124,7 +119,7 @@ gear_hash_update w64 w8
 
 -- Unsafe: input MutArray shouldn't be used anymore outside of this function.
 {-# INLINE unsafe_refill_mutarray #-}
-unsafe_refill_mutarray :: MonadIO m => MA.MutArray Word8 -> Handle -> m (MA.MutArray Word8)
+unsafe_refill_mutarray :: MA.MutArray Word8 -> Handle -> IO (MA.MutArray Word8)
 unsafe_refill_mutarray arr h = MA.asPtrUnsafe (arr { MA.arrStart = 0 }) $ \p -> do
-  n <- liftIO $ hGetBufSome h p (MA.arrBound arr)
+  n <- hGetBufSome h p (MA.arrBound arr)
   return $ arr { MA.arrStart = 0, MA.arrEnd = n }

@@ -460,18 +460,17 @@ backup_file tbq rel_file_name = do
       atomically $ writeTBQueue tbq $ FindNoChangeFile cached_digest rel_file_name
       pure cached_digest
 
-    Nothing -> withEmptyTmpFile $ \file_name' -> do
-      (file_hash, ()) <- Un.withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
+    Nothing -> withEmptyTmpFile $ \file_name' -> liftIO $ do
+      (file_hash, _) <- Un.withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd ->
         Chunker.gearHash Chunker.defaultGearHashConfig (Path.fromRelFile rel_file_name)
-          & S.mapM (\(Chunker.Chunk b e) ->
+          & S.parMapM (S.ordered True . S.eager True . S.maxBuffer 10) (\(Chunker.Chunk b e) -> do
               S.unfold File.chunkReaderFromToWith (b, (e - 1), defaultChunkSize, (Path.fromRelFile rel_file_name))
                 & S.fold F.toList
             )
-          & S.parMapM (S.ordered True . S.eager True . S.maxBuffer 5) (backup_chunk tbq)
-          & S.fold (F.tee hashByteStringFold (F.drainMapM $ liftIO . BC.hPut fd))
+          & S.parMapM (S.ordered True . S.eager True . S.maxBuffer 7) (backup_chunk tbq)
+          & S.fold (F.tee hashByteStringFold (F.drainMapM $ BC.hPut fd))
 
       atomically $ writeTBQueue tbq $ UploadFile file_hash file_name' rel_file_name
-
       pure file_hash
 
 {-# INLINE backup_chunk #-}
