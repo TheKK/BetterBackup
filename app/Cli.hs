@@ -216,8 +216,13 @@ parser_info_cat_file = info (helper <*> parser) infoMod
 
     go sha = run_readonly_repo_t_from_cwd $ do
       Repo.catFile sha
-        & S.concatMap (Repo.catChunk . Repo.chunk_name)
-        & S.fold (Stdio.writeChunks)
+        -- Use parConcatMap to open multiple chunk files concurrently.
+        -- This allow us to read from catFile and open chunk file ahead of time before catual writing.
+        & S.parConcatMap (S.eager True . S.ordered True . S.maxBuffer (6 * 3)) (Repo.catChunk . Repo.chunk_name)
+        -- Use parEval to read from chunks concurrently.
+        -- Since read is often faster than write, using parEval with buffer should reduce running time.
+        & S.parEval (S.maxBuffer 30)
+        & S.fold Stdio.writeChunks
 
 parser_info_cat_file_chunks :: ParserInfo (IO ())
 parser_info_cat_file_chunks = info (helper <*> parser) infoMod
