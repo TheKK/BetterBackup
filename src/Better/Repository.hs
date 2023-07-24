@@ -421,11 +421,9 @@ tree_content file_or_dir hash' =
   where
     file_name' :: Path r Path.File -> BS.ByteString
     file_name' = BS.toStrict . BB.toLazyByteString . BB.stringUtf8 . Path.toFilePath . Path.filename
-    {-# INLINE file_name' #-}
 
     dir_name' :: Path r Path.Dir -> BS.ByteString
     dir_name' = BS.toStrict . BB.toLazyByteString . BB.stringUtf8 . init . Path.toFilePath . Path.dirname
-    {-# INLINE dir_name' #-}
 
 collect_dir_and_file_statistics
   :: (MonadBackupStat m, MonadCatch m, MonadUnliftIO m)
@@ -482,6 +480,7 @@ backup_chunk tbq chunk = do
   atomically $ writeTBQueue tbq $ UploadChunk chunk_hash chunk
   pure $! d2b chunk_hash `BS.snoc` 0x0a
 
+{-# INLINEABLE backup #-}
 backup :: (MonadBackupCache m, MonadBackupStat m, MonadRepository m, MonadTmp m, MonadMask m, MonadUnliftIO m)
        => T.Text -> m Version
 backup dir = do
@@ -670,7 +669,6 @@ t2d sha = do
 
 d2b :: Digest SHA256 -> BS.ByteString
 d2b = BA.convertToBase BA.Base16
-{-# INLINE d2b #-}
 
 withEmitUnfoldr :: MonadUnliftIO m => Natural -> (TBQueue e -> m a) -> (S.Stream m e -> m b) -> m (a, b)
 withEmitUnfoldr q_size putter go = do

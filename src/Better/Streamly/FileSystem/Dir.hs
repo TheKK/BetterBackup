@@ -30,16 +30,17 @@ import qualified Path
 import Control.Monad.IO.Class
 
 read :: (MonadIO m, MonadCatch m)
-     => Path rel_or_abs Path.Dir -> S.Stream m FilePath 
+     => Path rel_or_abs Path.Dir -> S.Stream m FilePath
 read = S.unfold reader
 {-# INLINE read #-}
 
 readFile :: (MonadIO m, MonadCatch m)
        => Path rel_or_abs Path.Dir -> S.Stream m (Path Path.Rel Path.File)
 readFile = S.unfold fileReader
+{-# INLINE readFile #-}
 
 readEither :: (MonadIO m, MonadCatch m)
-           => (Path rel_or_abs Path.Dir) -> S.Stream m (Either (Path Path.Rel Path.File) (Path Path.Rel Path.Dir)) 
+           => (Path rel_or_abs Path.Dir) -> S.Stream m (Either (Path Path.Rel Path.File) (Path Path.Rel Path.Dir))
 readEither = S.unfold eitherReader
 {-# INLINE readEither #-}
 
@@ -64,6 +65,7 @@ eitherReader :: (MonadIO m, MonadCatch m)
              => UF.Unfold m (Path rel_or_abs Path.Dir) (Either (Path Path.Rel Path.File) (Path Path.Rel Path.Dir))
 eitherReader = UF.mapM2 f reader
   where
+    {-# INLINE[0] f #-}
     f dir filepath = liftIO $ do
       filepath' <- Path.parseRelFile filepath
       isDir <- fmap P.isDirectory $ P.getFileStatus $ Path.toFilePath $ dir </> filepath'
