@@ -82,6 +82,8 @@ import Control.Applicative ((<|>))
 import Control.Monad
 import Control.Monad.Catch (MonadCatch, MonadThrow, MonadMask, throwM, handleIf)
 
+import Data.Functor.Identity
+
 import qualified Streamly.Data.Array as Array
 import qualified Streamly.Internal.Data.Array.Type as Array (byteLength)
 import qualified Streamly.Internal.Data.Array as Array (asPtrUnsafe, castUnsafe)
@@ -336,9 +338,10 @@ nextBackupVersionId = do
 cat_stuff_under :: (Show a, MonadThrow m, MonadIO m, MonadRepository m)
                 => Path Path.Rel Path.Dir -> a -> S.Stream m (Array.Array Word8)
 cat_stuff_under folder stuff = S.concatEffect $ do
-  stuff_path <- Path.parseRelFile $ show stuff
   read_blob <- mkRead
-  pure $ read_blob (folder </> stuff_path)
+  liftIO $ do
+    stuff_path <- Path.parseRelFile $ show stuff
+    pure $ read_blob (folder </> stuff_path)
 {-# INLINE cat_stuff_under #-}
 
 catFile :: (MonadThrow m, MonadIO m, MonadRepository m) => Digest SHA256 -> S.Stream m Object
@@ -445,7 +448,7 @@ backup_dir tbq rel_tree_name = withEmptyTmpFile $ \file_name' -> do
           sub_hash <- either (backup_file tbq . (rel_tree_name </>)) (backup_dir tbq . (rel_tree_name </>)) fod
           pure $ tree_content fod sub_hash
         )
-      & S.fold (F.tee hashByteStringFold (F.drainMapM $ liftIO . BC.hPut fd))
+      & S.fold (F.tee hashByteStringFold (F.morphInner liftIO $ F.drainMapM $ BC.hPut fd))
 
   atomically $ writeTBQueue tbq $ UploadTree dir_hash file_name'
 
@@ -473,11 +476,9 @@ backup_file tbq rel_file_name = do
       atomically $ writeTBQueue tbq $ UploadFile file_hash file_name' rel_file_name
       pure file_hash
 
-{-# INLINE backup_chunk #-}
-backup_chunk :: (MonadUnliftIO m)
-             => TBQueue UploadTask -> [Array.Array Word8] -> m (UTF8.ByteString)
+backup_chunk :: TBQueue UploadTask -> [Array.Array Word8] -> IO (UTF8.ByteString)
 backup_chunk tbq chunk = do
-  chunk_hash <- S.fromList chunk & S.fold hashArrayFold
+  let chunk_hash = runIdentity (S.fromList chunk & S.fold hashArrayFold)
   atomically $ writeTBQueue tbq $ UploadChunk chunk_hash chunk
   pure $! d2b chunk_hash `BS.snoc` 0x0a
 
