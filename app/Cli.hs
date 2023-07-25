@@ -53,6 +53,7 @@ import Config (Config(..))
 import qualified Config
 
 import qualified Better.Repository as Repo
+import qualified Better.Repository.Backup as Repo
 import Better.Statistics.Backup (MonadBackupStat)
 import qualified Better.Statistics.Backup as BackupSt
 import qualified Better.Statistics.Backup.Default as BackupSt

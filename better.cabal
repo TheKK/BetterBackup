@@ -68,9 +68,12 @@ common deps
 library better-core
     import:           warnings, deps
     exposed-modules:
+      Better.Internal.Repository
       Better.Streamly.FileSystem.Dir
       Better.Streamly.FileSystem.Chunker
       Better.Repository
+      Better.Repository.Types
+      Better.Repository.Backup
       Better.Repository.Class
       Better.Repository.BackupCache.Class
       Better.Repository.BackupCache.LevelDB
