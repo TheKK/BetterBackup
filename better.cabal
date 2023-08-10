@@ -56,12 +56,14 @@ flag plugin
 
 common warnings
     ghc-options:
+      -feager-blackholing
       -Wall
       -fllvm
       -eventlog
       -threaded
       -rtsopts
       -fdicts-strict
+      -flate-specialise
       -fmax-worker-args=16
       -fspec-constr-recursive=16
     if flag(plugin)
