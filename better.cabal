@@ -50,6 +50,10 @@ extra-doc-files:    CHANGELOG.md
 -- Extra source files to be distributed with the package, such as examples, or a tutorial module.
 -- extra-source-files:
 
+flag plugin
+  default: True
+  Manual: False
+
 common warnings
     ghc-options:
       -Wall
@@ -60,7 +64,8 @@ common warnings
       -fdicts-strict
       -fmax-worker-args=16
       -fspec-constr-recursive=16
-      -fplugin=Fusion.Plugin
+    if flag(plugin)
+      ghc-options: -fplugin=Fusion.Plugin
 
 common deps
     build-depends:    base ^>=4.16, text, streamly, streamly-core, containers, unix, time, stm, unliftio, unliftio-core, fusion-plugin, memory, crypton, bytestring, capability, exceptions, base16-bytestring, katip, path, mtl, utf8-string, directory
