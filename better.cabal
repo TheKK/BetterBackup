@@ -107,6 +107,8 @@ executable ff
     main-is:          Main.hs
     other-modules:
       Cli
+      Cli.Ref
+      Cli.Ref.Cat
       Config
       LocalCache
       Monad

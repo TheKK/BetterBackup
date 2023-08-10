@@ -1,3 +1,4 @@
+
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE QuasiQuotes #-}
@@ -41,7 +42,6 @@ import qualified Data.ByteString.Base16 as BSBase16
 
 import qualified Streamly.Data.Stream.Prelude as S
 import qualified Streamly.Data.Fold as F
-import qualified Streamly.FileSystem.File as File
 import qualified Streamly.Console.Stdio as Stdio
 
 import qualified Database.LevelDB.Base as LV
@@ -61,6 +61,7 @@ import qualified Better.Statistics.Backup.Default as BackupSt
 import qualified LocalCache
 import qualified Monad as M
 import qualified System.Directory as P
+import qualified Cli.Ref as Ref
 
 -- TODO add ability to put trace markers
 -- TODO add ability to collect running statistics
@@ -81,19 +82,8 @@ cmds = info (helper <*> parser) infoMod
       , (command "cat-file" parser_info_cat_file)
       , (command "cat-file-chunks" parser_info_cat_file_chunks)
       , (command "cat-tree" parser_info_cat_tree)
-      , (command "ref-cat" parser_info_ref_cat)
+      , (command "ref" Ref.cmds)
       ]
-
-parser_info_ref_cat :: ParserInfo (IO ())
-parser_info_ref_cat = info (helper <*> parser) infoMod
-  where
-    infoMod = fold
-      [ progDesc "Reference of cat command to test maximum speed of Haskell code"
-      ]
-
-    parser = go <$> argument str (fold [])
-
-    go path = File.readChunks path & S.fold Stdio.writeChunks
 
 parser_info_init :: ParserInfo (IO ())
 parser_info_init = info (helper <*> parser) infoMod
