@@ -10,6 +10,8 @@ import Data.Foldable (for_)
 import Data.Function ((&))
 import Data.Word (Word64)
 
+import qualified Path
+
 import qualified Streamly.Data.Fold as F
 import qualified Streamly.Data.Stream.Prelude as S
 
@@ -19,6 +21,11 @@ import qualified Data.ByteString as BS
 
 import Better.Internal.Streamly.Crypto.AES (compact, decryptCtr, encryptCtr, that_aes, unsafeEncryptCtr)
 import Better.Streamly.FileSystem.Chunker (defaultGearHashConfig, gearHash)
+import qualified Better.Streamly.FileSystem.Chunker as Chunker
+import qualified Streamly.Internal.FileSystem.File as File
+import qualified Streamly.Internal.FileSystem.Handle as Handle
+import Streamly.Internal.System.IO (defaultChunkSize)
+import System.IO (IOMode (ReadMode), withFile)
 
 -- 50 MiB
 input :: [BS.ByteString]
@@ -35,6 +42,33 @@ main =
                   gearHash defaultGearHashConfig file'
                     & S.mapM (\(!a) -> pure a)
                     & S.fold F.drain
+              )
+              file
+        , bench "gear-then-read-with-file" $
+            whnfAppIO
+              ( \file' ->
+                  gearHash defaultGearHashConfig file'
+                    & S.mapM
+                      ( \(Chunker.Chunk b e) -> do
+                          S.unfold File.chunkReaderFromToWith (b, e - 1, defaultChunkSize, file')
+                            & S.fold F.toList
+                      )
+                    & S.mapM (\(!a) -> pure a)
+                    & S.fold F.drain
+              )
+              file
+        , bench "gear-then-read-with-fd" $
+            whnfAppIO
+              ( \file' ->
+                  withFile file' ReadMode $ \fp -> do
+                    gearHash defaultGearHashConfig file'
+                      & S.mapM
+                        ( \(Chunker.Chunk b e) -> do
+                            S.unfold Handle.chunkReaderFromToWith (b, e - 1, defaultChunkSize, fp)
+                              & S.fold F.toList
+                        )
+                      & S.mapM (\(!a) -> pure a)
+                      & S.fold F.drain
               )
               file
         ]
