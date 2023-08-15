@@ -1,19 +1,33 @@
-
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE Strict #-}
+{-# LANGUAGE TypeApplications #-}
 
-module Cli
-  ( cmds
-  ) where
+module Cli (
+  cmds,
+) where
 
+import Control.Parallel (par)
+
+import qualified System.Directory as D
 import qualified System.IO.Error as IOE
 import qualified System.Posix.Directory as P
 import qualified System.Posix.Process as P
-import qualified System.Directory as D
 
-import Options.Applicative
+import Options.Applicative (
+  Parser,
+  ParserInfo,
+  ReadM,
+  argument,
+  command,
+  eitherReader,
+  help,
+  helper,
+  info,
+  metavar,
+  progDesc,
+  subparser,
+ )
 
 import qualified Ki.Unlifted as Ki
 
@@ -22,34 +36,34 @@ import qualified UnliftIO.Concurrent as Un
 import qualified UnliftIO.Exception as Un
 import qualified UnliftIO.Temporary as Un
 
-import Control.Monad (forever, void, replicateM_)
+import Control.Exception (Exception (displayException))
+import Control.Monad (forever, replicateM_, void)
+import Control.Monad.IO.Class (MonadIO (liftIO))
 import Control.Monad.Reader (runReaderT)
-import Control.Monad.Catch (MonadThrow())
-import Control.Monad.IO.Class (MonadIO(liftIO))
-import Control.Exception (Exception(displayException))
 
 import Crypto.Hash (Digest, SHA256, digestFromByteString)
 
-import Data.String (fromString)
-import Data.Foldable
-import Data.Function ((&))
 import Data.Bifunctor (first)
+import Data.Foldable (Foldable (fold))
+import Data.Function ((&))
+import Data.String (fromString)
 
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 
 import qualified Data.ByteString.Base16 as BSBase16
 
-import qualified Streamly.Data.Stream.Prelude as S
 import qualified Streamly.Data.Fold as F
+import qualified Streamly.Data.Stream.Prelude as S
+
 import qualified Streamly.Console.Stdio as Stdio
 
 import qualified Database.LevelDB.Base as LV
 
-import Path (Path, Abs, Dir)
+import Path (Abs, Dir, Path)
 import qualified Path
 
-import Config (Config(..))
+import Config (Config (..))
 import qualified Config
 
 import qualified Better.Repository as Repo
@@ -58,88 +72,107 @@ import Better.Statistics.Backup (MonadBackupStat)
 import qualified Better.Statistics.Backup as BackupSt
 import qualified Better.Statistics.Backup.Default as BackupSt
 
+import qualified Cli.Ref as Ref
 import qualified LocalCache
 import qualified Monad as M
 import qualified System.Directory as P
-import qualified Cli.Ref as Ref
 
 -- TODO add ability to put trace markers
 -- TODO add ability to collect running statistics
 cmds :: ParserInfo (IO ())
 cmds = info (helper <*> parser) infoMod
   where
-    infoMod = fold
-      [ progDesc "Better operations"
-      ]
+    infoMod =
+      fold
+        [ progDesc "Better operations"
+        ]
 
-    parser = subparser $ fold
-      [ (command "init" parser_info_init)
-      , (command "versions" parser_info_versions)
-      , (command "backup" parser_info_backup)
-      , (command "gc" parser_info_gc)
-      , (command "integrity-check" parser_info_integrity_check)
-      , (command "cat-chunk" parser_info_cat_chunk)
-      , (command "cat-file" parser_info_cat_file)
-      , (command "cat-file-chunks" parser_info_cat_file_chunks)
-      , (command "cat-tree" parser_info_cat_tree)
-      , (command "ref" Ref.cmds)
-      ]
+    parser =
+      subparser $
+        fold
+          [ command "init" parser_info_init
+          , command "versions" parser_info_versions
+          , command "backup" parser_info_backup
+          , command "gc" parser_info_gc
+          , command "integrity-check" parser_info_integrity_check
+          , command "cat-chunk" parser_info_cat_chunk
+          , command "cat-file" parser_info_cat_file
+          , command "cat-file-chunks" parser_info_cat_file_chunks
+          , command "cat-tree" parser_info_cat_tree
+          , command "ref" Ref.cmds
+          ]
 
 parser_info_init :: ParserInfo (IO ())
 parser_info_init = info (helper <*> parser) infoMod
   where
-    infoMod = fold
-      [ progDesc "Initialize repository"
-      ]
+    infoMod =
+      fold
+        [ progDesc "Initialize repository"
+        ]
 
-    parser = subparser $ fold
-      [ command "local" parser_info_init_local
-      ]
+    parser =
+      subparser $
+        fold
+          [ command "local" parser_info_init_local
+          ]
 
 parser_info_init_local :: ParserInfo (IO ())
 parser_info_init_local = info (helper <*> parser) infoMod
   where
-    infoMod = fold
-      [ progDesc "Initialize with local repository"
-      ]
+    infoMod =
+      fold
+        [ progDesc "Initialize with local repository"
+        ]
 
-    parser = LocalCache.initialize
-      <$> argument some_base_dir_read (fold
-            [ metavar "CACHE_PATH"
-            , help "path to store your local cache"
-            ])
-      <*> (Config <$> p_local_repo_config)
+    parser =
+      LocalCache.initialize
+        <$> argument
+          some_base_dir_read
+          ( fold
+              [ metavar "CACHE_PATH"
+              , help "path to store your local cache"
+              ]
+          )
+        <*> (Config <$> p_local_repo_config)
 
 parser_info_versions :: ParserInfo (IO ())
 parser_info_versions = info (helper <*> parser) infoMod
   where
-    infoMod = fold
-      [ progDesc "List backuped versions"
-      ]
+    infoMod =
+      fold
+        [ progDesc "List backuped versions"
+        ]
 
     parser = pure go
 
-    go = run_readonly_repo_t_from_cwd $ do
-      Repo.listVersions
-        & S.fold (F.drainMapM $ liftIO . print)
+    {-# NOINLINE go #-}
+    go =
+      run_readonly_repo_t_from_cwd $
+        Repo.listVersions
+          & S.fold (F.drainMapM $ liftIO . print)
 
 parser_info_backup :: ParserInfo (IO ())
 parser_info_backup = info (helper <*> parser) infoMod
   where
-    infoMod = fold
-      [ progDesc "Construct new version"
-      ]
+    infoMod =
+      fold
+        [ progDesc "Construct new version"
+        ]
 
-    parser = go
-      <$> argument some_base_dir_read (fold
-            [ metavar "BACKUP_ROOT"
-            , help "directory you'd like to backup"
-            ])
+    parser =
+      go
+        <$> argument
+          some_base_dir_read
+          ( fold
+              [ metavar "BACKUP_ROOT"
+              , help "directory you'd like to backup"
+              ]
+          )
 
     go dir_to_backup = run_backup_repo_t_from_cwd $ do
       let
         process_reporter = forever $ do
-          Un.mask_ $ report_backup_stat
+          Un.mask_ report_backup_stat
           Un.threadDelay (1000 * 1000)
 
       v <- Ki.scoped $ \scope -> do
@@ -157,118 +190,155 @@ report_backup_stat = do
   total_dir_count <- BackupSt.readStatistics BackupSt.totalDirCount
   process_chunk_count <- BackupSt.readStatistics BackupSt.processedChunkCount
   upload_bytes <- BackupSt.readStatistics BackupSt.uploadedBytes
-  liftIO $ putStrLn $ fold
-    [ show process_file_count, "/", show total_file_count, " files, "
-    , show process_dir_count, "/", show total_dir_count, " dirs, "
-    , show process_chunk_count, " chunks, "
-    , show upload_bytes, " bytes"
-    ]
+  liftIO $
+    putStrLn $
+      fold
+        [ show process_file_count
+        , "/"
+        , show total_file_count
+        , " files, "
+        , show process_dir_count
+        , "/"
+        , show total_dir_count
+        , " dirs, "
+        , show process_chunk_count
+        , " chunks, "
+        , show upload_bytes
+        , " bytes"
+        ]
 
 parser_info_gc :: ParserInfo (IO ())
 parser_info_gc = info (helper <*> parser) infoMod
   where
-    infoMod = fold
-      [ progDesc "Running garbage collection to release unused data"
-      ]
+    infoMod =
+      fold
+        [ progDesc "Running garbage collection to release unused data"
+        ]
 
     parser = pure go
 
-    -- TODO GC is not readonly operation.
-    go = run_readonly_repo_t_from_cwd $ do
-      Repo.garbageCollection
+    {-# NOINLINE go #-}
+    go = run_readonly_repo_t_from_cwd Repo.garbageCollection
 
 parser_info_integrity_check :: ParserInfo (IO ())
 parser_info_integrity_check = info (helper <*> parser) infoMod
   where
-    infoMod = fold
-      [ progDesc "Verify and handle corrupted data"
-      ]
+    infoMod =
+      fold
+        [ progDesc "Verify and handle corrupted data"
+        ]
 
     parser = pure go
 
-    go = run_readonly_repo_t_from_cwd $ do
-      Repo.checksum 8
+    {-# NOINLINE go #-}
+    go = run_readonly_repo_t_from_cwd $ Repo.checksum 8
 
 parser_info_cat_chunk :: ParserInfo (IO ())
 parser_info_cat_chunk = info (helper <*> parser) infoMod
   where
-    infoMod = fold
-      [ progDesc "Display content of single chunk"
-      ]
+    infoMod =
+      fold
+        [ progDesc "Display content of single chunk"
+        ]
 
-    parser = go
-      <$> argument digest_read (fold
-            [ metavar "SHA"
-            , help "SHA of chunk"
-            ])
+    parser =
+      go
+        <$> argument
+          digest_read
+          ( fold
+              [ metavar "SHA"
+              , help "SHA of chunk"
+              ]
+          )
 
-    go sha = run_readonly_repo_t_from_cwd $ do
-      Repo.catChunk sha
-        & S.fold (Stdio.writeChunks)
+    {-# NOINLINE go #-}
+    go :: Digest SHA256 -> IO ()
+    go sha =
+      run_readonly_repo_t_from_cwd $
+        Repo.catChunk sha
+          & S.fold Stdio.writeChunks
 
 parser_info_cat_file :: ParserInfo (IO ())
 parser_info_cat_file = info (helper <*> parser) infoMod
   where
-    infoMod = fold
-      [ progDesc "Display content of single file"
-      ]
+    infoMod =
+      fold
+        [ progDesc "Display content of single file"
+        ]
 
-    parser = go
-      <$> argument digest_read (fold
-            [ metavar "SHA"
-            , help "SHA of file"
-            ])
+    parser =
+      go
+        <$> argument
+          digest_read
+          ( fold
+              [ metavar "SHA"
+              , help "SHA of file"
+              ]
+          )
 
-    go sha = run_readonly_repo_t_from_cwd $ do
-      Repo.catFile sha
-        -- Use parConcatMap to open multiple chunk files concurrently.
-        -- This allow us to read from catFile and open chunk file ahead of time before catual writing.
-        & S.parConcatMap (S.eager True . S.ordered True . S.maxBuffer (6 * 3)) (Repo.catChunk . Repo.chunk_name)
-        -- Use parEval to read from chunks concurrently.
-        -- Since read is often faster than write, using parEval with buffer should reduce running time.
-        & S.parEval (S.maxBuffer 30)
-        & S.fold Stdio.writeChunks
+    {-# NOINLINE go #-}
+    go :: Digest SHA256 -> IO ()
+    go sha =
+      run_readonly_repo_t_from_cwd $
+        Repo.catFile sha
+          -- Use parConcatMap to open multiple chunk files concurrently.
+          -- This allow us to read from catFile and open chunk file ahead of time before catual writing.
+          & S.parConcatMap (S.eager True . S.ordered True . S.maxBuffer (6 * 5)) (S.mapM (\(~e) -> par e $ pure e) . Repo.catChunk . Repo.chunk_name)
+          -- Use parEval to read from chunks concurrently.
+          -- Since read is often faster than write, using parEval with buffer should reduce running time.
+          -- & S.mapM (\(~e) -> par e $ pure e)
+          & S.parEval (S.maxBuffer 30)
+          & S.fold Stdio.writeChunks
 
 parser_info_cat_file_chunks :: ParserInfo (IO ())
 parser_info_cat_file_chunks = info (helper <*> parser) infoMod
   where
-    infoMod = fold
-      [ progDesc "Display chunks a single file references to"
-      ]
+    infoMod =
+      fold
+        [ progDesc "Display chunks a single file references to"
+        ]
 
-    parser = go
-      <$> argument digest_read (fold
-            [ metavar "SHA"
-            , help "SHA of file"
-            ])
+    parser =
+      go
+        <$> argument
+          digest_read
+          ( fold
+              [ metavar "SHA"
+              , help "SHA of file"
+              ]
+          )
 
-    go sha = do
-      run_readonly_repo_t_from_cwd $ do
-        Repo.catFile sha
-          & fmap (show . Repo.chunk_name)
-          & S.fold (F.drainMapM $ liftIO . putStrLn)
+    go sha = run_readonly_repo_t_from_cwd $ do
+      Repo.catFile sha
+        & fmap (show . Repo.chunk_name)
+        & S.fold (F.drainMapM $ liftIO . putStrLn)
 
 parser_info_cat_tree :: ParserInfo (IO ())
 parser_info_cat_tree = info (helper <*> parser) infoMod
   where
-    infoMod = fold
-      [ progDesc "Display content of tree"
-      ]
+    infoMod =
+      fold
+        [ progDesc "Display content of tree"
+        ]
 
-    parser = go
-      <$> argument digest_read (fold
-            [ metavar "SHA"
-            , help "SHA of tree"
-            ])
+    parser =
+      go
+        <$> argument
+          digest_read
+          ( fold
+              [ metavar "SHA"
+              , help "SHA of tree"
+              ]
+          )
 
-    go sha = do
-      run_readonly_repo_t_from_cwd $ do
-        Repo.catTree sha
-          & S.fold (F.drainMapM $ liftIO . T.putStrLn . T.pack . show)
+    go sha = run_readonly_repo_t_from_cwd $ do
+      Repo.catTree sha
+        & S.fold (F.drainMapM $ liftIO . T.putStrLn . T.pack . show)
 
 p_local_repo_config :: Parser Config.RepoType
-p_local_repo_config = (Config.Local . Config.LocalRepoConfig)
-  <$> (argument abs_dir_read (metavar "REPO_PATH" <> help "path to store your backup"))
+p_local_repo_config =
+  Config.Local . Config.LocalRepoConfig
+    <$> argument abs_dir_read (metavar "REPO_PATH" <> help "path to store your backup")
 
 some_base_dir_read :: ReadM (Path.SomeBase Dir)
 some_base_dir_read = eitherReader $ first displayException . Path.parseSomeDir
@@ -280,31 +350,30 @@ digest_read :: ReadM (Digest SHA256)
 digest_read = eitherReader $ \raw_sha -> do
   sha_decoded <- case BSBase16.decode $ fromString raw_sha of
     Left err -> Left $ "invalid sha256: " <> raw_sha <> ", " <> err
-    Right sha' -> pure $ sha'
+    Right sha' -> pure sha'
 
-  digest <- case digestFromByteString @SHA256 sha_decoded of
+  case digestFromByteString @SHA256 sha_decoded of
     Nothing -> Left $ "invalid sha256: " <> raw_sha <> ", incorrect length"
     Just digest -> pure digest
 
-  pure digest
-
-run_readonly_repo_t_from_cwd :: (MonadIO m, MonadThrow m) => M.ReadonlyRepoT m a -> m a
+run_readonly_repo_t_from_cwd :: M.ReadonlyRepoT IO a -> IO a
 run_readonly_repo_t_from_cwd m = do
-  cwd <- liftIO P.getWorkingDirectory >>= Path.parseAbsDir
-  config <- liftIO $ LocalCache.readConfig cwd
+  cwd <- P.getWorkingDirectory >>= Path.parseAbsDir
+  config <- LocalCache.readConfig cwd
 
   let
     repository = case Config.config_repoType config of
       Config.Local l -> Repo.localRepo $ Config.local_repo_path l
 
   let
-    env = M.ReadonlyRepoEnv
-      [Path.absdir|/tmp|]
-      cwd
-      repository
-      [Path.absdir|/tmp|]
+    env =
+      M.ReadonlyRepoEnv
+        [Path.absdir|/tmp|]
+        cwd
+        repository
+        [Path.absdir|/tmp|]
 
-  flip runReaderT env $ M.runReadonlyRepoT $ m
+  flip runReaderT env $ M.runReadonlyRepoT m
 
 run_backup_repo_t_from_cwd :: M.BackupRepoT IO a -> IO a
 run_backup_repo_t_from_cwd m = do
@@ -316,8 +385,9 @@ run_backup_repo_t_from_cwd m = do
 
   let
     try_removing p =
-      void $ Un.tryJust (\e -> if IOE.isDoesNotExistError e then Just e else Nothing) $
-        D.removeDirectoryRecursive p
+      void $
+        Un.tryJust (\e -> if IOE.isDoesNotExistError e then Just e else Nothing) $
+          D.removeDirectoryRecursive p
 
   pid <- P.getProcessID
   statistics <- BackupSt.initStatistics
@@ -326,25 +396,25 @@ run_backup_repo_t_from_cwd m = do
   try_removing "cur"
 
   ret <-
-    LV.withDB "prev" (LV.defaultOptions {LV.createIfMissing = True}) $ \prev ->
-    LV.withDB "cur" (LV.defaultOptions {LV.createIfMissing = True, LV.errorIfExists = True}) $ \cur ->
-    -- Remove cur if failed to backup and keep prev intact.
-    (`Un.onException` try_removing "cur") $
-    Un.withSystemTempDirectory ("better-tmp-" <> show pid <> "-") $ \raw_tmp_dir ->
-    -- XXX Streamly does LEAK thread so it's possible for removing raw_tmp_dirand
-    -- and creating tmp file run concurrently when process is canceled by async exception. So try
-    -- removing it 10 times and hope it works for now as workaround.
-    (`Un.finally` (replicateM_ 10 (P.removeDirectoryRecursive raw_tmp_dir) `Un.catchAny` print)) $ do
-      abs_tmp_dir <- Path.parseAbsDir raw_tmp_dir
-      M.runBackupRepoT m $
-        M.BackupRepoEnv
-          abs_tmp_dir
-          cwd
-          repository
-          abs_tmp_dir
-          statistics
-          prev
-          cur
+    LV.withDB "prev" (LV.defaultOptions{LV.createIfMissing = True}) $ \prev ->
+      LV.withDB "cur" (LV.defaultOptions{LV.createIfMissing = True, LV.errorIfExists = True}) $ \cur ->
+        -- Remove cur if failed to backup and keep prev intact.
+        (`Un.onException` try_removing "cur") $
+          Un.withSystemTempDirectory ("better-tmp-" <> show pid <> "-") $ \raw_tmp_dir ->
+            -- XXX Streamly does LEAK thread so it's possible for removing raw_tmp_dirand
+            -- and creating tmp file run concurrently when process is canceled by async exception. So try
+            -- removing it 10 times and hope it works for now as workaround.
+            (`Un.finally` (replicateM_ 10 (P.removeDirectoryRecursive raw_tmp_dir) `Un.catchAny` print)) $ do
+              abs_tmp_dir <- Path.parseAbsDir raw_tmp_dir
+              M.runBackupRepoT m $
+                M.BackupRepoEnv
+                  abs_tmp_dir
+                  cwd
+                  repository
+                  abs_tmp_dir
+                  statistics
+                  prev
+                  cur
 
   try_removing "prev_bac"
   D.renameDirectory "prev" "prev.bac"
