@@ -1,27 +1,45 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeApplications #-}
 
 module Main where
 
-import Criterion.Main (bench, bgroup, defaultMain, env, nf, nfAppIO, nfIO, whnf, whnfAppIO)
+import Criterion.Main (bench, bgroup, defaultMain, env, nf, nfAppIO, whnf, whnfAppIO)
 
 import Data.Bits (Bits (shiftL, (.&.)), FiniteBits (countLeadingZeros))
-import Data.Foldable (for_)
+import Data.Foldable (Foldable (foldl'), for_)
 import Data.Function ((&))
 import Data.Word (Word64)
 
-import qualified Path
-
 import qualified Streamly.Data.Fold as F
 import qualified Streamly.Data.Stream.Prelude as S
+
+import Crypto.Hash
+    ( hashFinalize,
+      hashInit,
+      hashInitWith,
+      hashUpdate,
+      Blake2bp,
+      Blake2s,
+      Blake2sp,
+      Blake2b_256,
+      MD5,
+      SHA1,
+      SHA256(SHA256),
+      SHA3_256,
+      Digest,
+      HashAlgorithm )
 
 import qualified Crypto.Cipher.Types as Cipher
 
 import qualified Data.ByteString as BS
 
+import qualified Better.Hash as Hash
 import Better.Internal.Streamly.Crypto.AES (compact, decryptCtr, encryptCtr, that_aes, unsafeEncryptCtr)
 import Better.Streamly.FileSystem.Chunker (defaultGearHashConfig, gearHash)
 import qualified Better.Streamly.FileSystem.Chunker as Chunker
+import Data.Functor.Identity (Identity (runIdentity))
 import qualified Streamly.Internal.FileSystem.File as File
 import qualified Streamly.Internal.FileSystem.Handle as Handle
 import Streamly.Internal.System.IO (defaultChunkSize)
@@ -84,6 +102,46 @@ main =
             , bench "less" $ whnf (< v) d
             ]
         )
+    , env (pure input) $ \input' ->
+        bgroup
+          "hash"
+          [ bench "sha2-256" $
+              nf
+                (\i -> S.fromList i & S.fold Hash.hashByteStringFold & runIdentity)
+                input'
+          , bench "sha2-256-fold" $
+              nf
+                (hashFinalize . foldl' hashUpdate (hashInitWith SHA256))
+                input'
+          , bench "sha1" $
+              nf
+                (\i -> S.fromList i & S.fold (hashByteStringFoldX @SHA1) & runIdentity)
+                input'
+          , bench "md5" $
+              nf
+                (\i -> S.fromList i & S.fold (hashByteStringFoldX @MD5) & runIdentity)
+                input'
+          , bench "sha3-256" $
+              nf
+                (\i -> S.fromList i & S.fold (hashByteStringFoldX @SHA3_256) & runIdentity)
+                input'
+          , bench "Blake2s-256" $
+              nf
+                (\i -> S.fromList i & S.fold (hashByteStringFoldX @(Blake2s 256)) & runIdentity)
+                input'
+          , bench "Blake2b-256" $
+              nf
+                (\i -> S.fromList i & S.fold (hashByteStringFoldX @Blake2b_256) & runIdentity)
+                input'
+          , bench "Blake2bp-256" $
+              nf
+                (\i -> S.fromList i & S.fold (hashByteStringFoldX @(Blake2bp 256)) & runIdentity)
+                input'
+          , bench "Blake2sp-256" $
+              nf
+                (\i -> S.fromList i & S.fold (hashByteStringFoldX @(Blake2sp 256)) & runIdentity)
+                input'
+          ]
     , env that_aes $ \aes ->
         env (pure input) $ \input' ->
           bgroup
@@ -210,3 +268,7 @@ main =
     ]
   where
     file = "data2"
+
+hashByteStringFoldX :: (HashAlgorithm a, Monad m) => F.Fold m BS.ByteString (Digest a)
+hashByteStringFoldX = hashFinalize <$> F.foldl' hashUpdate hashInit
+{-# INLINE hashByteStringFoldX #-}
