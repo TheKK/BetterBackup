@@ -76,6 +76,8 @@ library better-core
     import:           warnings, deps
     exposed-modules:
       Better.Internal.Repository
+      Better.Internal.Repository.LowLevel
+      Better.Internal.Repository.GarbageCollection
       Better.Internal.Streamly.Crypto.AES
       Better.Streamly.FileSystem.Dir
       Better.Streamly.FileSystem.Chunker

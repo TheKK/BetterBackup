@@ -36,4 +36,5 @@ module Better.Repository
   ) where
 
 import Better.Internal.Repository
+import Better.Internal.Repository.GarbageCollection
 import Better.Repository.Types
