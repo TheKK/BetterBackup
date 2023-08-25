@@ -54,6 +54,7 @@ module Better.Internal.Repository.LowLevel
   -- * Utils
   , d2b
   , t2d
+  , s2d
   ) where
 
 import Prelude hiding (read)
@@ -70,12 +71,20 @@ import qualified UnliftIO.Directory as Un
 import qualified UnliftIO.STM as Un
 
 import qualified Data.Text as T
+import qualified Data.Text.Encoding.Base16 as T16
 import qualified Data.Text.IO as T
 import qualified Data.Text.Encoding as TE
 
 import qualified Data.ByteString as BS
-import qualified Data.ByteString.Base16 as BS
+import qualified Data.ByteString.Char8 as BSC
+import qualified Data.ByteString.Base16 as BS16
+import Data.ByteString.Internal (c2w)
 import qualified Data.ByteString.Builder as BB
+
+import qualified Data.ByteString.Lazy.Base16 as BL16
+
+import qualified Data.ByteString.Short as BShort
+import qualified Data.ByteString.Short.Base16 as BShort16
 
 import qualified Data.ByteString.UTF8 as UTF8
 
@@ -223,6 +232,7 @@ read p = S.concatEffect $ do
   f <- mkRead
   pure $ f p
 
+{-# INLINE listVersions #-}
 listVersions :: (MonadThrow m, MonadIO m, MonadRepository m) => S.Stream m Version
 listVersions =
   listFolderFiles folder_version
@@ -362,8 +372,7 @@ cat_stuff_under folder stuff = S.concatEffect $ do
 
 catFile :: (MonadThrow m, MonadIO m, MonadRepository m) => Digest SHA256 -> S.Stream m Object
 catFile sha = cat_stuff_under folder_file sha
-  & S.unfoldMany Array.reader
-  & US.decodeLatin1
+  & US.decodeUtf8Chunks
   & US.lines (fmap T.pack F.toList)
   & S.mapM parse_file_content
   where
@@ -398,15 +407,15 @@ getChunkSize sha = do
 catVersion :: (MonadThrow m, MonadIO m, MonadRepository m) => Integer -> m Version
 catVersion vid = do
   optSha <- cat_stuff_under folder_version vid
-    & fmap (BB.toLazyByteString . foldMap BB.word8 . Array.toList)
+    & fmap (BB.shortByteString . BShort.pack . Array.toList)
     & S.fold F.mconcat
-    & fmap (BS.decode . BS.toStrict)
+    & fmap (BL16.decodeBase16Untyped . BB.toLazyByteString)
 
   sha <- case optSha of
-    Left err -> throwM $ userError $ "invalid sha of version, " <> err
+    Left err -> throwM $ userError $ "invalid sha of version, " <> T.unpack err
     Right sha -> pure $ sha
 
-  digest <- case digestFromByteString @SHA256 sha of
+  digest <- case digestFromByteString @SHA256 $ BS.toStrict sha of
     Nothing -> throwM $ userError "invalid sha of version"
     Just digest -> pure digest
 
@@ -419,6 +428,7 @@ catTree tree_sha' = cat_stuff_under folder_tree tree_sha'
   & US.lines (fmap T.pack F.toList)
   & S.mapM parse_tree_content
   where
+    {-# INLINE[0] parse_tree_content #-}
     parse_tree_content :: MonadThrow m => T.Text -> m (Either Tree FFile)
     parse_tree_content buf = case T.splitOn " " buf of
       ["dir", name, sha] -> do
@@ -428,6 +438,7 @@ catTree tree_sha' = cat_stuff_under folder_tree tree_sha'
         digest <- t2d sha
         pure $ Right $ FFile name digest
       _ -> throwM $ userError $ "invalid dir content: " <> T.unpack buf
+{-# INLINE catTree #-}
 
 newtype ArrayBA a = ArrayBA { un_array_ba :: Array.Array a }
   deriving (Eq, Ord, Monoid, Semigroup)
@@ -458,15 +469,30 @@ checksum n = do
         liftIO $ T.putStrLn $ "invalid file: " <> T.pack (Path.fromRelFile invalid_f) <> ", " <> T.pack (show expect_sha))
     & S.fold F.drain
 
+{-# INLINEABLE t2d #-}
 t2d :: MonadThrow m => T.Text -> m (Digest SHA256)
 t2d sha = do
-  sha_decoded <- case BS.decode $ TE.encodeUtf8 sha of
+  sha_decoded <- case BS16.decodeBase16Untyped $ TE.encodeUtf8 sha of
     Left err ->
-      throwM $ userError $ "invalid sha: " <> T.unpack sha <> ", " <> err
+      throwM $ userError $ "invalid sha: " <> T.unpack sha <> ", " <> T.unpack err
     Right sha' -> pure $ sha'
 
   digest <- case digestFromByteString @SHA256 sha_decoded of
     Nothing -> throwM $ userError $ "invalid sha: " <> T.unpack sha
+    Just digest -> pure digest
+
+  pure digest
+
+{-# INLINEABLE s2d #-}
+s2d :: MonadThrow m => String -> m (Digest SHA256)
+s2d sha = do
+  sha_decoded <- case BS16.decodeBase16Untyped $ BSC.pack sha of
+    Left err ->
+      throwM $ userError $ "invalid sha: " <> sha <> ", " <> T.unpack err
+    Right sha' -> pure $ sha'
+
+  digest <- case digestFromByteString @SHA256 sha_decoded of
+    Nothing -> throwM $ userError $ "invalid sha: " <> sha
     Just digest -> pure digest
 
   pure digest

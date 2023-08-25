@@ -66,11 +66,13 @@ common warnings
       -flate-specialise
       -fmax-worker-args=16
       -fspec-constr-recursive=16
+      -- -fdistinct-constructor-tables
+      -- -finfo-table-map
     if flag(plugin)
       ghc-options: -fplugin=Fusion.Plugin
 
 common deps
-    build-depends:    base ^>=4.16, text, streamly, streamly-core, containers, unix, time, stm, unliftio, unliftio-core, fusion-plugin, memory, crypton, bytestring, capability, exceptions, base16-bytestring, katip, path, mtl, utf8-string, directory
+    build-depends:    base ^>=4.16, text, streamly, streamly-core, containers, unix, time, stm, unliftio, unliftio-core, fusion-plugin, memory, crypton, bytestring, capability, exceptions, base16 ^>= 1.0, path, mtl, utf8-string, directory
 
 library better-core
     import:           warnings, deps
@@ -93,7 +95,7 @@ library better-core
       Better.Statistics.Backup
       Better.Statistics.Backup.Class
       Better.Statistics.Backup.Default
-    build-depends:  vector, random, splitmix, leveldb-haskell, binary, ki-unlifted, parallel, fusion-plugin-types
+    build-depends:  vector, random, splitmix, leveldb-haskell, binary, ki-unlifted, parallel, fusion-plugin-types, async
     hs-source-dirs:   src
     default-language: Haskell2010
 
@@ -132,4 +134,4 @@ benchmark cdc
     main-is:          Main.hs
     hs-source-dirs:   bench/cdc
     default-language: Haskell2010
-    build-depends:  base ^>=4.16, better-core, streamly, streamly-core, criterion, fusion-plugin, crypton, bytestring, path
+    build-depends:  base ^>=4.16, better-core, streamly, streamly-core, criterion, fusion-plugin, crypton, bytestring, path, stm, random, splitmix, containers

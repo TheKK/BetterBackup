@@ -348,8 +348,8 @@ abs_dir_read = eitherReader $ first displayException . Path.parseAbsDir
 
 digest_read :: ReadM (Digest SHA256)
 digest_read = eitherReader $ \raw_sha -> do
-  sha_decoded <- case BSBase16.decode $ fromString raw_sha of
-    Left err -> Left $ "invalid sha256: " <> raw_sha <> ", " <> err
+  sha_decoded <- case BSBase16.decodeBase16Untyped $ fromString raw_sha of
+    Left err -> Left $ "invalid sha256: " <> raw_sha <> ", " <> T.unpack err
     Right sha' -> pure sha'
 
   case digestFromByteString @SHA256 sha_decoded of
