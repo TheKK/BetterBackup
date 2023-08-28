@@ -178,7 +178,7 @@ data UploadTask
   = UploadTree {-# UNPACK #-}  !(Digest SHA256) {-# UNPACK #-} !(Path Path.Abs Path.File)
   | UploadFile {-# UNPACK #-}  !(Digest SHA256) {-# UNPACK #-} !(Path Path.Abs Path.File) !(Path Path.Rel Path.File)
   | UploadChunk {-# UNPACK #-} !(Digest SHA256) [(Array.Array Word8)]
-  | FindNoChangeFile !(Digest SHA256) !(Path Path.Rel Path.File)
+  | FindNoChangeFile (Digest SHA256) P.FileStatus
 
 tree_content :: Either (Path Path.Rel Path.File) (Path Path.Rel Path.Dir) -> Digest SHA256 -> BS.ByteString
 tree_content file_or_dir hash' =
@@ -226,7 +226,7 @@ backup_file tbq rel_file_name = do
   to_scan <- BackupCache.tryReadingCacheHash st
   case to_scan of
     Just cached_digest -> do
-      atomically $ writeTBQueue tbq $ FindNoChangeFile cached_digest rel_file_name
+      atomically $ writeTBQueue tbq $ FindNoChangeFile cached_digest st
       pure cached_digest
 
     Nothing -> withEmptyTmpFile $ \file_name' -> liftIO $ do
@@ -286,9 +286,8 @@ backup dir = do
              st <- liftIO $ P.getFileStatus $ Path.fromRelFile rel_file_name
              BackupCache.saveCurrentFileHash st file_hash
 
-           FindNoChangeFile file_hash rel_file_name -> do
+           FindNoChangeFile file_hash st -> do
              BackupSt.modifyStatistic' BackupSt.processedFileCount (+ 1)
-             st <- liftIO $ P.getFileStatus $ Path.fromRelFile rel_file_name
              BackupCache.saveCurrentFileHash st file_hash
 
            UploadChunk chunk_hash chunk -> do
