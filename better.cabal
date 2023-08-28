@@ -68,6 +68,11 @@ common warnings
       -fspec-constr-recursive=16
       -- -fdistinct-constructor-tables
       -- -finfo-table-map
+      -funfolding-use-threshold=16
+      -optc-O3
+      -optcxx-O3
+      -optlc-O3
+      -optlo-O3
     if flag(plugin)
       ghc-options: -fplugin=Fusion.Plugin
 

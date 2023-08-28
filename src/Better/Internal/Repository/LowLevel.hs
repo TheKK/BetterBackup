@@ -1,5 +1,5 @@
-{-# LANGUAGE Strict #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -449,25 +449,41 @@ instance ByteArrayAccess (ArrayBA Word8) where
 
 checksum :: (MonadThrow m, MonadUnliftIO m, MonadRepository m) => Int -> m ()
 checksum n = do
-  S.fromList [folder_tree, folder_file, folder_chunk]
+  S.fromList [folder_tree, folder_file]
     & S.concatMap (\p ->
       listFolderFiles p
         & fmap (\f -> (Path.fromRelFile f, p </> f))
     )
-    & S.parMapM (S.maxBuffer (n + 1) . S.maxThreads n . S.eager True) (\(expected_sha, f) -> do
+    & S.parMapM (S.maxBuffer (n + 1) . S.eager True) (\(expected_sha, f) -> do
          actual_sha <- read f
-           & S.parEval (S.ordered True . S.eager True . S.maxBuffer 2)
            & S.fold hashArrayFold
-         pure $
-           if show actual_sha == expected_sha
-           then Nothing
-           else Just (f, actual_sha)
+         if show actual_sha == expected_sha
+           then pure Nothing
+           else pure $ Just (f, actual_sha)
        )
     & S.filter (isJust)
     & fmap (fromJust)
-    & S.trace (\(invalid_f, expect_sha) ->
+    & S.fold (F.foldMapM $ \(invalid_f, expect_sha) ->
         liftIO $ T.putStrLn $ "invalid file: " <> T.pack (Path.fromRelFile invalid_f) <> ", " <> T.pack (show expect_sha))
-    & S.fold F.drain
+
+  listFolderFiles folder_chunk
+    & S.parMapM (S.maxBuffer (n + 1) . S.eager True) (\chunk_path -> do
+         expected_sha <- s2d $ Path.fromRelFile chunk_path
+         actual_sha <- catChunk expected_sha & S.fold hashArrayFold
+         if expected_sha == actual_sha
+           then pure Nothing
+           else
+             let
+               !expected_sha_str = T.pack $ show expected_sha
+               !actual_sha_str = T.pack $ show actual_sha
+             in
+               pure $ Just (expected_sha_str, actual_sha_str)
+       )
+    & S.filter (isJust)
+    & fmap (fromJust)
+    & S.fold (F.foldMapM $ \(expected_sha, actual_sha) ->
+        liftIO $ T.putStrLn $ "invalid file: " <> actual_sha <> ", checksum: " <> expected_sha)
+{-# INLINE checksum #-}
 
 {-# INLINEABLE t2d #-}
 t2d :: MonadThrow m => T.Text -> m (Digest SHA256)

@@ -231,7 +231,7 @@ parser_info_integrity_check = info (helper <*> parser) infoMod
     parser = pure go
 
     {-# NOINLINE go #-}
-    go = run_readonly_repo_t_from_cwd $ Repo.checksum 8
+    go = run_readonly_repo_t_from_cwd $ Repo.checksum 10
 
 parser_info_cat_chunk :: ParserInfo (IO ())
 parser_info_cat_chunk = info (helper <*> parser) infoMod
