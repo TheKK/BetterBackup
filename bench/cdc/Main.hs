@@ -6,30 +6,34 @@
 module Main where
 
 import Criterion.Main (bench, bgroup, defaultMain, env, nf, nfAppIO, whnf, whnfAppIO)
+import Criterion.Types (Benchmark)
 
 import Data.Bits (Bits (shiftL, (.&.)), FiniteBits (countLeadingZeros))
 import Data.Foldable (Foldable (foldl'), for_)
 import Data.Function ((&))
+import qualified Data.HashSet as HashSet
+import qualified Data.Set as Set
 import Data.Word (Word64)
 
 import qualified Streamly.Data.Fold as F
 import qualified Streamly.Data.Stream.Prelude as S
 
-import Crypto.Hash
-    ( hashFinalize,
-      hashInit,
-      hashInitWith,
-      hashUpdate,
-      Blake2bp,
-      Blake2s,
-      Blake2sp,
-      Blake2b_256,
-      MD5,
-      SHA1,
-      SHA256(SHA256),
-      SHA3_256,
-      Digest,
-      HashAlgorithm )
+import Crypto.Hash (
+  Blake2b_256,
+  Blake2bp,
+  Blake2s,
+  Blake2sp,
+  Digest,
+  HashAlgorithm,
+  MD5,
+  SHA1,
+  SHA256 (SHA256),
+  SHA3_256,
+  hashFinalize,
+  hashInit,
+  hashInitWith,
+  hashUpdate,
+ )
 
 import qualified Crypto.Cipher.Types as Cipher
 
@@ -45,9 +49,16 @@ import qualified Streamly.Internal.FileSystem.Handle as Handle
 import Streamly.Internal.System.IO (defaultChunkSize)
 import System.IO (IOMode (ReadMode), withFile)
 
--- 50 MiB
+import qualified System.Random as Rng
+import qualified System.Random.SplitMix as Sp
+
+import Control.Concurrent.STM
+import Data.IORef
+
+-- 50 MiB = 1600 * 32KiB
+{-# NOINLINE input #-}
 input :: [BS.ByteString]
-input = replicate 1638400 ("asdfjkla;sdfk;sdjl;asdjfl;aklsd;" :: BS.ByteString)
+input = replicate 1600 $ BS.concat $ replicate 1024 ("asdfjkla;sdfk;sdjl;asdjfl;aklsd;" :: BS.ByteString)
 
 main :: IO ()
 main =
@@ -265,9 +276,64 @@ main =
                 )
                 (S.fromList input')
           ]
+    , bench_concurrent
     ]
   where
     file = "data2"
+
+bench_concurrent :: Benchmark
+bench_concurrent = env (pure $ take 100000 $ Rng.randoms @Word64 (Sp.mkSMGen 123)) $ \vec' ->
+  bgroup
+    "concurrent"
+    [ bench "modifyIORef'-set-insert" $
+        nfAppIO
+          ( \vec -> do
+              set <- newIORef Set.empty
+              for_ vec $ \v -> modifyIORef' set (Set.insert v)
+              readIORef set
+          )
+          vec'
+    , bench "atomicModifyIORef'-set-insert" $
+        nfAppIO
+          ( \vec -> do
+              set <- newIORef Set.empty
+              for_ vec $ \v -> atomicModifyIORef' set (\s -> (Set.insert v s, ()))
+              readIORef set
+          )
+          vec'
+    , bench "modifyTVar'-set-insert" $
+        nfAppIO
+          ( \vec -> do
+              set <- newTVarIO Set.empty
+              for_ vec $ \v -> atomically $ modifyTVar' set (Set.insert v)
+              readTVarIO set
+          )
+          vec'
+    , bench "modifyIORef'-hashset-insert" $
+        nfAppIO
+          ( \vec -> do
+              set <- newIORef HashSet.empty
+              for_ vec $ \v -> modifyIORef' set (HashSet.insert v)
+              readIORef set
+          )
+          vec'
+    , bench "atomicModifyIORef'-hashset-insert" $
+        nfAppIO
+          ( \vec -> do
+              set <- newIORef HashSet.empty
+              for_ vec $ \v -> atomicModifyIORef' set (\s -> (HashSet.insert v s, ()))
+              readIORef set
+          )
+          vec'
+    , bench "modifyTVar'-hashset-insert" $
+        nfAppIO
+          ( \vec -> do
+              set <- newTVarIO HashSet.empty
+              for_ vec $ \v -> atomically $ modifyTVar' set (HashSet.insert v)
+              readTVarIO set
+          )
+          vec'
+    ]
 
 hashByteStringFoldX :: (HashAlgorithm a, Monad m) => F.Fold m BS.ByteString (Digest a)
 hashByteStringFoldX = hashFinalize <$> F.foldl' hashUpdate hashInit
