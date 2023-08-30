@@ -1,4 +1,4 @@
-{-# LANGUAGE Strict #-}
+{-# LANGUAGE BangPatterns #-}
 
 module Better.Streamly.FileSystem.Chunker
   ( Chunk(..)
@@ -113,7 +113,7 @@ gear_table = UV.fromListN 256
 
 {-# INLINE gear_hash_update #-}
 gear_hash_update :: Word64 -> Word8 -> Word64
-gear_hash_update w64 w8
+gear_hash_update !w64 !w8
   = Bits.unsafeShiftL w64 1
   + UV.unsafeIndex gear_table (fromIntegral w8)
 

@@ -316,7 +316,7 @@ addBlob' digest chunks = do
   unless exist $ do
     putFileFold <- mkPutFileFold
     chunks & S.fold (putFileFold f)
-  pure $! not exist
+  pure $ not exist
 
 {-# INLINE addFile' #-}
 addFile' :: (MonadCatch m, MonadIO m, MonadRepository m)
