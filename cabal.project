@@ -5,3 +5,6 @@ package streamly-core
 
 package streamly
   flags: +use-unliftio
+
+package crypton
+  flags: +support_sse
