@@ -54,6 +54,7 @@ import qualified Cli.Ref as Ref
 
 import Cli.Backup (parser_info)
 import Cli.GarbageCollection (parser_info)
+import Cli.IntegrityCheck (parser_info)
 
 import qualified LocalCache
 import Monad (run_readonly_repo_t_from_cwd)
@@ -75,7 +76,7 @@ cmds = info (helper <*> parser) infoMod
           , command "versions" parser_info_versions
           , command "backup" Cli.Backup.parser_info
           , command "gc" Cli.GarbageCollection.parser_info
-          , command "integrity-check" parser_info_integrity_check
+          , command "integrity-check" Cli.IntegrityCheck.parser_info
           , command "cat-chunk" parser_info_cat_chunk
           , command "cat-file" parser_info_cat_file
           , command "cat-file-chunks" parser_info_cat_file_chunks
@@ -131,19 +132,6 @@ parser_info_versions = info (helper <*> parser) infoMod
       run_readonly_repo_t_from_cwd $
         Repo.listVersions
           & S.fold (F.drainMapM $ liftIO . print)
-
-parser_info_integrity_check :: ParserInfo (IO ())
-parser_info_integrity_check = info (helper <*> parser) infoMod
-  where
-    infoMod =
-      fold
-        [ progDesc "Verify and handle corrupted data"
-        ]
-
-    parser = pure go
-
-    {-# NOINLINE go #-}
-    go = run_readonly_repo_t_from_cwd $ Repo.checksum 10
 
 parser_info_cat_chunk :: ParserInfo (IO ())
 parser_info_cat_chunk = info (helper <*> parser) infoMod
