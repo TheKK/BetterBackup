@@ -53,6 +53,7 @@ import qualified Better.Repository as Repo
 import qualified Cli.Ref as Ref
 
 import Cli.Backup (parser_info)
+import Cli.GarbageCollection (parser_info)
 
 import qualified LocalCache
 import Monad (run_readonly_repo_t_from_cwd)
@@ -73,7 +74,7 @@ cmds = info (helper <*> parser) infoMod
           [ command "init" parser_info_init
           , command "versions" parser_info_versions
           , command "backup" Cli.Backup.parser_info
-          , command "gc" parser_info_gc
+          , command "gc" Cli.GarbageCollection.parser_info
           , command "integrity-check" parser_info_integrity_check
           , command "cat-chunk" parser_info_cat_chunk
           , command "cat-file" parser_info_cat_file
@@ -130,19 +131,6 @@ parser_info_versions = info (helper <*> parser) infoMod
       run_readonly_repo_t_from_cwd $
         Repo.listVersions
           & S.fold (F.drainMapM $ liftIO . print)
-
-parser_info_gc :: ParserInfo (IO ())
-parser_info_gc = info (helper <*> parser) infoMod
-  where
-    infoMod =
-      fold
-        [ progDesc "Running garbage collection to release unused data"
-        ]
-
-    parser = pure go
-
-    {-# NOINLINE go #-}
-    go = run_readonly_repo_t_from_cwd Repo.garbageCollection
 
 parser_info_integrity_check :: ParserInfo (IO ())
 parser_info_integrity_check = info (helper <*> parser) infoMod

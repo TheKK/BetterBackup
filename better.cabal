@@ -117,6 +117,7 @@ executable ff
     other-modules:
       Cli
       Cli.Backup
+      Cli.GarbageCollection
       Cli.Ref
       Cli.Ref.Cat
       Config
