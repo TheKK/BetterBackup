@@ -54,6 +54,8 @@ import qualified System.Random.SplitMix as Sp
 
 import Control.Concurrent.STM
 import Data.IORef
+import Crypto.Data.Padding (pad, Format (PKCS7))
+import Crypto.Cipher.Types (BlockCipher(blockSize))
 
 -- 50 MiB = 1600 * 32KiB
 {-# NOINLINE input #-}
@@ -153,6 +155,21 @@ main =
                 (\i -> S.fromList i & S.fold (hashByteStringFoldX @(Blake2sp 256)) & runIdentity)
                 input'
           ]
+    , env that_aes $ \aes ->
+        env (pure input) $ \input' ->
+          bgroup
+            "enc-cbc"
+            [ bench "single-cbc-encrypt" $
+                let iv = Cipher.nullIV
+                in  nf
+                      (Cipher.cbcEncrypt aes iv)
+                      (head input')
+            , bench "single-cbc-dencrypt" $
+                let iv = Cipher.nullIV
+                in  nf
+                      (Cipher.cbcDecrypt aes iv)
+                      (head input')
+            ]
     , env that_aes $ \aes ->
         env (pure input) $ \input' ->
           bgroup
