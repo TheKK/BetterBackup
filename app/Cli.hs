@@ -1,6 +1,4 @@
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE QuasiQuotes #-}
-{-# LANGUAGE Strict #-}
 {-# LANGUAGE TypeApplications #-}
 
 module Cli (
@@ -8,11 +6,6 @@ module Cli (
 ) where
 
 import Control.Parallel (par)
-
-import qualified System.Directory as D
-import qualified System.IO.Error as IOE
-import qualified System.Posix.Directory as P
-import qualified System.Posix.Process as P
 
 import Options.Applicative (
   Parser,
@@ -34,12 +27,10 @@ import qualified Ki.Unlifted as Ki
 import UnliftIO (MonadUnliftIO)
 import qualified UnliftIO.Concurrent as Un
 import qualified UnliftIO.Exception as Un
-import qualified UnliftIO.Temporary as Un
 
 import Control.Exception (Exception (displayException))
-import Control.Monad (forever, replicateM_, void)
+import Control.Monad (forever)
 import Control.Monad.IO.Class (MonadIO (liftIO))
-import Control.Monad.Reader (runReaderT)
 
 import Crypto.Hash (Digest, SHA256, digestFromByteString)
 
@@ -58,8 +49,6 @@ import qualified Streamly.Data.Stream.Prelude as S
 
 import qualified Streamly.Console.Stdio as Stdio
 
-import qualified Database.LevelDB.Base as LV
-
 import Path (Abs, Dir, Path)
 import qualified Path
 
@@ -70,12 +59,10 @@ import qualified Better.Repository as Repo
 import qualified Better.Repository.Backup as Repo
 import Better.Statistics.Backup (MonadBackupStat)
 import qualified Better.Statistics.Backup as BackupSt
-import qualified Better.Statistics.Backup.Default as BackupSt
 
 import qualified Cli.Ref as Ref
 import qualified LocalCache
-import qualified Monad as M
-import qualified System.Directory as P
+import Monad (run_backup_repo_t_from_cwd, run_readonly_repo_t_from_cwd)
 
 -- TODO add ability to put trace markers
 -- TODO add ability to collect running statistics
@@ -283,7 +270,7 @@ parser_info_cat_file = info (helper <*> parser) infoMod
         Repo.catFile sha
           -- Use parConcatMap to open multiple chunk files concurrently.
           -- This allow us to read from catFile and open chunk file ahead of time before catual writing.
-          & S.parConcatMap (S.eager True . S.ordered True . S.maxBuffer (6 * 5)) (S.mapM (\(~e) -> par e $ pure e) . Repo.catChunk . Repo.chunk_name)
+          & S.parConcatMap (S.eager True . S.ordered True . S.maxBuffer (6 * 5)) (S.mapM (\e -> par e $ pure e) . Repo.catChunk . Repo.chunk_name)
           -- Use parEval to read from chunks concurrently.
           -- Since read is often faster than write, using parEval with buffer should reduce running time.
           -- & S.mapM (\(~e) -> par e $ pure e)
@@ -355,70 +342,3 @@ digest_read = eitherReader $ \raw_sha -> do
   case digestFromByteString @SHA256 sha_decoded of
     Nothing -> Left $ "invalid sha256: " <> raw_sha <> ", incorrect length"
     Just digest -> pure digest
-
-run_readonly_repo_t_from_cwd :: M.ReadonlyRepoT IO a -> IO a
-run_readonly_repo_t_from_cwd m = do
-  cwd <- P.getWorkingDirectory >>= Path.parseAbsDir
-  config <- LocalCache.readConfig cwd
-
-  let
-    repository = case Config.config_repoType config of
-      Config.Local l -> Repo.localRepo $ Config.local_repo_path l
-
-  let
-    env =
-      M.ReadonlyRepoEnv
-        [Path.absdir|/tmp|]
-        cwd
-        repository
-        [Path.absdir|/tmp|]
-
-  flip runReaderT env $ M.runReadonlyRepoT m
-
-run_backup_repo_t_from_cwd :: M.BackupRepoT IO a -> IO a
-run_backup_repo_t_from_cwd m = do
-  cwd <- P.getWorkingDirectory >>= Path.parseAbsDir
-  config <- LocalCache.readConfig cwd
-
-  let repository = case Config.config_repoType config of
-        Config.Local l -> Repo.localRepo $ Config.local_repo_path l
-
-  let
-    try_removing p =
-      void $
-        Un.tryJust (\e -> if IOE.isDoesNotExistError e then Just e else Nothing) $
-          D.removeDirectoryRecursive p
-
-  pid <- P.getProcessID
-  statistics <- BackupSt.initStatistics
-
-  -- Remove cur before using it to prevent dirty env.
-  try_removing "cur"
-
-  ret <-
-    LV.withDB "prev" (LV.defaultOptions{LV.createIfMissing = True}) $ \prev ->
-      LV.withDB "cur" (LV.defaultOptions{LV.createIfMissing = True, LV.errorIfExists = True}) $ \cur ->
-        -- Remove cur if failed to backup and keep prev intact.
-        (`Un.onException` try_removing "cur") $
-          Un.withSystemTempDirectory ("better-tmp-" <> show pid <> "-") $ \raw_tmp_dir ->
-            -- XXX Streamly does LEAK thread so it's possible for removing raw_tmp_dirand
-            -- and creating tmp file run concurrently when process is canceled by async exception. So try
-            -- removing it 10 times and hope it works for now as workaround.
-            (`Un.finally` (replicateM_ 10 (P.removeDirectoryRecursive raw_tmp_dir) `Un.catchAny` print)) $ do
-              abs_tmp_dir <- Path.parseAbsDir raw_tmp_dir
-              M.runBackupRepoT m $
-                M.BackupRepoEnv
-                  abs_tmp_dir
-                  cwd
-                  repository
-                  abs_tmp_dir
-                  statistics
-                  prev
-                  cur
-
-  try_removing "prev_bac"
-  D.renameDirectory "prev" "prev.bac"
-  D.renameDirectory "cur" "prev"
-  D.removeDirectoryRecursive "prev.bac"
-
-  pure ret
