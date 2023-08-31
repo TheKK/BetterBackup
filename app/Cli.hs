@@ -22,14 +22,7 @@ import Options.Applicative (
   subparser,
  )
 
-import qualified Ki.Unlifted as Ki
-
-import UnliftIO (MonadUnliftIO)
-import qualified UnliftIO.Concurrent as Un
-import qualified UnliftIO.Exception as Un
-
 import Control.Exception (Exception (displayException))
-import Control.Monad (forever)
 import Control.Monad.IO.Class (MonadIO (liftIO))
 
 import Crypto.Hash (Digest, SHA256, digestFromByteString)
@@ -56,13 +49,13 @@ import Config (Config (..))
 import qualified Config
 
 import qualified Better.Repository as Repo
-import qualified Better.Repository.Backup as Repo
-import Better.Statistics.Backup (MonadBackupStat)
-import qualified Better.Statistics.Backup as BackupSt
 
 import qualified Cli.Ref as Ref
+
+import Cli.Backup (parser_info)
+
 import qualified LocalCache
-import Monad (run_backup_repo_t_from_cwd, run_readonly_repo_t_from_cwd)
+import Monad (run_readonly_repo_t_from_cwd)
 
 -- TODO add ability to put trace markers
 -- TODO add ability to collect running statistics
@@ -79,7 +72,7 @@ cmds = info (helper <*> parser) infoMod
         fold
           [ command "init" parser_info_init
           , command "versions" parser_info_versions
-          , command "backup" parser_info_backup
+          , command "backup" Cli.Backup.parser_info
           , command "gc" parser_info_gc
           , command "integrity-check" parser_info_integrity_check
           , command "cat-chunk" parser_info_cat_chunk
@@ -137,62 +130,6 @@ parser_info_versions = info (helper <*> parser) infoMod
       run_readonly_repo_t_from_cwd $
         Repo.listVersions
           & S.fold (F.drainMapM $ liftIO . print)
-
-parser_info_backup :: ParserInfo (IO ())
-parser_info_backup = info (helper <*> parser) infoMod
-  where
-    infoMod =
-      fold
-        [ progDesc "Construct new version"
-        ]
-
-    parser =
-      go
-        <$> argument
-          some_base_dir_read
-          ( fold
-              [ metavar "BACKUP_ROOT"
-              , help "directory you'd like to backup"
-              ]
-          )
-
-    go dir_to_backup = run_backup_repo_t_from_cwd $ do
-      let
-        process_reporter = forever $ do
-          Un.mask_ report_backup_stat
-          Un.threadDelay (1000 * 1000)
-
-      v <- Ki.scoped $ \scope -> do
-        _ <- Ki.fork scope process_reporter
-        Repo.backup $ T.pack $ Path.fromSomeDir dir_to_backup
-
-      liftIO (putStrLn "result:") >> report_backup_stat
-      liftIO $ print v
-
-report_backup_stat :: (MonadBackupStat m, MonadUnliftIO m) => m ()
-report_backup_stat = do
-  process_file_count <- BackupSt.readStatistics BackupSt.processedFileCount
-  total_file_count <- BackupSt.readStatistics BackupSt.totalFileCount
-  process_dir_count <- BackupSt.readStatistics BackupSt.processedDirCount
-  total_dir_count <- BackupSt.readStatistics BackupSt.totalDirCount
-  process_chunk_count <- BackupSt.readStatistics BackupSt.processedChunkCount
-  upload_bytes <- BackupSt.readStatistics BackupSt.uploadedBytes
-  liftIO $
-    putStrLn $
-      fold
-        [ show process_file_count
-        , "/"
-        , show total_file_count
-        , " files, "
-        , show process_dir_count
-        , "/"
-        , show total_dir_count
-        , " dirs, "
-        , show process_chunk_count
-        , " chunks, "
-        , show upload_bytes
-        , " bytes"
-        ]
 
 parser_info_gc :: ParserInfo (IO ())
 parser_info_gc = info (helper <*> parser) infoMod
