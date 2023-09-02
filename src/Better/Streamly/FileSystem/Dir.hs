@@ -65,7 +65,7 @@ eitherReader :: (MonadIO m, MonadCatch m)
              => UF.Unfold m (Path rel_or_abs Path.Dir) (Either (Path Path.Rel Path.File) (Path Path.Rel Path.Dir))
 eitherReader = UF.mapM2 f reader
   where
-    {-# INLINE[0] f #-}
+    {-# INLINE f #-}
     f dir filepath = liftIO $ do
       filepath' <- Path.parseRelFile filepath
       isDir <- fmap P.isDirectory $ P.getFileStatus $ Path.toFilePath $ dir </> filepath'
