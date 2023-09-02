@@ -1,5 +1,12 @@
 packages: ./*.cabal
 
+package *
+  ghc-options: -split-sections
+  gcc-options: -fdata-sections -ffunction-sections
+
+package better
+  ld-options: -Wl,--gc-sections
+
 package streamly-core
   flags: +use-unliftio
 
