@@ -68,7 +68,7 @@ eitherReader = UF.mapM2 f reader
     {-# INLINE f #-}
     f dir filepath = liftIO $ do
       filepath' <- Path.parseRelFile filepath
-      isDir <- fmap P.isDirectory $ P.getFileStatus $ Path.toFilePath $ dir </> filepath'
+      isDir <- fmap P.isDirectory $ P.getSymbolicLinkStatus $ Path.toFilePath $ dir </> filepath'
       filepath
         & if isDir
           then fmap Right . Path.parseRelDir
