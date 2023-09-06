@@ -1,31 +1,38 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE FlexibleInstances #-}
 
-module Better.Streamly.FileSystem.Chunker
-  ( Chunk(..)
-  , GearHashConfig
-  , defaultGearHashConfig
-  , gearHash
-  ) where
+module Better.Streamly.FileSystem.Chunker (
+  Chunk (..),
+  GearHashConfig,
+  defaultGearHashConfig,
+  gearHash,
+) where
+
+import Fusion.Plugin.Types (Fuse (Fuse))
+
+import qualified Data.ByteString as BS
+import qualified Data.ByteString.Unsafe as BS
+
+import GHC.Types (SPEC (SPEC))
 
 import qualified Data.Bits as Bits
-import Data.Function (fix)
+import Data.Function (fix, (&))
 
 import qualified Data.Vector.Unboxed as UV
 
 import qualified System.Random as Rng
 import qualified System.Random.SplitMix as Rng
 
-import Streamly.Internal.System.IO (defaultChunkSize)
-import qualified Streamly.Data.MutArray as MA
-import qualified Streamly.Internal.Data.Array.Mut.Type as MA
+import qualified Streamly.Internal.Data.Array as A
+import qualified Streamly.Internal.Data.Array.Type as A
 
 import qualified Streamly.Data.Stream.Prelude as S
 import qualified Streamly.FileSystem.File as File
 import qualified Streamly.Internal.Data.Stream as S
 
-import System.IO (hGetBufSome, Handle, IOMode(ReadMode))
-
-import Data.Word (Word8, Word64)
+import qualified Data.ByteArray as BA
+import Data.Word (Word64, Word8)
+import Streamly.Internal.Data.SVar (adaptState)
 
 -- | Chunk section after chunking.
 data Chunk = Chunk
@@ -42,84 +49,106 @@ data GearHashConfig = GearHashConfig
   deriving (Show)
 
 defaultGearHashConfig :: GearHashConfig
-defaultGearHashConfig = GearHashConfig
-  { gearhash_mask = Bits.shiftL maxBound (64 - 15) -- 32KiB
-  }
+defaultGearHashConfig =
+  GearHashConfig
+    { gearhash_mask = Bits.shiftL maxBound (64 - 15) -- 32KiB
+    }
+
+-- TODO Consider using strict Maybe from Strict module.
+data SMaybe a = SJust !a | SNothing
+
+{-# ANN type GearState Fuse #-}
+data GearState s
+  = GearFinding !BS.ByteString !Word64 !Int !Int s
+  | GearEnd
+
+{-# INLINE gearHashPure #-}
+gearHashPure :: (BA.ByteArrayAccess ba, Monad m) => GearHashConfig -> S.Stream m ba -> S.Stream m Chunk
+gearHashPure (GearHashConfig !mask) (S.Stream !inner_step inner_s0) = S.Stream step $! GearFinding empty_view 0 0 0 inner_s0
+  where
+    empty_view = BS.empty
+
+    {-# INLINE [0] step #-}
+    step st (GearFinding buf' last_hash chunk_begin' read_bytes inner_s) = do
+      ret <-
+        if BS.length buf' /= 0
+          then pure $ S.Yield buf' inner_s
+          else fmap BA.convert <$> inner_step (adaptState st) inner_s
+
+      case ret of
+        S.Yield !buf next_inner_s -> do
+          case search_break_point last_hash buf mask of
+            -- No breakpoing was found in entire buf, try next block
+            (SNothing, !new_gear) -> do
+              pure $!
+                S.Skip $!
+                  GearFinding
+                    empty_view
+                    new_gear
+                    chunk_begin'
+                    (read_bytes + BS.length buf)
+                    next_inner_s
+            -- Breakpoint was found after reading n bytes from buf, try next block
+            (SJust read_bytes_of_arr, !new_gear) -> do
+              let
+                !chunk_end' = chunk_begin' + read_bytes + read_bytes_of_arr
+                !new_chunk = Chunk chunk_begin' chunk_end'
+
+              pure $!
+                S.Yield new_chunk $!
+                  GearFinding
+                    (BS.drop read_bytes_of_arr buf)
+                    new_gear
+                    chunk_end'
+                    0
+                    next_inner_s
+        S.Skip next_inner_s -> pure $! S.Skip $! GearFinding buf' last_hash chunk_begin' read_bytes next_inner_s
+        S.Stop ->
+          if read_bytes /= 0
+            then -- The last chunk to yield
+
+              let
+                !chunk_end' = chunk_begin' + read_bytes
+                !next_chunk = Chunk chunk_begin' chunk_end'
+              in
+                pure $! S.Yield next_chunk GearEnd
+            else pure S.Stop
+    step _ GearEnd = pure S.Stop
+
+{-# INLINE search_break_point #-}
+search_break_point :: Word64 -> BS.ByteString -> Word64 -> (SMaybe Int, Word64)
+search_break_point !init_hash !buf !mask = flip fix (SPEC, init_hash, 0) $ \rec (!spec, !cur_hash, !i) ->
+  if i >= BA.length buf
+    then (SNothing, cur_hash)
+    else do
+      let new_hash = gear_hash_update cur_hash $! buf `BS.unsafeIndex` i
+      if new_hash Bits..&. mask == 0
+        then (SJust (i + 1), new_hash)
+        else rec (spec, new_hash, i + 1)
+
+newtype ArrayBA = ArrayBA (A.Array Word8)
+
+instance BA.ByteArrayAccess ArrayBA where
+  length (ArrayBA arr) = A.byteLength arr
+  {-# INLINE length #-}
+  withByteArray (ArrayBA arr) = A.asPtrUnsafe (A.castUnsafe arr)
+  {-# INLINE withByteArray #-}
 
 {-# INLINE gearHash #-}
 gearHash :: GearHashConfig -> FilePath -> S.Stream IO Chunk
-gearHash (GearHashConfig mask) file = File.withFile file ReadMode $ \h ->
-  (S.bracket (MA.newPinnedBytes defaultChunkSize) (const $ pure ())
-    $ \arr -> S.Stream step (h, 0, 0, 0, arr)
-  )
-  where
-    -- WARN st might be `undefined` therefore we'd like to keep it lazy here.
-    {-# INLINE[0] step #-}
-    step :: st -> (Handle, Word64, Int, Int, MA.MutArray Word8) -> IO (S.Step (Handle, Word64, Int, Int, MA.MutArray Word8) Chunk)
-    step ~_ (h, last_hash, chunk_begin', read_bytes, arr') = do
-      arr <- if MA.byteLength arr' == 0
-        then unsafe_refill_mutarray arr' h
-        else pure arr'
-
-      if MA.byteLength arr == 0
-         then if read_bytes /= 0
-           -- The last chunk to yield
-           then do
-             let chunk_end' = chunk_begin' + read_bytes
-             pure
-               $ S.Yield (Chunk chunk_begin' chunk_end')
-               -- Make sure new stats here could result in S.Stop in the next step
-               $ (h, last_hash, chunk_end', 0, arr)
-           else pure $ S.Stop
-        else do
-           breakpoint_offset_and_hash <- flip fix (last_hash, 0) $ \(~rec) (cur_hash, i) -> do
-             if i >= MA.byteLength arr
-                then pure (Nothing, cur_hash)
-                else do
-                  w8 <- MA.getIndexUnsafe i arr
-                  let new_hash = gear_hash_update cur_hash w8
-                  if new_hash Bits..&. mask == 0
-                    then pure $ (Just (i + 1), new_hash)
-                    else rec (new_hash, i + 1)
-
-           case breakpoint_offset_and_hash of
-             -- No breakpoing was found in arr, try next block
-             (Nothing, new_gear) -> do
-               pure $ S.Skip
-                 ( h
-                 , new_gear
-                 , chunk_begin'
-                 , read_bytes + MA.byteLength arr
-                 , arr { MA.arrStart = MA.arrEnd arr }
-                 )
-             -- Breakpoint was found after reading n bytes from arr, try next block
-             (Just read_bytes_of_arr, new_gear) -> do
-               let chunk_end' = chunk_begin' + read_bytes + read_bytes_of_arr
-               pure $ S.Yield (Chunk chunk_begin' chunk_end')
-                 ( h
-                 , new_gear
-                 , chunk_end'
-                 , 0
-                 , arr { MA.arrStart = MA.arrStart arr + read_bytes_of_arr}
-                 )
+gearHash config file = File.readChunks file & fmap ArrayBA & gearHashPure config
 
 -- TODO Should this large vector be here or locally to its user to be memory usage
 -- friendly?
 gear_table :: UV.Vector Word64
-gear_table = UV.fromListN 256
-  $ Rng.randoms
-  -- CAUTION Don't change seeds unless you'd like to break old deduplications.
-  $ Rng.seedSMGen 123 456
+gear_table =
+  UV.fromListN 256 $
+    Rng.randoms
+    -- CAUTION Don't change seeds unless you'd like to break old deduplications.
+    $
+      Rng.seedSMGen 123 456
 
-{-# INLINE gear_hash_update #-}
 gear_hash_update :: Word64 -> Word8 -> Word64
-gear_hash_update !w64 !w8
-  = Bits.unsafeShiftL w64 1
-  + UV.unsafeIndex gear_table (fromIntegral w8)
-
--- Unsafe: input MutArray shouldn't be used anymore outside of this function.
-{-# INLINE unsafe_refill_mutarray #-}
-unsafe_refill_mutarray :: MA.MutArray Word8 -> Handle -> IO (MA.MutArray Word8)
-unsafe_refill_mutarray arr h = MA.asPtrUnsafe (arr { MA.arrStart = 0 }) $ \p -> do
-  n <- hGetBufSome h p (MA.arrBound arr)
-  return $ arr { MA.arrStart = 0, MA.arrEnd = n }
+gear_hash_update !w64 !w8 =
+  Bits.unsafeShiftL w64 1
+    + UV.unsafeIndex gear_table (fromIntegral w8)
