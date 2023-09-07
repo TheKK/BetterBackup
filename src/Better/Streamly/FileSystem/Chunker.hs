@@ -1,5 +1,6 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module Better.Streamly.FileSystem.Chunker (
   Chunk (..),
@@ -7,6 +8,9 @@ module Better.Streamly.FileSystem.Chunker (
   defaultGearHashConfig,
   gearHash,
   gearHashPure,
+
+  -- * Tests
+  props_distribute,
 ) where
 
 import Fusion.Plugin.Types (Fuse (Fuse))
@@ -32,8 +36,14 @@ import qualified Streamly.FileSystem.File as File
 import qualified Streamly.Internal.Data.Stream as S
 
 import qualified Data.ByteArray as BA
-import Data.Word (Word64, Word8)
+import Data.List (foldl')
+import Data.Word (Word32, Word64, Word8)
 import Streamly.Internal.Data.SVar (adaptState)
+
+import Control.Monad (forM_)
+import qualified Hedgehog as H
+import qualified Hedgehog.Gen as Gen
+import qualified Hedgehog.Range as Range
 
 -- | Chunk section after chunking.
 data Chunk = Chunk
@@ -153,3 +163,36 @@ gear_hash_update :: Word64 -> Word8 -> Word64
 gear_hash_update !w64 !w8 =
   Bits.unsafeShiftL w64 1
     + UV.unsafeIndex gear_table (fromIntegral w8)
+
+distribute :: Word32 -> Word32 -> Word64
+distribute 0 _ = 0
+distribute _ 0 = 0
+distribute n1 origin_n = fst . foldl' step (1 :: Word64, width) $ replicate (fromIntegral n - 1) (0 :: Int)
+  where
+    n = origin_n `min` 64
+
+    step (!acc, !remain_width) _ =
+      if remain_width - 1 > 0
+        then ((acc `Bits.unsafeShiftL` 1) Bits..|. 0, remain_width - 1)
+        else ((acc `Bits.unsafeShiftL` 1) Bits..|. 1, remain_width - 1 + width)
+
+    width :: Double
+    width = fromIntegral n / fromIntegral n1
+
+props_distribute :: [(String, H.PropertyT IO ())]
+props_distribute =
+  [ ("64bit width", prop_distribute_64bits)
+  , ("prop", prop_distribute)
+  ]
+  where
+    prop_distribute_64bits :: H.PropertyT IO ()
+    prop_distribute_64bits = do
+      forM_ [0 .. fromIntegral (Bits.finiteBitSize (undefined :: Word64)) * 2] $ \n ->
+        Bits.popCount (distribute n 64) H.=== (fromIntegral n `min` 64)
+
+    prop_distribute :: H.PropertyT IO ()
+    prop_distribute = do
+      n <- H.forAll $ Gen.word32 $ Range.constant 0 100
+      n1 <- H.forAll $ Gen.word32 $ Range.constant 0 100
+
+      fromIntegral (Bits.popCount (distribute n1 n)) H.=== (n `min` n1 `min` fromIntegral (Bits.finiteBitSize (undefined :: Word64)))
