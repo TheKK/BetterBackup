@@ -6,6 +6,7 @@ module Better.Streamly.FileSystem.Chunker (
   GearHashConfig,
   defaultGearHashConfig,
   gearHash,
+  gearHashPure,
 ) where
 
 import Fusion.Plugin.Types (Fuse (Fuse))
