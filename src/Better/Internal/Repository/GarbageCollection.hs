@@ -63,7 +63,7 @@ garbageCollection :: (MonadCatch m, MonadRepository m, MonadUnliftIO m) => m ()
 garbageCollection = gc_tree >>= gc_file >>= gc_chunk
   where
     {-# INLINE [2] gc_tree #-}
-    gc_tree :: (MonadCatch m, MonadRepository m, MonadUnliftIO m) => m (Un.TVar (Set.Set (Digest SHA256)))
+    gc_tree :: (MonadCatch m, MonadRepository m, MonadUnliftIO m) => m (Set.Set (Digest SHA256))
     gc_tree = Debug.Trace.traceMarker "gc_tree" $ do
       (traversal_queue, live_tree_set) <- do
         trees <-
@@ -84,7 +84,7 @@ garbageCollection = gc_tree >>= gc_file >>= gc_chunk
       live_worker_num <- Un.newTVarIO worker_num
       waiting_num <- Un.newTVarIO (0 :: Int)
       replicateConcurrently_ worker_num $ do
-        fix $ \(~cont) -> do
+        fix $ \cont -> do
           opt_to_traverse <- Un.bracket_ (Un.atomically $ Un.modifyTVar' waiting_num succ) (Un.atomically $ Un.modifyTVar' waiting_num pred) $ Un.atomically $ do
             opt_to_traverse' <- Un.tryReadTQueue traversal_queue
             case opt_to_traverse' of
@@ -134,49 +134,46 @@ garbageCollection = gc_tree >>= gc_file >>= gc_chunk
               tree_sha' <- s2d $ Path.fromRelFile rel_tree_file
               exist <- Set.member tree_sha' <$> Un.atomically (Un.readTVar live_tree_set)
               unless exist $ void $ tryIO $ do
-                Un.atomically $ Un.modifyTVar' live_tree_set $ Set.delete tree_sha'
                 liftIO $ putStrLn $ "delete tree: " <> Path.toFilePath rel_tree_file
                 removeFiles [folder_tree </> rel_tree_file]
           )
         & S.fold F.drain
       liftIO $ Debug.Trace.traceMarkerIO "gc_tree/delete/end"
 
-      pure live_file_set
+      Un.atomically $ Un.readTVar live_file_set
 
     {-# INLINE [2] gc_file #-}
-    gc_file :: (MonadCatch m, MonadRepository m, MonadUnliftIO m) => Un.TVar (Set.Set (Digest SHA256)) -> m (Un.TVar (Set.Set (Digest SHA256)))
+    gc_file :: (MonadCatch m, MonadRepository m, MonadUnliftIO m) => Set.Set (Digest SHA256) -> m (Set.Set (Digest SHA256))
     gc_file live_file_set = Debug.Trace.traceMarker "gc_file" $ do
-      live_chunk_set <-
-        listFolderFiles folder_file
-          & S.parMapM
-            (S.eager True . S.maxBuffer 10)
-            ( \rel_file -> do
-                file_sha' <- s2d $ Path.fromRelFile rel_file
-                exist <- Set.member file_sha' <$> Un.atomically (Un.readTVar live_file_set)
-                unless exist $ void $ tryIO $ do
-                  Un.atomically $ Un.modifyTVar' live_file_set $ Set.delete file_sha'
+      listFolderFiles folder_file
+        & S.parMapM
+          (S.eager True . S.maxBuffer 10)
+          ( \rel_file -> do
+              file_sha' <- s2d $ Path.fromRelFile rel_file
+              let still_alive = Set.member file_sha' live_file_set
+
+              if still_alive
+                then do
+                  pure $! (catFile file_sha' & fmap chunk_name)
+                else do
                   liftIO $ putStrLn $ "delete file: " <> Path.toFilePath rel_file
-                  removeFiles [folder_file </> rel_file]
-
-                pure (catFile file_sha' & fmap chunk_name)
-            )
-          & S.concatMap id
-          & S.fold F.toSet
-
-      Un.newTVarIO live_chunk_set
+                  void $ tryIO $ removeFiles [folder_file </> rel_file]
+                  pure S.nil
+          )
+        & S.concatMap id
+        & S.fold F.toSet
 
     {-# INLINE [2] gc_chunk #-}
-    gc_chunk :: (MonadCatch m, MonadRepository m, MonadUnliftIO m) => Un.TVar (Set.Set (Digest SHA256)) -> m ()
+    gc_chunk :: (MonadCatch m, MonadRepository m, MonadUnliftIO m) => Set.Set (Digest SHA256) -> m ()
     gc_chunk live_chunk_set = Debug.Trace.traceMarker "gc_chunk" $ do
       listFolderFiles folder_chunk
         & S.parMapM
           (S.eager True . S.maxBuffer 10)
           ( \rel_chunk -> do
               chunk_sha' <- s2d $ Path.fromRelFile rel_chunk
-              exist <- Set.member chunk_sha' <$> Un.atomically (Un.readTVar live_chunk_set)
+              let exist = Set.member chunk_sha' live_chunk_set
               unless exist $ void $ tryIO $ do
-                Un.atomically $ Un.modifyTVar' live_chunk_set $ Set.delete chunk_sha'
                 liftIO $ putStrLn $ "delete chunk: " <> Path.toFilePath rel_chunk
-                removeFiles [folder_file </> rel_chunk]
+                removeFiles [folder_chunk </> rel_chunk]
           )
         & S.fold F.drain
