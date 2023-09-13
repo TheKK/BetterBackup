@@ -1,10 +1,10 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE Strict #-}
 {-# LANGUAGE TypeApplications #-}
 
 module Better.Internal.Streamly.Crypto.AES (
@@ -14,8 +14,11 @@ module Better.Internal.Streamly.Crypto.AES (
   unsafeDecryptCtr,
   that_aes,
   compact,
+  compact',
 )
 where
+
+import GHC.Types (SPEC(SPEC))
 
 import Control.Exception (assert)
 import Control.Monad (when)
@@ -204,3 +207,65 @@ instance BA.ByteArrayAccess MArrayBA where
   {-# INLINE length #-}
   withByteArray (MArrayBA arr) = MA.asPtrUnsafe (MA.castUnsafe arr)
   {-# INLINE withByteArray #-}
+
+data BufReadEnv' s = BufReadEnv'
+  { _br_next' :: !(s -> IO (D.Step s BS.ByteString))
+  , _br_innerStreamState' :: !(Maybe s)
+  , _br_buf' :: !BS.ByteString
+  }
+
+fill_buffer' :: ST.StateT (BufReadEnv' s) IO BS.ByteString
+fill_buffer' = do
+  BufReadEnv' next opt_s buf <- ST.get
+  if BS.length buf > 0
+    then pure buf
+    else case opt_s of
+      Just s0 -> flip fix (SPEC, s0) $ \(~rec) (!spec, s) -> do
+        ret <- liftIO $ next s
+        case ret of
+          D.Yield !next_buf next_s ->
+            if not $ BA.null next_buf
+              then do
+                ST.put $ BufReadEnv' next (Just next_s) next_buf
+                pure next_buf
+              else rec (spec, next_s)
+          D.Skip next_s -> rec (spec, next_s)
+          D.Stop -> do
+            ST.put $ BufReadEnv' next Nothing buf
+            pure buf
+      Nothing -> pure buf
+{-# INLINE fill_buffer' #-}
+
+unsafe_copy_to_muarr' :: BS.ByteString -> BS.ByteString -> Int -> IO (BS.ByteString, Int)
+unsafe_copy_to_muarr' !ba !buf !buf_offset = assert (BS.length buf - buf_offset >= BS.length ba) $ BA.withByteArray buf $ \buf_ptr -> do
+  BA.copyByteArrayToPtr ba (buf_ptr `plusPtr` buf_offset)
+  pure $! (buf, buf_offset + BA.length ba)
+{-# INLINE unsafe_copy_to_muarr' #-}
+
+compact' :: (BA.ByteArray ba) => Int -> D.Stream IO ba -> D.Stream IO ba
+compact' n (D.Stream inner_step inner_s0) = D.Stream step s0
+  where
+    s0 = (Just inner_s0, BS.empty)
+
+    {-# INLINE [0] step #-}
+    step st (!opt_s, !buf) = do
+      flip fix (SPEC, BS.replicate n 0, 0, BufReadEnv' (fmap (fmap BA.convert) . inner_step st) opt_s buf) $ \(rec) (!spec, !marr, !marr_end, !buf_read_env) -> do
+        let !count_to_read = BS.length marr - marr_end
+
+        (arr, next_buf_read_env@(BufReadEnv' _ next_opt_s next_buf)) <- ST.runStateT fill_buffer' buf_read_env
+        if BA.length arr /= 0
+          then case BA.length arr `compare` count_to_read of
+            LT -> do
+              (!marr', !marr_end') <- unsafe_copy_to_muarr' arr marr marr_end
+              rec (spec, marr', marr_end', next_buf_read_env)
+            _ -> do
+              (!marr', !marr_end') <- unsafe_copy_to_muarr' (BS.take count_to_read arr) marr marr_end
+              let !item = BA.convert marr'
+              pure $! D.Yield item (next_opt_s, BS.drop count_to_read next_buf)
+          else
+            if marr_end /= 0
+              then do
+                let !item = BA.convert $ BS.take marr_end marr
+                pure $! D.Yield item (next_opt_s, next_buf)
+              else pure D.Stop
+{-# INLINE compact' #-}

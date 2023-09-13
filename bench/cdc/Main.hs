@@ -1,5 +1,6 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeApplications #-}
 
@@ -13,7 +14,7 @@ import Data.Foldable (Foldable (foldl'), for_)
 import Data.Function ((&))
 import qualified Data.HashSet as HashSet
 import qualified Data.Set as Set
-import Data.Word (Word64)
+import Data.Word (Word64, Word8)
 
 import qualified Streamly.Data.Fold as F
 import qualified Streamly.Data.Stream.Prelude as S
@@ -41,7 +42,7 @@ import qualified Data.ByteString as BS
 
 import qualified Better.Hash as Hash
 import Better.Internal.Streamly.Crypto.AES (compact, decryptCtr, encryptCtr, that_aes, unsafeEncryptCtr)
-import Better.Streamly.FileSystem.Chunker (defaultGearHashConfig, gearHash)
+import Better.Streamly.FileSystem.Chunker (defaultGearHashConfig, gearHash, gearHashPure)
 import qualified Better.Streamly.FileSystem.Chunker as Chunker
 import Data.Functor.Identity (Identity (runIdentity))
 import qualified Streamly.Internal.FileSystem.File as File
@@ -53,9 +54,33 @@ import qualified System.Random as Rng
 import qualified System.Random.SplitMix as Sp
 
 import Control.Concurrent.STM
+import Crypto.Cipher.Types (BlockCipher (blockSize))
+import Crypto.Data.Padding (Format (PKCS7), pad)
+import qualified Data.ByteArray as BA
 import Data.IORef
-import Crypto.Data.Padding (pad, Format (PKCS7))
-import Crypto.Cipher.Types (BlockCipher(blockSize))
+import Foreign.Storable (Storable (peek))
+import qualified Streamly.Data.Array as Array
+import qualified Streamly.Internal.Data.Array as Array
+import qualified Streamly.Internal.Data.Array.Mut.Type as MA
+import qualified Streamly.Internal.Data.Array.Type as Array
+
+import qualified Better.Test as NEW
+
+newtype ArrayBA = ArrayBA {un_array_ba :: Array.Array Word8}
+  deriving (Eq, Ord, Monoid, Semigroup)
+
+instance BA.ByteArrayAccess ArrayBA where
+  length (ArrayBA arr) = Array.byteLength arr
+  {-# INLINE length #-}
+  withByteArray (ArrayBA arr) = Array.asPtrUnsafe (Array.castUnsafe arr)
+  {-# INLINE withByteArray #-}
+
+instance BA.ByteArray ArrayBA where
+  allocRet n f = do
+    ma <- MA.newPinned @_ @Word8 n
+    MA.asPtrUnsafe (MA.castUnsafe ma) $ \p -> do
+      ret <- f p
+      pure (ret, ArrayBA $ Array.unsafeFreeze $ ma{MA.arrEnd = MA.arrBound ma})
 
 -- 50 MiB = 1600 * 32KiB
 {-# NOINLINE input #-}
@@ -75,19 +100,70 @@ main =
                     & S.fold F.drain
               )
               file
-        , bench "gear-then-read-with-file" $
+        , bench "gear-pure" $
             whnfAppIO
               ( \file' ->
-                  gearHash defaultGearHashConfig file'
-                    & S.mapM
-                      ( \(Chunker.Chunk b e) -> do
-                          S.unfold File.chunkReaderFromToWith (b, e - 1, defaultChunkSize, file')
-                            & S.fold F.toList
-                      )
+                  File.readChunks file'
+                    & fmap ArrayBA
+                    & gearHashPure defaultGearHashConfig
+                    & S.mapM (\(!a) -> pure a)
+                    & S.fold F.latest
+              )
+              file
+        , bgroup
+            "new"
+            [ bench "gear" $
+                whnfAppIO
+                  ( \file' ->
+                      NEW.gearHash defaultGearHashConfig file'
+                        & S.mapM (\(!a) -> pure a)
+                        & S.fold F.latest
+                  )
+                  file
+            , bench "gear-pure" $
+                whnfAppIO
+                  ( \file' ->
+                      File.readChunks file'
+                        & fmap ArrayBA
+                        & NEW.gearHashPure defaultGearHashConfig
+                        & S.mapM (\(!a) -> pure a)
+                        & S.fold F.latest
+                  )
+                  file
+            , bench "gear-then-read-with-fd" $
+                whnfAppIO
+                  ( \file' ->
+                      withFile file' ReadMode $ \fp -> do
+                        NEW.gearHash defaultGearHashConfig file'
+                          & S.mapM
+                            ( \(Chunker.Chunk b e) -> do
+                                S.unfold Handle.chunkReaderFromToWith (b, e - 1, defaultChunkSize, fp)
+                                  & S.fold F.toList
+                            )
+                          & S.mapM (\(!a) -> pure a)
+                          & S.fold F.drain
+                  )
+                  file
+            ]
+        , bench "gear-pure-input-IO-50MiB" $
+            nfAppIO
+              ( \input' ->
+                  S.fromList input'
+                    & gearHashPure defaultGearHashConfig
                     & S.mapM (\(!a) -> pure a)
                     & S.fold F.drain
               )
-              file
+              input
+        , bench "gear-pure-input-Identity-50MiB" $
+            whnf
+              ( \input' ->
+                  S.fromList input'
+                    & gearHashPure defaultGearHashConfig
+                    & S.mapM (\(!a) -> pure a)
+                    & S.fold F.latest
+                    & runIdentity
+              )
+              input
         , bench "gear-then-read-with-fd" $
             whnfAppIO
               ( \file' ->
@@ -100,6 +176,19 @@ main =
                         )
                       & S.mapM (\(!a) -> pure a)
                       & S.fold F.drain
+              )
+              file
+        , bench "gear-then-read-with-file" $
+            whnfAppIO
+              ( \file' ->
+                  gearHash defaultGearHashConfig file'
+                    & S.mapM
+                      ( \(Chunker.Chunk b e) -> do
+                          S.unfold File.chunkReaderFromToWith (b, e - 1, defaultChunkSize, file')
+                            & S.fold F.toList
+                      )
+                    & S.mapM (\(!a) -> pure a)
+                    & S.fold F.drain
               )
               file
         ]

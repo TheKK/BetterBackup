@@ -1,11 +1,16 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeApplications #-}
 
 module Better.Streamly.FileSystem.Chunker (
   Chunk (..),
-  GearHashConfig,
+  GearHashConfig (..),
   defaultGearHashConfig,
+  gearHashConfig,
+  gearHashConfigMinChunkSize,
+  gearHashConfigMaxChunkSize,
+
   gearHash,
   gearHashPure,
 
@@ -52,18 +57,44 @@ data Chunk = Chunk
   , chunk_end :: {-# UNPACK #-} !Int
   -- ^ End of chunk, start from zero and exclusive.
   }
-  deriving (Show)
+  deriving (Show, Eq)
 
 data GearHashConfig = GearHashConfig
-  { gearhash_mask :: {-# UNPACK #-} !Word64
+  { gearhash_low_mask :: {-# UNPACK #-} !Word64
+  , gearhash_high_mask :: {-# UNPACK #-} !Word64
+  , gearhash_min_size :: {-# UNPACK #-} !Word32
+  , gearhash_avg_size :: {-# UNPACK #-} !Word32
+  , gearhash_max_size :: {-# UNPACK #-} !Word32
   }
   deriving (Show)
 
-defaultGearHashConfig :: GearHashConfig
-defaultGearHashConfig =
+gearHashConfig :: Word32 -> Word32 -> GearHashConfig
+gearHashConfig normalize_level avg_bytes =
   GearHashConfig
-    { gearhash_mask = Bits.shiftL maxBound (64 - 15) -- 32KiB
+    { gearhash_low_mask = distribute (floor @Double $ logBase 2 $ fromIntegral max_bytes) 48
+    , gearhash_high_mask = distribute (ceiling @Double $ logBase 2 $ fromIntegral min_bytes) 48
+    , gearhash_min_size = min_bytes
+    , gearhash_avg_size = avg_bytes
+    , gearhash_max_size = max_bytes
     }
+  where
+    min_bytes = avg_bytes `div` (2 ^ normalize_level)
+    max_bytes = avg_bytes * (2 ^ normalize_level)
+
+defaultGearHashConfig :: GearHashConfig
+defaultGearHashConfig = gearHashConfig normalize_level avg_bytes
+  where
+    normalize_level :: Word32
+    normalize_level = 1
+
+    avg_bytes :: Word32
+    avg_bytes = 32 * 2 ^ (10 :: Int)
+
+gearHashConfigMinChunkSize :: GearHashConfig -> Word32
+gearHashConfigMinChunkSize c = gearhash_min_size c
+
+gearHashConfigMaxChunkSize :: GearHashConfig -> Word32
+gearHashConfigMaxChunkSize c = gearhash_max_size c * 2
 
 -- TODO Consider using strict Maybe from Strict module.
 data SMaybe a = SJust !a | SNothing
@@ -75,8 +106,11 @@ data GearState s
 
 {-# INLINE gearHashPure #-}
 gearHashPure :: (BA.ByteArrayAccess ba, Monad m) => GearHashConfig -> S.Stream m ba -> S.Stream m Chunk
-gearHashPure (GearHashConfig !mask) (S.Stream !inner_step inner_s0) = S.Stream step $! GearFinding empty_view 0 0 0 inner_s0
+gearHashPure (_) (S.Stream !inner_step inner_s0) = S.Stream step $! GearFinding empty_view 0 0 0 inner_s0
   where
+    mask :: Word64
+    mask = distribute 15 48
+
     empty_view = BS.empty
 
     {-# INLINE [0] step #-}

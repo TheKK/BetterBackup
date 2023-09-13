@@ -126,7 +126,7 @@ import Better.Repository.Types (Version(..))
 import Data.ByteArray (ByteArrayAccess(..))
 import qualified Data.ByteArray.Encoding as BA
 import qualified Data.ByteArray as BA
-import Better.Internal.Streamly.Crypto.AES (decryptCtr)
+import Better.Internal.Streamly.Crypto.AES (decryptCtr, that_aes)
 
 import qualified Crypto.Cipher.AES as Cipher
 import qualified Crypto.Cipher.Types as Cipher
@@ -390,7 +390,7 @@ instance BA.ByteArray (ArrayBA Word8) where
 catChunk :: (MonadUnliftIO m, MonadThrow m, MonadIO m, MonadRepository m)
          => Digest SHA256 -> S.Stream m (Array.Array Word8)
 catChunk digest = S.concatEffect $ do
-  aes <- liftIO that_key
+  aes <- liftIO that_aes
   withRunInIO $ \unlift_io -> pure $
     cat_stuff_under folder_chunk digest
       & S.morphInner unlift_io

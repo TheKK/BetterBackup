@@ -66,9 +66,10 @@ common warnings
       -flate-specialise
       -fmax-worker-args=16
       -fspec-constr-recursive=16
-      -- -fdistinct-constructor-tables
-      -- -finfo-table-map
+      -fdistinct-constructor-tables
+      -finfo-table-map
       -funfolding-use-threshold=16
+      -fexpose-all-unfoldings
       -optc-O3
       -optcxx-O3
       -optlc-O3
@@ -82,6 +83,7 @@ common deps
 library better-core
     import:           warnings, deps
     exposed-modules:
+      Better.Test
       Better.Internal.Repository
       Better.Internal.Repository.LowLevel
       Better.Internal.Repository.GarbageCollection
@@ -100,7 +102,7 @@ library better-core
       Better.Statistics.Backup
       Better.Statistics.Backup.Class
       Better.Statistics.Backup.Default
-    build-depends:  vector, random, splitmix, leveldb-haskell, binary, ki-unlifted, parallel, fusion-plugin-types, async, ghc-prim, hedgehog
+    build-depends:  vector, random, splitmix, leveldb-haskell, binary, ki-unlifted, parallel, fusion-plugin-types, async, ghc-prim, hedgehog, blake3, basement
     hs-source-dirs:   src
     default-language: Haskell2010
 
@@ -142,4 +144,4 @@ benchmark cdc
     main-is:          Main.hs
     hs-source-dirs:   bench/cdc
     default-language: Haskell2010
-    build-depends:  base ^>=4.16, better-core, streamly, streamly-core, criterion, fusion-plugin, crypton, bytestring, path, stm, random, splitmix, containers, unordered-containers
+    build-depends:  base ^>=4.16, better-core, streamly, streamly-core, criterion, fusion-plugin, crypton, bytestring, path, stm, random, splitmix, containers, unordered-containers, memory
