@@ -53,9 +53,28 @@ import qualified System.Random as Rng
 import qualified System.Random.SplitMix as Sp
 
 import Control.Concurrent.STM
+import qualified Data.ByteArray as BA
 import Data.IORef
-import Crypto.Data.Padding (pad, Format (PKCS7))
-import Crypto.Cipher.Types (BlockCipher(blockSize))
+import qualified Streamly.Data.Array as Array
+import qualified Streamly.Internal.Data.Array as Array
+import qualified Streamly.Internal.Data.Array.Mut.Type as MA
+import qualified Streamly.Internal.Data.Array.Type as Array
+
+newtype ArrayBA = ArrayBA {un_array_ba :: Array.Array Word8}
+  deriving (Eq, Ord, Monoid, Semigroup)
+
+instance BA.ByteArrayAccess ArrayBA where
+  length (ArrayBA arr) = Array.byteLength arr
+  {-# INLINE length #-}
+  withByteArray (ArrayBA arr) = Array.asPtrUnsafe (Array.castUnsafe arr)
+  {-# INLINE withByteArray #-}
+
+instance BA.ByteArray ArrayBA where
+  allocRet n f = do
+    ma <- MA.newPinned @_ @Word8 n
+    MA.asPtrUnsafe (MA.castUnsafe ma) $ \p -> do
+      ret <- f p
+      pure (ret, ArrayBA $ Array.unsafeFreeze $ ma{MA.arrEnd = MA.arrBound ma})
 
 -- 50 MiB = 1600 * 32KiB
 {-# NOINLINE input #-}
@@ -78,12 +97,18 @@ main =
         , bench "gear-then-read-with-file" $
             whnfAppIO
               ( \file' ->
-                  gearHash defaultGearHashConfig file'
-                    & S.mapM
-                      ( \(Chunker.Chunk b e) -> do
-                          S.unfold File.chunkReaderFromToWith (b, e - 1, defaultChunkSize, file')
-                            & S.fold F.toList
-                      )
+                  File.readChunks file'
+                    & fmap ArrayBA
+                    & gearHashPure defaultGearHashConfig
+                    & S.mapM (\(!a) -> pure a)
+                    & S.fold F.latest
+              )
+              file
+        , bench "gear-pure-input-IO-50MiB" $
+            nfAppIO
+              ( \input' ->
+                  S.fromList input'
+                    & gearHashPure defaultGearHashConfig
                     & S.mapM (\(!a) -> pure a)
                     & S.fold F.drain
               )
