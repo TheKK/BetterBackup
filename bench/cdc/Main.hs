@@ -54,17 +54,12 @@ import qualified System.Random as Rng
 import qualified System.Random.SplitMix as Sp
 
 import Control.Concurrent.STM
-import Crypto.Cipher.Types (BlockCipher (blockSize))
-import Crypto.Data.Padding (Format (PKCS7), pad)
 import qualified Data.ByteArray as BA
 import Data.IORef
-import Foreign.Storable (Storable (peek))
 import qualified Streamly.Data.Array as Array
 import qualified Streamly.Internal.Data.Array as Array
 import qualified Streamly.Internal.Data.Array.Mut.Type as MA
 import qualified Streamly.Internal.Data.Array.Type as Array
-
-import qualified Better.Test as NEW
 
 newtype ArrayBA = ArrayBA {un_array_ba :: Array.Array Word8}
   deriving (Eq, Ord, Monoid, Semigroup)
@@ -110,41 +105,6 @@ main =
                     & S.fold F.latest
               )
               file
-        , bgroup
-            "new"
-            [ bench "gear" $
-                whnfAppIO
-                  ( \file' ->
-                      NEW.gearHash defaultGearHashConfig file'
-                        & S.mapM (\(!a) -> pure a)
-                        & S.fold F.latest
-                  )
-                  file
-            , bench "gear-pure" $
-                whnfAppIO
-                  ( \file' ->
-                      File.readChunks file'
-                        & fmap ArrayBA
-                        & NEW.gearHashPure defaultGearHashConfig
-                        & S.mapM (\(!a) -> pure a)
-                        & S.fold F.latest
-                  )
-                  file
-            , bench "gear-then-read-with-fd" $
-                whnfAppIO
-                  ( \file' ->
-                      withFile file' ReadMode $ \fp -> do
-                        NEW.gearHash defaultGearHashConfig file'
-                          & S.mapM
-                            ( \(Chunker.Chunk b e) -> do
-                                S.unfold Handle.chunkReaderFromToWith (b, e - 1, defaultChunkSize, fp)
-                                  & S.fold F.toList
-                            )
-                          & S.mapM (\(!a) -> pure a)
-                          & S.fold F.drain
-                  )
-                  file
-            ]
         , bench "gear-pure-input-IO-50MiB" $
             nfAppIO
               ( \input' ->

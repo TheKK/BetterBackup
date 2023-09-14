@@ -27,8 +27,7 @@ import qualified Streamly.Data.Stream as S
 
 import Better.Internal.Streamly.Crypto.AES (compact, decryptCtr, encryptCtr, that_aes)
 import Data.Coerce (coerce)
-import Better.Streamly.FileSystem.Chunker (props_distribute)
-import Better.Test (props_gearHash)
+import Better.Streamly.FileSystem.Chunker (props_distribute, props_fast_cdc)
 
 main :: IO ()
 main = hspec $ do
@@ -37,7 +36,7 @@ main = hspec $ do
   describe "compact" $ do
     compact_spec
   hedgehog_group "distribute" props_distribute
-  hedgehog_group "gearHash" props_gearHash
+  hedgehog_group "fastCDC" props_fast_cdc
 
 hedgehog_group :: String -> [(String, PropertyT IO ())] -> Spec
 hedgehog_group name items = describe name $ for_ items $ \(n, p) -> it n $ hedgehog p
