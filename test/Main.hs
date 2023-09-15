@@ -5,13 +5,13 @@ module Main (
   main,
 ) where
 
-import Test.Hspec (Spec, describe, hspec, it)
-import Test.Hspec.Hedgehog (hedgehog)
+import Test.Tasty (defaultMain, testGroup)
+import Test.Tasty.Hedgehog (fromGroup, testProperty)
 
 import Control.Monad (when)
 import Control.Monad.IO.Class (MonadIO (liftIO))
 
-import Hedgehog (PropertyT, annotateShow, cover, diff, forAll, (===))
+import Hedgehog (Property, annotateShow, cover, diff, forAll, property, (===))
 import qualified Hedgehog.Gen as Gen
 import qualified Hedgehog.Range as Range
 
@@ -26,23 +26,20 @@ import qualified Data.ByteString.Lazy as BL
 import qualified Streamly.Data.Stream as S
 
 import Better.Internal.Streamly.Crypto.AES (compact, decryptCtr, encryptCtr, that_aes)
-import Data.Coerce (coerce)
 import Better.Streamly.FileSystem.Chunker (props_distribute, props_fast_cdc)
 
 main :: IO ()
-main = hspec $ do
-  describe "enc/dec" $ do
-    ctr_enc_dec_spec
-  describe "compact" $ do
-    compact_spec
-  hedgehog_group "distribute" props_distribute
-  hedgehog_group "fastCDC" props_fast_cdc
+main =
+  defaultMain . testGroup "tests" $
+    [ fromGroup props_distribute
+    , fromGroup props_fast_cdc
+    , testProperty "ctr enc & dec" prop_ctr_enc_dec
+    , testProperty "compact" prop_compact
+    ]
 
-hedgehog_group :: String -> [(String, PropertyT IO ())] -> Spec
-hedgehog_group name items = describe name $ for_ items $ \(n, p) -> it n $ hedgehog p
-
-ctr_enc_dec_spec :: Spec
-ctr_enc_dec_spec = it "(enc . dec = id) ctr aes" $ hedgehog $ do
+-- TODO Move this property to its own module.
+prop_ctr_enc_dec :: Property
+prop_ctr_enc_dec = property $ do
   aes <- liftIO that_aes
   let iv = Cipher.nullIV
 
@@ -73,8 +70,9 @@ ctr_enc_dec_spec = it "(enc . dec = id) ctr aes" $ hedgehog $ do
 
   BL.fromChunks plain_text_chunks === BL.fromChunks plain_text_chunks'
 
-compact_spec :: Spec
-compact_spec = it "basic function" $ hedgehog $ do
+-- TODO Move this property to its own module.
+prop_compact :: Property
+prop_compact = property $ do
   plain_text_chunks <-
     forAll $
       Gen.list (Range.linear 1 128) $

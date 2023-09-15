@@ -279,26 +279,24 @@ distribute n1 origin_n = fst . foldl' step (1 :: Word64, width) $ replicate (fro
     width :: Double
     width = fromIntegral n / fromIntegral n1
 
-props_distribute :: [(String, H.PropertyT IO ())]
-props_distribute =
+props_distribute :: H.Group
+props_distribute = H.Group "props_distribute"
   [ ("64bit width", prop_distribute_64bits)
   , ("prop", prop_distribute)
   ]
   where
-    prop_distribute_64bits :: H.PropertyT IO ()
-    prop_distribute_64bits = do
+    prop_distribute_64bits = H.withTests 1 $ H.property $ do
       forM_ [0 .. fromIntegral (Bits.finiteBitSize (undefined :: Word64)) * 2] $ \n ->
         Bits.popCount (distribute n 64) H.=== (fromIntegral n `min` 64)
 
-    prop_distribute :: H.PropertyT IO ()
-    prop_distribute = do
+    prop_distribute = H.property $ do
       n <- H.forAll $ Gen.word32 $ Range.constant 0 100
       n1 <- H.forAll $ Gen.word32 $ Range.constant 0 100
 
       fromIntegral (Bits.popCount (distribute n1 n)) H.=== (n `min` n1 `min` fromIntegral (Bits.finiteBitSize (undefined :: Word64)))
 
-props_fast_cdc :: [(String, H.PropertyT IO ())]
-props_fast_cdc =
+props_fast_cdc :: H.Group
+props_fast_cdc = H.Group "props_fast_cdc"
   [ ("definition", prop_fast_cdc_definition)
   , ("single input equal splited inputs", prop_fast_cdc_single_input_equal_splited_inputs)
   , ("empty input has no effect", prop_fast_cdc_empty_input_has_no_effect)
@@ -314,8 +312,7 @@ props_fast_cdc =
       cfg <- gearHashConfig <$> Gen.word32 (Range.constant 0 3) <*> Gen.word32 (Range.constant 8 16)
       pure (bs, cfg)
 
-    prop_fast_cdc_definition :: H.PropertyT IO ()
-    prop_fast_cdc_definition = do
+    prop_fast_cdc_definition = H.property $ do
       (input_stream, chunk_config) <- H.forAll gen_input_stream_and_chunk_config
 
       let
@@ -353,8 +350,7 @@ props_fast_cdc =
           H.annotateShow (b, BL.length b)
           H.diff (fromIntegral $ BL.length b) (>=) (gearHashConfigMinChunkSize chunk_config)
 
-    prop_fast_cdc_single_input_equal_splited_inputs :: H.PropertyT IO ()
-    prop_fast_cdc_single_input_equal_splited_inputs = do
+    prop_fast_cdc_single_input_equal_splited_inputs = H.property $ do
       (input_stream, chunk_config) <- H.forAll gen_input_stream_and_chunk_config
 
       let
@@ -381,8 +377,7 @@ props_fast_cdc =
       -- chunk [input] == chunk (split input)
       chunks_from_origin_input_stream H.=== chunks_from_concated_input_stream
 
-    prop_fast_cdc_empty_input_has_no_effect :: H.PropertyT IO ()
-    prop_fast_cdc_empty_input_has_no_effect = do
+    prop_fast_cdc_empty_input_has_no_effect = H.property $ do
       (input_stream, chunk_config) <- H.forAll $ Gen.filter (any BS.null . fst) gen_input_stream_and_chunk_config
 
       let
