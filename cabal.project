@@ -8,10 +8,10 @@ package better
   ld-options: -Wl,--gc-sections
 
 package streamly-core
-  flags: +use-unliftio
+  flags: +use-unliftio +has-llvm
 
 package streamly
-  flags: +use-unliftio
+  flags: +use-unliftio +has-llvm
 
 package crypton
   flags: +support_sse
