@@ -61,20 +61,13 @@ import qualified Streamly.Internal.Data.Array.Mut.Type as MA
 import qualified Streamly.Internal.Data.Array.Type as Array
 
 newtype ArrayBA = ArrayBA {un_array_ba :: Array.Array Word8}
-  deriving (Eq, Ord, Monoid, Semigroup)
+  deriving (Eq, Ord)
 
 instance BA.ByteArrayAccess ArrayBA where
   length (ArrayBA arr) = Array.byteLength arr
   {-# INLINE length #-}
   withByteArray (ArrayBA arr) = Array.asPtrUnsafe (Array.castUnsafe arr)
   {-# INLINE withByteArray #-}
-
-instance BA.ByteArray ArrayBA where
-  allocRet n f = do
-    ma <- MA.newPinned @_ @Word8 n
-    MA.asPtrUnsafe (MA.castUnsafe ma) $ \p -> do
-      ret <- f p
-      pure (ret, ArrayBA $ Array.unsafeFreeze $ ma{MA.arrEnd = MA.arrBound ma})
 
 -- 50 MiB = 1600 * 32KiB
 {-# NOINLINE input #-}
@@ -99,7 +92,7 @@ main =
               ( \file' ->
                   File.readChunks file'
                     & fmap ArrayBA
-                    & gearHashPure defaultGearHashConfig
+                    & Chunker.gearHashPure defaultGearHashConfig
                     & S.mapM (\(!a) -> pure a)
                     & S.fold F.latest
               )
@@ -108,11 +101,21 @@ main =
             nfAppIO
               ( \input' ->
                   S.fromList input'
-                    & gearHashPure defaultGearHashConfig
+                    & Chunker.gearHashPure defaultGearHashConfig
                     & S.mapM (\(!a) -> pure a)
                     & S.fold F.drain
               )
-              file
+              input
+        , bench "gear-pure-input-Identity-50MiB" $
+            nf
+              ( \input' ->
+                  S.fromList input'
+                    & Chunker.gearHashPure defaultGearHashConfig
+                    & S.mapM (\(!a) -> pure a)
+                    & S.fold F.drain
+                    & runIdentity
+              )
+              input
         , bench "gear-then-read-with-fd" $
             whnfAppIO
               ( \file' ->
