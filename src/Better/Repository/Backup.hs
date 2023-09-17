@@ -169,10 +169,10 @@ instance BA.ByteArray (ArrayBA Word8) where
     pure (ret, ArrayBA $ Array.fromListN n $ BS.unpack bs)
 
 data UploadTask
-  = UploadTree (Digest SHA256) (Path Path.Abs Path.File)
-  | UploadFile (Digest SHA256) (Path Path.Abs Path.File) (Path Path.Rel Path.File)
-  | UploadChunk (Digest SHA256) [Array.Array Word8]
-  | FindNoChangeFile (Digest SHA256) P.FileStatus
+  = UploadTree !(Digest SHA256) !(Path Path.Abs Path.File)
+  | UploadFile !(Digest SHA256) !(Path Path.Abs Path.File) !(Path Path.Rel Path.File)
+  | UploadChunk !(Digest SHA256) !(S.Stream IO (Array.Array Word8))
+  | FindNoChangeFile !(Digest SHA256) !P.FileStatus
 
 tree_content :: Either (Path Path.Rel Path.File) (Path Path.Rel Path.Dir) -> Digest SHA256 -> BS.ByteString
 tree_content file_or_dir hash' =
@@ -266,10 +266,9 @@ backup_file ctr _ tbq rel_file_name = do
                   S.unfold Handle.chunkReaderFromToWith (b, e - 1, defaultChunkSize, fdd)
                     & S.fold F.toList
               )
-            & S.parMapM (S.ordered True . S.maxBuffer 8) (backup_chunk ctr tbq >=> (pure $!))
-            & S.trace (BC.hPut fd)
+            & S.parMapM (S.ordered True . S.maxBuffer 8) (backup_chunk ctr tbq)
             & S.parEval (S.maxBuffer 2)
-            & S.fold hashByteStringFold
+            & S.fold (F.tee hashByteStringFoldIO (F.drainMapM $ BC.hPut fd))
 
       atomically $ writeTBQueue tbq $ UploadFile file_hash file_name' rel_file_name
       pure file_hash
@@ -280,20 +279,21 @@ backup_chunk (Ctr aes tvar_iv) tbq chunk = do
     S.fromList chunk
       & S.fold (F.tee hashArrayFoldIO (F.lmap Array.length F.sum))
 
-  iv <- atomically $ do
-    iv_to_use <- readTVar tvar_iv
-    modifyTVar' tvar_iv (`ivAdd` chunk_length)
-    pure $! seq (iv_to_use == iv_to_use) iv_to_use
+  let
+    encrypted_chunk_stream = S.concatEffect $ do
+      iv <- atomically $ do
+        iv_to_use <- readTVar tvar_iv
+        modifyTVar' tvar_iv (`ivAdd` chunk_length)
+        pure $! seq (iv_to_use == iv_to_use) iv_to_use
 
-  encrypted_chunk <-
-    S.fromList chunk
-      & fmap ArrayBA
-      & encryptCtr aes iv (1024 * 32)
-      & fmap un_array_ba
-      & S.toList
+      pure $!
+        S.fromList chunk
+          & fmap ArrayBA
+          & encryptCtr aes iv (1024 * 32)
+          & fmap un_array_ba
 
-  atomically $ writeTBQueue tbq $ UploadChunk chunk_hash encrypted_chunk
-  pure $ d2b chunk_hash `BS.snoc` 0x0a
+  atomically $ writeTBQueue tbq $ UploadChunk chunk_hash encrypted_chunk_stream
+  pure $! d2b chunk_hash `BS.snoc` 0x0a
 
 {-# INLINE backup #-}
 backup
@@ -352,13 +352,11 @@ backup dir = do
                     FindNoChangeFile file_hash st -> do
                       BackupSt.modifyStatistic' BackupSt.processedFileCount (+ 1)
                       BackupCache.saveCurrentFileHash st file_hash
-                    UploadChunk chunk_hash chunk -> do
+                    UploadChunk chunk_hash chunk_stream -> do
                       unique_chunk_gate chunk_hash $ do
-                        do_work <- addBlob' chunk_hash (S.fromList chunk)
-                        when do_work $
-                          BackupSt.modifyStatistic'
-                            BackupSt.uploadedBytes
-                            (+ (fromIntegral $ sum $ fmap Array.byteLength chunk))
+                        added_bytes <- addBlob' chunk_hash (S.morphInner liftIO chunk_stream)
+                        when (added_bytes > 0) $
+                          BackupSt.modifyStatistic' BackupSt.uploadedBytes (+ fromIntegral added_bytes)
                       BackupSt.modifyStatistic' BackupSt.processedChunkCount (+ 1)
                 )
               & S.fold F.drain
