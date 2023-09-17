@@ -1,5 +1,5 @@
 indentation: 2
 indent-wheres: true
-haddoc-style: single-line
+haddock-style: single-line
 in-style: left-align
 function-arrows: leading
