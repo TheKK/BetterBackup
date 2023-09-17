@@ -456,7 +456,7 @@ checksum n = do
     )
     & S.parMapM (S.maxBuffer (n + 1) . S.eager True) (\(expected_sha, f) -> do
          actual_sha <- read f
-           & S.fold hashArrayFold
+           & S.fold hashArrayFoldIO
          if show actual_sha == expected_sha
            then pure Nothing
            else pure $ Just (f, actual_sha)
@@ -469,7 +469,7 @@ checksum n = do
   listFolderFiles folder_chunk
     & S.parMapM (S.maxBuffer (n + 1) . S.eager True) (\chunk_path -> do
          expected_sha <- s2d $ Path.fromRelFile chunk_path
-         actual_sha <- catChunk expected_sha & S.fold hashArrayFold
+         actual_sha <- catChunk expected_sha & S.fold hashArrayFoldIO
          if expected_sha == actual_sha
            then pure Nothing
            else

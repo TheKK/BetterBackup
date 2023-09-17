@@ -3,7 +3,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeApplications #-}
 
-module Main where
+module Main (main) where
 
 import Criterion.Main (bench, bgroup, defaultMain, env, nf, nfAppIO, whnf, whnfAppIO)
 import Criterion.Types (Benchmark)
@@ -13,7 +13,7 @@ import Data.Foldable (Foldable (foldl'), for_)
 import Data.Function ((&))
 import qualified Data.HashSet as HashSet
 import qualified Data.Set as Set
-import Data.Word (Word64)
+import Data.Word (Word64, Word8)
 
 import qualified Streamly.Data.Fold as F
 import qualified Streamly.Data.Stream.Prelude as S
@@ -119,11 +119,11 @@ main =
                   File.readChunks file'
                     & fmap ArrayBA
                     & Chunker.gearHashPure defaultGearHashConfig
-                      & S.mapM
-                        ( \(Chunker.Chunk b e) -> do
-                            S.unfold File.chunkReaderFromToWith (b, e - 1, defaultChunkSize, file')
-                              & S.fold F.toList
-                        )
+                    & S.mapM
+                      ( \(Chunker.Chunk b e) -> do
+                          S.unfold File.chunkReaderFromToWith (b, e - 1, defaultChunkSize, file')
+                            & S.fold F.toList
+                      )
                     & S.mapM (\(!a) -> pure a)
                     & S.fold F.latest
               )
@@ -146,15 +146,15 @@ main =
             whnfAppIO
               ( \file' ->
                   withFile file' ReadMode $ \chunk_h ->
-                  withFile file' ReadMode $ \read_h -> do
-                    S.unfold (gearHashWithFileUnfold defaultGearHashConfig) chunk_h
+                    withFile file' ReadMode $ \read_h -> do
+                      S.unfold (gearHashWithFileUnfold defaultGearHashConfig) chunk_h
                         & S.mapM
                           ( \(Chunker.Chunk b e) -> do
                               S.unfold Handle.chunkReaderFromToWith (b, e - 1, defaultChunkSize, read_h)
                                 & S.fold F.toList
                           )
-                      & S.mapM (\(!a) -> pure a)
-                      & S.fold F.drain
+                        & S.mapM (\(!a) -> pure a)
+                        & S.fold F.drain
               )
               file
         ]
@@ -173,9 +173,13 @@ main =
     , env (pure input) $ \input' ->
         bgroup
           "hash"
-          [ bench "sha2-256" $
+          [ bench "Blake3-256-pure" $
               nf
                 (\i -> S.fromList i & S.fold Hash.hashByteStringFold & runIdentity)
+                input'
+          , bench "Blake3-256-io" $
+              nfAppIO
+                (\i -> S.fromList i & S.fold Hash.hashByteStringFoldIO)
                 input'
           , bench "sha2-256-fold" $
               nf

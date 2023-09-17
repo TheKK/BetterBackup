@@ -80,7 +80,7 @@ import Crypto.Hash (Digest, SHA256)
 import qualified Streamly.Data.Fold as F
 import qualified Streamly.Data.Stream.Prelude as S
 
-import Better.Hash (hashArrayFold, hashByteStringFold)
+import Better.Hash (hashArrayFoldIO, hashByteStringFoldIO)
 import Better.Repository.Class (
   MonadRepository (fileExists, mkListFolderFiles, mkPutFileFold),
  )
@@ -298,7 +298,7 @@ backup_dir ctr fork_fns@(ForkFns file_fork_or_not dir_fork_or_not) tbq rel_tree_
                 Right d -> dir_fork_or_not scope $ backup_dir ctr fork_fns tbq $ rel_tree_name </> d
           )
         & S.parSequence (S.ordered True)
-        & S.fold (F.tee hashByteStringFold (F.morphInner liftIO $ F.drainMapM $ BC.hPut fd))
+        & S.fold (F.tee hashByteStringFoldIO (F.morphInner liftIO $ F.drainMapM $ BC.hPut fd))
 
   atomically $ writeTBQueue tbq $ UploadTree dir_hash file_name'
 
@@ -314,7 +314,7 @@ backup_file ctr _ tbq rel_file_name = do
       atomically $ writeTBQueue tbq $ FindNoChangeFile cached_digest st
       pure cached_digest
     Nothing -> withEmptyTmpFile $ \file_name' -> liftIO $ do
-      file_hash <- Un.withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd ->
+      (!file_hash, _) <- Un.withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd ->
         Un.withBinaryFile (Path.fromRelFile rel_file_name) ReadMode $ \fdd ->
           Chunker.gearHash Chunker.defaultGearHashConfig (Path.fromRelFile rel_file_name)
             & S.mapM
@@ -332,10 +332,9 @@ backup_file ctr _ tbq rel_file_name = do
 
 backup_chunk :: Ctr -> TBQueue UploadTask -> [Array.Array Word8] -> IO UTF8.ByteString
 backup_chunk (Ctr aes tvar_iv) tbq chunk = do
-  let (!chunk_length, !chunk_hash) =
-        S.fromList chunk
-          & S.fold (F.tee (F.lmap Array.length F.sum) hashArrayFold)
-          & runIdentity
+  (chunk_hash, chunk_length) <-
+    S.fromList chunk
+      & S.fold (F.tee hashArrayFoldIO (F.lmap Array.length F.sum))
 
   iv <- atomically $ do
     iv_to_use <- readTVar tvar_iv
