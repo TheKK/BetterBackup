@@ -344,6 +344,7 @@ addDir' digest chunks = do
     putFileFold <- mkPutFileFold
     chunks & S.fold (putFileFold f)
 
+{-# INLINE addVersion #-}
 addVersion :: (MonadIO m, MonadCatch m, MonadRepository m)
   => Integer -> Digest SHA256 -> m ()
 addVersion v_id v_root = do

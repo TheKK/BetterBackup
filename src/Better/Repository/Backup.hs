@@ -101,6 +101,7 @@ import Data.ByteArray (ByteArrayAccess (..))
 import qualified Data.ByteArray as BA
 import qualified Data.ByteArray.Encoding as BA
 
+import Better.Internal.Repository.LowLevel (addBlob', addDir', addFile', addVersion)
 import Control.Concurrent.STM.TSem (TSem, newTSem, signalTSem, waitTSem)
 import qualified Crypto.Cipher.AES as Cipher
 import Crypto.Cipher.Types (ivAdd)
@@ -147,63 +148,6 @@ listFolderFiles
 listFolderFiles d = S.concatEffect $ do
   f <- mkListFolderFiles
   pure $ f d
-
-{-# INLINE addBlob' #-}
-addBlob'
-  :: (MonadCatch m, MonadIO m, MonadRepository m)
-  => Digest SHA256
-  -> S.Stream m (Array.Array Word8)
-  -> m Bool
-  -- ^ True if we actually upload this chunk, otherwise False.
-addBlob' digest chunks = do
-  file_name' <- Path.parseRelFile $ show digest
-  let f = folder_chunk </> file_name'
-  exist <- fileExists f
-  unless exist $ do
-    putFileFold <- mkPutFileFold
-    chunks & S.fold (putFileFold f)
-  pure $! not exist
-
-{-# INLINE addFile' #-}
-addFile'
-  :: (MonadCatch m, MonadIO m, MonadRepository m)
-  => Digest SHA256
-  -> S.Stream m (Array.Array Word8)
-  -> m ()
-addFile' digest chunks = do
-  file_name' <- Path.parseRelFile $ show digest
-  let f = folder_file </> file_name'
-  exist <- fileExists f
-  unless exist $ do
-    putFileFold <- mkPutFileFold
-    chunks & S.fold (putFileFold f)
-
-{-# INLINE addDir' #-}
-addDir'
-  :: (MonadCatch m, MonadIO m, MonadRepository m)
-  => Digest SHA256
-  -> S.Stream m (Array.Array Word8)
-  -> m ()
-addDir' digest chunks = do
-  file_name' <- Path.parseRelFile $ show digest
-  let f = folder_tree </> file_name'
-  exist <- fileExists f
-  unless exist $ do
-    putFileFold <- mkPutFileFold
-    chunks & S.fold (putFileFold f)
-
-addVersion
-  :: (MonadIO m, MonadCatch m, MonadRepository m)
-  => Integer
-  -> Digest SHA256
-  -> m ()
-addVersion v_id v_root = do
-  ver_id_file_name <- Path.parseRelFile $ show v_id
-  let f = folder_version </> ver_id_file_name
-  putFileFold <- mkPutFileFold
-  liftIO $
-    S.fromPure (Array.fromList $ BS.unpack $ TE.encodeUtf8 $ T.pack $ show v_root)
-      & S.fold (putFileFold f)
 
 nextBackupVersionId :: (MonadIO m, MonadCatch m, MonadRepository m) => m Integer
 nextBackupVersionId = do
