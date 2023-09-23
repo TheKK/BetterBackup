@@ -220,11 +220,12 @@ instance (C.HasReader "repo" Repository m, MonadIO m) => MonadRepository (TheMon
     f <- C.asks @"repo" _repo_listFolderFiles
     pure $ S.morphInner liftIO . f
 
+{-# INLINE listFolderFiles #-}
 listFolderFiles :: (MonadIO m, MonadRepository m)
                 => Path Path.Rel Path.Dir -> S.Stream m (Path Path.Rel Path.File)
 listFolderFiles d = S.concatEffect $ do
   f <- mkListFolderFiles
-  pure $ f d
+  pure $! f d
 
 read :: (MonadIO m, MonadRepository m)
                 => Path Path.Rel Path.File -> S.Stream m (Array.Array Word8)
