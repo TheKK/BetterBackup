@@ -41,7 +41,7 @@ import qualified Data.ByteString as BS
 
 import qualified Better.Hash as Hash
 import Better.Internal.Streamly.Crypto.AES (compact, decryptCtr, encryptCtr, that_aes, unsafeEncryptCtr)
-import Better.Streamly.FileSystem.Chunker (defaultGearHashConfig, gearHash, gearHashWithFileUnfold)
+import Better.Streamly.FileSystem.Chunker (defaultGearHashConfig, gearHash, gearHashWithFileUnfold, gearHashConfig)
 import qualified Better.Streamly.FileSystem.Chunker as Chunker
 import Data.Functor.Identity (Identity (runIdentity))
 import qualified Streamly.Internal.FileSystem.File as File
@@ -73,6 +73,11 @@ instance BA.ByteArrayAccess ArrayBA where
 input :: [BS.ByteString]
 input = replicate 1600 $ BS.concat $ replicate 1024 ("asdfjkla;sdfk;sdjl;asdjfl;aklsd;" :: BS.ByteString)
 
+-- 50 MiB = 1600 * 32KiB
+{-# NOINLINE input_30KiB #-}
+input_30KiB :: [BS.ByteString]
+input_30KiB = replicate 1707 $ BS.concat $ replicate 1024 ("asdfjkla;sdfk;sdjl;asdjfl;akl;" :: BS.ByteString)
+
 main :: IO ()
 main =
   defaultMain
@@ -86,10 +91,18 @@ main =
                     & S.fold F.drain
               )
               file
-        , bench "gear-new-fd" $
+        , bench "gear-new-fd-32KiB-level1" $
             whnfAppIO
               ( \file' -> withFile file' ReadMode $ \h ->
-                  S.unfold (gearHashWithFileUnfold defaultGearHashConfig) h
+                  S.unfold (gearHashWithFileUnfold $ gearHashConfig 1 (32 * 2 ^ (10 :: Int))) h
+                    & S.mapM (\(!a) -> pure a)
+                    & S.fold F.drain
+              )
+              file
+        , bench "gear-new-fd-16KiB-level1" $
+            whnfAppIO
+              ( \file' -> withFile file' ReadMode $ \h ->
+                  S.unfold (gearHashWithFileUnfold $ gearHashConfig 1 (16 * 2 ^ (10 :: Int))) h
                     & S.mapM (\(!a) -> pure a)
                     & S.fold F.drain
               )
@@ -142,12 +155,27 @@ main =
                       & S.fold F.drain
               )
               file
-        , bench "gear-new-fd-then-read-with-fd" $
+        , bench "gear-new-fd-then-read-with-fd-32KiB-level1" $
             whnfAppIO
               ( \file' ->
                   withFile file' ReadMode $ \chunk_h ->
                     withFile file' ReadMode $ \read_h -> do
-                      S.unfold (gearHashWithFileUnfold defaultGearHashConfig) chunk_h
+                      S.unfold (gearHashWithFileUnfold $ gearHashConfig 1 (32 * 2 ^ (10 :: Int))) chunk_h
+                        & S.mapM
+                          ( \(Chunker.Chunk b e) -> do
+                              S.unfold Handle.chunkReaderFromToWith (b, e - 1, defaultChunkSize, read_h)
+                                & S.fold F.toList
+                          )
+                        & S.mapM (\(!a) -> pure a)
+                        & S.fold F.drain
+              )
+              file
+        , bench "gear-new-fd-then-read-with-fd-16KiB-level1" $
+            whnfAppIO
+              ( \file' ->
+                  withFile file' ReadMode $ \chunk_h ->
+                    withFile file' ReadMode $ \read_h -> do
+                      S.unfold (gearHashWithFileUnfold $ gearHashConfig 1 (16 * 2 ^ (10 :: Int))) chunk_h
                         & S.mapM
                           ( \(Chunker.Chunk b e) -> do
                               S.unfold Handle.chunkReaderFromToWith (b, e - 1, defaultChunkSize, read_h)
@@ -181,6 +209,10 @@ main =
               nfAppIO
                 (\i -> S.fromList i & S.fold Hash.hashByteStringFoldIO)
                 input'
+          , bench "Blake3-256-io-non-aligned-30KiB" $
+              nfAppIO
+                (\i -> S.fromList i & S.fold Hash.hashByteStringFoldIO)
+                input_30KiB
           , bench "sha2-256-fold" $
               nf
                 (hashFinalize . foldl' hashUpdate (hashInitWith SHA256))
@@ -343,6 +375,15 @@ main =
                       & S.fold F.drain
                 )
                 (S.fromList input')
+          , bench "32k-non-aligned" $
+              nfAppIO
+                ( \inputs ->
+                    inputs
+                      & compact (1024 * 32)
+                      & S.mapM (\(!a) -> pure a)
+                      & S.fold F.drain
+                )
+                (S.fromList input_30KiB)
           , bench "ref-noopt" $
               nfAppIO
                 ( \inputs ->
@@ -353,9 +394,27 @@ main =
                 (S.fromList input')
           ]
     , bench_concurrent
+    , bench_as_ptr
     ]
   where
     file = "data2"
+
+bench_as_ptr :: Benchmark
+bench_as_ptr = bgroup "as_ptr"
+    [ bench "Streamly.Array" $
+        whnfAppIO
+          ( \array' -> Array.asPtrUnsafe array' (\ptr -> pure ())
+          )
+          array
+    , bench "ByteString" $
+        whnfAppIO
+          ( \bs' -> BA.withByteArray bs' (\ptr -> pure ())
+          )
+          bs
+    ]
+    where
+      array = Array.fromList (BS.unpack "sjdfklsdjfsdkfl")
+      bs = "sjdfklsdjfsdkfl" :: BS.ByteString
 
 bench_concurrent :: Benchmark
 bench_concurrent = env (pure $ take 100000 $ Rng.randoms @Word64 (Sp.mkSMGen 123)) $ \vec' ->
