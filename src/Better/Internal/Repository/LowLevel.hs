@@ -187,30 +187,37 @@ newtype TheMonadRepository m a = TheMonadRepository (m a)
   deriving (Functor, Applicative, Monad, MonadIO, MonadThrow, MonadCatch, MonadMask)
 
 instance (C.HasReader "repo" Repository m, MonadIO m) => MonadRepository (TheMonadRepository m) where
+  {-# INLINE mkPutFileFold #-}
   mkPutFileFold = TheMonadRepository $ do
     f <- C.asks @"repo" _repo_putFile
     pure $ F.morphInner liftIO . f
 
+  {-# INLINE removeFiles #-}
   removeFiles files = TheMonadRepository $ do
     f <- C.asks @"repo" _repo_removeFiles
     liftIO $ f files
 
+  {-# INLINE createDirectory #-}
   createDirectory d = TheMonadRepository $ do
     f <- C.asks @"repo" _repo_createDirectory
     liftIO $ f d
 
+  {-# INLINE fileExists #-}
   fileExists file = TheMonadRepository $ do
     f <- C.asks @"repo" _repo_fileExists
     liftIO $ f file
 
+  {-# INLINE fileSize #-}
   fileSize file = TheMonadRepository $ do
     f <- C.asks @"repo" _repo_fileSize
     liftIO $ f file
 
+  {-# INLINE mkRead #-}
   mkRead = TheMonadRepository $ do
     f <- C.asks @"repo" _repo_read
     pure $ S.morphInner liftIO . f
 
+  {-# INLINE mkListFolderFiles #-}
   mkListFolderFiles = TheMonadRepository $ do
     f <- C.asks @"repo" _repo_listFolderFiles
     pure $ S.morphInner liftIO . f
