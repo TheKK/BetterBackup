@@ -23,6 +23,7 @@ import Data.Function ((&))
 import Data.Maybe (fromMaybe)
 import Data.Word (Word8)
 
+import qualified Data.HashSet as HashSet
 import qualified Data.Set as Set
 
 import UnliftIO (
@@ -33,12 +34,14 @@ import UnliftIO (
   TVar,
   atomically,
   finally,
+  hClose,
   modifyTVar',
   newTBQueueIO,
   newTVarIO,
   onException,
   readTBQueue,
   readTVar,
+  tryIO,
   writeTBQueue,
  )
 import qualified UnliftIO.Directory as Un
@@ -58,7 +61,7 @@ import qualified Data.ByteString.UTF8 as UTF8
 import Text.Read (readMaybe)
 
 import Control.Applicative ((<|>))
-import Control.Monad (unless, when, (>=>))
+import Control.Monad (unless, when, (<=<), (>=>))
 import Control.Monad.Catch (MonadCatch, MonadMask)
 
 import Data.Functor.Identity (Identity (runIdentity))
@@ -96,12 +99,13 @@ import Better.Statistics.Backup.Class (MonadBackupStat)
 
 import Better.Repository.Types (Version (..))
 
-import Better.Internal.Streamly.Crypto.AES (encryptCtr, that_aes)
+import Better.Internal.Streamly.Crypto.AES (compact, encryptCtr, that_aes)
 import Data.ByteArray (ByteArrayAccess (..))
 import qualified Data.ByteArray as BA
 import qualified Data.ByteArray.Encoding as BA
 
 import Better.Internal.Repository.LowLevel (addBlob', addDir', addFile', addVersion)
+import Control.Concurrent.Async (async, wait)
 import Control.Concurrent.STM.TSem (TSem, newTSem, signalTSem, waitTSem)
 import qualified Crypto.Cipher.AES as Cipher
 import Crypto.Cipher.Types (ivAdd)
@@ -109,6 +113,14 @@ import qualified Crypto.Cipher.Types as Cipher
 import qualified Crypto.Random.Entropy as CRE
 import qualified Streamly.Internal.FileSystem.Handle as Handle
 import System.Environment (lookupEnv)
+import qualified System.Posix.Fcntl as P
+import qualified System.Posix.IO as P
+import qualified System.Posix.IO.ByteString as PB
+import qualified System.Posix.Temp as P
+import UnliftIO (bracketOnError)
+import qualified UnliftIO as Un
+import qualified UnliftIO.Async as Un
+import qualified UnliftIO.Concurrent as Un
 import qualified UnliftIO.Exception as Un
 
 data Ctr = Ctr
@@ -171,16 +183,17 @@ instance BA.ByteArray (ArrayBA Word8) where
 data UploadTask
   = UploadTree !(Digest SHA256) !(Path Path.Abs Path.File)
   | UploadFile !(Digest SHA256) !(Path Path.Abs Path.File) !(Path Path.Rel Path.File)
-  | UploadChunk !(Digest SHA256) !(S.Stream IO (Array.Array Word8))
+  | UploadChunk !(Digest SHA256) !(S.Stream IO (BS.ByteString))
   | FindNoChangeFile !(Digest SHA256) !P.FileStatus
 
 tree_content :: Either (Path Path.Rel Path.File) (Path Path.Rel Path.Dir) -> Digest SHA256 -> BS.ByteString
 tree_content file_or_dir hash' =
   let
-    name = either file_name' dir_name' file_or_dir
-    t = either (const "file") (const "dir") file_or_dir
+    !name = either file_name' dir_name' file_or_dir
+    !t = either (const "file") (const "dir") file_or_dir
+    !dd = d2b hash'
   in
-    BS.concat [t, BS.singleton 0x20, name, BS.singleton 0x20, d2b hash', BS.singleton 0x0a]
+    BS.concat [t, BS.singleton 0x20, name, BS.singleton 0x20, dd, BS.singleton 0x0a]
   where
     file_name' :: Path r Path.File -> BS.ByteString
     file_name' = BS.toStrict . BB.toLazyByteString . BB.stringUtf8 . Path.toFilePath . Path.filename
@@ -218,69 +231,91 @@ fork_or_run_directly s = \scope io -> do
     then do
       -- XXX We never know if we should call `signalTSem` for Ki.fork since we don't know if `finally` on
       -- `io` would be run or not when exception (both sync and async) was thrown.
-      a <- Un.mask_ $ Ki.fork scope (io `finally` atomically (signalTSem s)) `onException` atomically (signalTSem s)
-      pure $ atomically $ Ki.await a
+      -- a <- Un.mask_ $ Ki.fork scope (io `finally` atomically (signalTSem s)) `onException` atomically (signalTSem s)
+      -- pure $ atomically $ Ki.await a
+      a <- Un.async (io `finally` atomically (signalTSem s)) `onException` atomically (signalTSem s)
+      pure $ Un.wait a
     else do
       r <- io
       pure $! pure r
 
+only_fork_to_run :: MonadUnliftIO m => TSem -> Ki.Scope -> m a -> m (m a)
+only_fork_to_run s = \scope io -> do
+  atomically $ waitTSem s
+  a <- Un.async (io `finally` atomically (signalTSem s)) `onException` atomically (signalTSem s)
+  pure $ Un.wait a
+
 data ForkFns m
   = ForkFns
-      (Ki.Scope -> m (Digest SHA256) -> m (m (Digest SHA256)))
-      (Ki.Scope -> m (Digest SHA256) -> m (m (Digest SHA256)))
+      !(Ki.Scope -> m (Digest SHA256) -> m (m (Digest SHA256)))
+      !(Ki.Scope -> m (Digest SHA256) -> m (m (Digest SHA256)))
 
+{-# INLINE backup_dir #-}
 backup_dir :: (MonadBackupCache m, MonadTmp m, MonadMask m, MonadUnliftIO m) => Ctr -> ForkFns m -> TBQueue UploadTask -> Path Path.Rel Path.Dir -> m (Digest SHA256)
-backup_dir ctr fork_fns@(ForkFns file_fork_or_not dir_fork_or_not) tbq rel_tree_name = withEmptyTmpFile $ \file_name' -> do
-  (dir_hash, ()) <- Un.withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
+backup_dir ctr fork_fns@(ForkFns file_fork_or_not dir_fork_or_not) tbq rel_tree_name = ww $ \(file_name'', fd) -> do
+  unlift <- Un.askUnliftIO
+  file_name' <- Path.parseAbsFile file_name''
+  (dir_hash, ()) <- do
     -- TODO Maybe we don't need to create new scoped in every level of directory?
-    Ki.scoped $ \scope -> do
-      Dir.readEither rel_tree_name
-        & S.mapM
-          ( \fod ->
-              fmap (tree_content fod) <$> case fod of
-                Left f -> file_fork_or_not scope $ backup_file ctr fork_fns tbq $ rel_tree_name </> f
-                Right d -> dir_fork_or_not scope $ backup_dir ctr fork_fns tbq $ rel_tree_name </> d
-          )
-        & S.parSequence (S.ordered True)
-        & S.fold (F.tee hashByteStringFoldIO (F.morphInner liftIO $ F.drainMapM $ BC.hPut fd))
-
+    -- Ki.scoped $ \scope -> do
+    Dir.readEither rel_tree_name
+      & S.mapM
+        ( \fod ->
+            fmap (tree_content fod) <$> case fod of
+              Left !f -> file_fork_or_not undefined $ do
+                st < liftIO (P.getFileStatus $ Path.fromRelFile $ rel_tree_name </> f)
+                to_scan <- BackupCache.tryReadingCacheHash st
+                case to_scan of
+                  Just !cached_digest -> do
+                    atomically $ writeTBQueue tbq $ FindNoChangeFile cached_digest st
+                    pure $! cached_digest
+                  Nothing -> do
+                    liftIO $ backup_file ctr tbq $! rel_tree_name </> f
+              Right !d -> do
+                dir_fork_or_not undefined $ backup_dir ctr fork_fns tbq $! rel_tree_name </> d
+        )
+      & S.parSequence (S.ordered True)
+      & S.fold (F.tee hashByteStringFoldIO (F.drainMapM $ liftIO . BC.hPut fd))
+  hClose fd
   atomically $ writeTBQueue tbq $ UploadTree dir_hash file_name'
 
-  pure dir_hash
+  pure $! dir_hash
 
-{-# NOINLINE backup_file #-}
-backup_file :: (MonadBackupCache m, MonadTmp m, MonadMask m, MonadUnliftIO m) => Ctr -> ForkFns m -> TBQueue UploadTask -> Path Path.Rel Path.File -> m (Digest SHA256)
-backup_file ctr _ tbq rel_file_name = do
-  st <- liftIO (P.getFileStatus $ Path.fromRelFile rel_file_name)
-  to_scan <- BackupCache.tryReadingCacheHash st
-  case to_scan of
-    Just cached_digest -> do
-      atomically $ writeTBQueue tbq $ FindNoChangeFile cached_digest st
-      pure cached_digest
-    Nothing -> withEmptyTmpFile $ \file_name' -> liftIO $ do
-      (!file_hash, _) <- Un.withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd ->
-        Un.withBinaryFile (Path.fromRelFile rel_file_name) ReadMode $ \fdd ->
-          Chunker.gearHash Chunker.defaultGearHashConfig (Path.fromRelFile rel_file_name)
-            & S.mapM
-              ( \(Chunker.Chunk b e) -> do
-                  S.unfold Handle.chunkReaderFromToWith (b, e - 1, defaultChunkSize, fdd)
-                    & S.fold F.toList
-              )
-            & S.parMapM (S.ordered True . S.maxBuffer 8) (backup_chunk ctr tbq)
-            & S.parEval (S.maxBuffer 2)
-            & S.fold (F.tee hashByteStringFoldIO (F.drainMapM $ BC.hPut fd))
+{-# INLINE backup_file #-}
+backup_file :: Ctr -> TBQueue UploadTask -> Path Path.Rel Path.File -> IO (Digest SHA256)
+backup_file ctr tbq rel_file_name = do
+  ww $ \(file_name'', fd) -> do
+    (!file_hash, ()) <- do
+      Un.withBinaryFile (Path.fromRelFile rel_file_name) ReadMode $ \fdd ->
+        Chunker.gearHash Chunker.defaultGearHashConfig (Path.fromRelFile rel_file_name)
+          & S.mapM
+            ( \(Chunker.Chunk b e) -> do
+                -- ret <- BS.hGet fdd  (e - b)
+                -- pure [ret]
+                S.unfold Handle.chunkReaderFromToWith (b, e - 1, defaultChunkSize, fdd)
+                  & fmap (BA.convert @_ @BS.ByteString . ArrayBA)
+                  & S.mapM (pure $!)
+                  & S.fold F.toList
+            )
+          & S.parMapM (S.ordered True . S.maxBuffer 8) (backup_chunk ctr tbq)
+          & S.fold (F.tee hashByteStringFoldIO (F.drainMapM $ liftIO . BC.hPut fd))
 
-      atomically $ writeTBQueue tbq $ UploadFile file_hash file_name' rel_file_name
-      pure file_hash
+    hClose fd
+    file_name' <- Path.parseAbsFile file_name''
+    atomically $ writeTBQueue tbq $ UploadFile file_hash file_name' rel_file_name
+    pure $! file_hash
 
-backup_chunk :: Ctr -> TBQueue UploadTask -> [Array.Array Word8] -> IO UTF8.ByteString
-backup_chunk (Ctr aes tvar_iv) tbq chunk = do
-  (chunk_hash, chunk_length) <-
+{-# INLINE backup_chunk #-}
+backup_chunk :: Ctr -> TBQueue UploadTask -> [BS.ByteString] -> IO UTF8.ByteString
+backup_chunk ctr tbq chunk = do
+  (!chunk_hash, !chunk_length) <-
     S.fromList chunk
-      & S.fold (F.tee hashArrayFoldIO (F.lmap Array.length F.sum))
+      & S.fold (F.tee hashByteStringFoldIO (F.lmap BS.length F.sum))
 
   let
     encrypted_chunk_stream = S.concatEffect $ do
+      let (Ctr aes tvar_iv) = ctr
+
       iv <- atomically $ do
         iv_to_use <- readTVar tvar_iv
         modifyTVar' tvar_iv (`ivAdd` chunk_length)
@@ -288,9 +323,7 @@ backup_chunk (Ctr aes tvar_iv) tbq chunk = do
 
       pure $!
         S.fromList chunk
-          & fmap ArrayBA
           & encryptCtr aes iv (1024 * 32)
-          & fmap un_array_ba
 
   atomically $ writeTBQueue tbq $ UploadChunk chunk_hash encrypted_chunk_stream
   pure $! d2b chunk_hash `BS.snoc` 0x0a
@@ -300,17 +333,21 @@ backup
   :: (MonadBackupCache m, MonadBackupStat m, MonadRepository m, MonadTmp m, MonadMask m, MonadUnliftIO m)
   => T.Text
   -> m Version
-backup dir = do
+backup dir = Un.runInUnboundThread $ do
   let
     mk_uniq_gate = do
-      running_set <- newTVarIO $ Set.empty @(Digest SHA256)
-      pure $ \hash' m -> do
+      running_set <- newTVarIO $ HashSet.empty @(BS.ByteString)
+      pure $ \(!hash') (!m) -> do
+        let hash'' = BA.convert hash'
         other_is_running <- atomically $ do
-          set <- readTVar running_set
-          modifyTVar' running_set (Set.insert hash')
-          pure $ Set.member hash' set
+          is_running <- HashSet.member hash'' <$> readTVar running_set
+          if is_running
+            then pure True
+            else do
+              modifyTVar' running_set (HashSet.insert hash'')
+              pure False
         unless other_is_running $
-          m `finally` atomically (modifyTVar' running_set (Set.delete hash'))
+          m `finally` atomically (modifyTVar' running_set (HashSet.delete hash''))
 
   fork_fns <- do
     sem_for_dir <- liftIO mk_sem_for_dir
@@ -324,6 +361,10 @@ backup dir = do
   ctr <- liftIO init_ctr
   rel_dir <- Path.parseRelDir $ T.unpack dir
 
+  worker_n <- do
+    s <- liftIO $ lookupEnv "WORKER"
+    pure $! (fromMaybe 4) $ readMaybe =<< s
+
   (root_hash, _) <- Ki.scoped $ \scope -> do
     _ <- Ki.fork scope (collect_dir_and_file_statistics rel_dir)
     ret <-
@@ -333,18 +374,18 @@ backup dir = do
         ( \s ->
             s
               & S.parMapM
-                (S.maxBuffer 20 . S.eager True)
+                (S.maxBuffer worker_n . S.eager True)
                 ( \case
                     UploadTree dir_hash file_name' -> do
-                      unique_tree_gate dir_hash $
-                        do
-                          addDir' dir_hash (File.readChunks (Path.fromAbsFile file_name'))
+                      unique_tree_gate dir_hash $ do
+                        content <- liftIO $ BS.readFile $ Path.fromAbsFile file_name'
+                        addDir' dir_hash (S.fromPure content)
                           `finally` Un.removeFile (Path.fromAbsFile file_name')
                       BackupSt.modifyStatistic' BackupSt.processedDirCount (+ 1)
                     UploadFile file_hash file_name' rel_file_name -> do
-                      unique_file_gate file_hash $
-                        do
-                          addFile' file_hash (File.readChunks (Path.fromAbsFile file_name'))
+                      unique_file_gate file_hash $ do
+                        content <- liftIO $ BS.readFile $ Path.fromAbsFile file_name'
+                        addFile' file_hash (S.fromPure content)
                           `finally` Un.removeFile (Path.fromAbsFile file_name')
                       BackupSt.modifyStatistic' BackupSt.processedFileCount (+ 1)
                       st <- liftIO $ P.getFileStatus $ Path.fromRelFile rel_file_name
@@ -355,8 +396,7 @@ backup dir = do
                     UploadChunk chunk_hash chunk_stream -> do
                       unique_chunk_gate chunk_hash $ do
                         added_bytes <- addBlob' chunk_hash (S.morphInner liftIO chunk_stream)
-                        when (added_bytes > 0) $
-                          BackupSt.modifyStatistic' BackupSt.uploadedBytes (+ fromIntegral added_bytes)
+                        BackupSt.modifyStatistic' BackupSt.uploadedBytes (+ fromIntegral added_bytes)
                       BackupSt.modifyStatistic' BackupSt.processedChunkCount (+ 1)
                 )
               & S.fold F.drain
@@ -403,3 +443,14 @@ folder_tree = [Path.reldir|tree|]
 
 folder_version :: Path Path.Rel Path.Dir
 folder_version = [Path.reldir|version|]
+
+{-# INLINE ww #-}
+ww :: MonadUnliftIO m => ((FilePath, Un.Handle) -> m c) -> m c
+ww run = do
+  bracketOnError
+    (liftIO $ P.mkstemp "/tmp/ggg-")
+    ( \(name, h) -> do
+        _ <- tryIO $ hClose h
+        Un.removeFile name
+    )
+    (run)

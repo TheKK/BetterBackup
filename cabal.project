@@ -1,11 +1,15 @@
 packages: ./*.cabal
 
 package *
-  ghc-options: -split-sections
+  ghc-options:
+    -split-sections
+    -- -fdistinct-constructor-tables
+    -- -finfo-table-map
   gcc-options: -fdata-sections -ffunction-sections
 
 package better
   ld-options: -Wl,--gc-sections
+  ghc-options: -j4
 
 package streamly-core
   flags: +use-unliftio +has-llvm
@@ -15,3 +19,5 @@ package streamly
 
 package crypton
   flags: +support_sse
+
+-- packages: ./3rd/hs-blake3/blake3

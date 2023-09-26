@@ -40,6 +40,7 @@ runTheMonadTmp (TheMonadTmp m) = m
 {-# INLINE runTheMonadTmp #-}
 
 instance (C.HasReader "tmp_dir" (Path Path.Abs Path.Dir) m, MonadUnliftIO m) => MonadTmp (TheMonadTmp m) where
+  {-# INLINE withEmptyTmpFile #-}
   withEmptyTmpFile run = TheMonadTmp $ do
     tmp_dir <- C.ask @"tmp_dir"
     let p = tmp_dir </> [Path.relfile|file-|]

@@ -126,7 +126,7 @@ import Better.Repository.Types (Version(..))
 import Data.ByteArray (ByteArrayAccess(..))
 import qualified Data.ByteArray.Encoding as BA
 import qualified Data.ByteArray as BA
-import Better.Internal.Streamly.Crypto.AES (decryptCtr)
+import Better.Internal.Streamly.Crypto.AES (decryptCtr, that_aes, compact)
 
 import qualified Crypto.Cipher.AES as Cipher
 import qualified Crypto.Cipher.Types as Cipher
@@ -136,6 +136,15 @@ import qualified Crypto.KDF.PBKDF2 as PBKDF2
 import qualified Control.Monad.IO.Unlift as S
 import qualified Control.Monad.IO.Unlift as Un
 import qualified Streamly.Internal.Data.Array.Mut.Type as MA
+import Data.Vector.Fusion.Bundle.Monadic (chunks)
+import Path.Posix (absdir)
+import Control.Monad.Identity (runIdentity)
+import qualified System.Posix.Fcntl as P
+import qualified System.Posix.IO as P
+import qualified System.Posix.IO.ByteString as PB
+import qualified System.Posix.IO.ByteString as BP
+import Data.Coerce (coerce)
+import Foreign.C (CSize(CSize))
 
 pass :: BS.ByteString
 pass = "passwordd"
@@ -151,11 +160,6 @@ pbkdf = PBKDF2.generate (PBKDF2.prfHMAC Hash.SHA256) param pass salt
         { PBKDF2.outputLength = Cipher.blockSize (undefined :: Cipher.AES128)
         , PBKDF2.iterCounts = 4000
         }
-
-that_key :: IO Cipher.AES128
-that_key = case Cipher.cipherInit @Cipher.AES128 pbkdf of
-  CryptoPassed aes -> pure aes
-  CryptoFailed err -> throwIO err
 
 data Repository = Repository
    { _repo_putFile :: Path Path.Rel Path.File -> F.Fold IO (Array.Array Word8) ()
@@ -192,6 +196,7 @@ newtype TheMonadRepository m a = TheMonadRepository (m a)
   deriving (Functor, Applicative, Monad, MonadIO, MonadThrow, MonadCatch, MonadMask)
 
 instance (C.HasReader "repo" Repository m, MonadIO m) => MonadRepository (TheMonadRepository m) where
+  {-# INLINE mkPutFileFold #-}
   mkPutFileFold = TheMonadRepository $ do
     f <- C.asks @"repo" _repo_putFile
     pure $ F.morphInner liftIO . f
@@ -204,6 +209,7 @@ instance (C.HasReader "repo" Repository m, MonadIO m) => MonadRepository (TheMon
     f <- C.asks @"repo" _repo_createDirectory
     liftIO $ f d
 
+  {-# INLINE fileExists #-}
   fileExists file = TheMonadRepository $ do
     f <- C.asks @"repo" _repo_fileExists
     liftIO $ f file
@@ -308,46 +314,45 @@ initRepositoryStructure = do pure ()
 
 {-# INLINE addBlob' #-}
 addBlob'
-  :: (MonadCatch m, MonadIO m, MonadRepository m)
+  :: (MonadCatch m, MonadUnliftIO m, MonadRepository m)
   => Digest SHA256
-  -> S.Stream m (Array.Array Word8)
+  -> S.Stream m (BS.ByteString)
   -> m Word32
   -- ^ Bytes written
 addBlob' digest chunks = do
-  file_name' <- Path.parseRelFile $ show digest
-  let f = folder_chunk </> file_name'
-  exist <- fileExists f
+  let f = "/volume2/drawf_forest_backup/better/chunk/" <> show digest
+  exist <- liftIO $ P.fileExist f
   if exist
     then pure 0
     else do
-      putFileFold <- mkPutFileFold
-      fmap snd $ chunks & S.fold (F.tee (putFileFold f) (F.lmap (fromIntegral . Array.length) F.sum))
+      withFile f WriteMode $ \h -> do
+        len <- chunks & S.fold (F.lmap (fromIntegral . BS.length) (F.sum @_ @Word32))
+        chunks & S.fold (F.drainMapM $ liftIO . BS.hPut h)
+        pure $! len
 
 {-# INLINE addFile' #-}
-addFile' :: (MonadCatch m, MonadIO m, MonadRepository m)
+addFile' :: (MonadCatch m, MonadUnliftIO m, MonadRepository m)
   => Digest SHA256
-  -> S.Stream m (Array.Array Word8)
+  -> S.Stream m (BS.ByteString)
   -> m ()
 addFile' digest chunks = do
-  file_name' <- Path.parseRelFile $ show digest
-  let f = folder_file </> file_name'
-  exist <- fileExists f
+  let f = "/volume2/drawf_forest_backup/better/file/" <> show digest
+  exist <- liftIO $ P.fileExist f
   unless exist $ do
-    putFileFold <- mkPutFileFold
-    chunks & S.fold (putFileFold f)
+    withFile f WriteMode $ \h -> do
+      chunks & S.fold (F.drainMapM $ liftIO . BS.hPut h)
 
 {-# INLINE addDir' #-}
-addDir' :: (MonadCatch m, MonadIO m, MonadRepository m)
+addDir' :: (MonadCatch m, MonadUnliftIO m, MonadRepository m)
   => Digest SHA256
-  -> S.Stream m (Array.Array Word8)
+  -> S.Stream m BS.ByteString
   -> m ()
 addDir' digest chunks = do
-  file_name' <- Path.parseRelFile $ show digest
-  let f = folder_tree </> file_name'
-  exist <- fileExists f
+  let f = "/volume2/drawf_forest_backup/better/tree/" <> show digest
+  exist <- liftIO $ P.fileExist f
   unless exist $ do
-    putFileFold <- mkPutFileFold
-    chunks & S.fold (putFileFold f)
+    withFile f WriteMode $ \h -> do
+      chunks & S.fold (F.drainMapM $ liftIO . BS.hPut h)
 
 {-# INLINE addVersion #-}
 addVersion :: (MonadIO m, MonadCatch m, MonadRepository m)
@@ -396,7 +401,7 @@ instance BA.ByteArray (ArrayBA Word8) where
 catChunk :: (MonadUnliftIO m, MonadThrow m, MonadIO m, MonadRepository m)
          => Digest SHA256 -> S.Stream m (Array.Array Word8)
 catChunk digest = S.concatEffect $ do
-  aes <- liftIO that_key
+  aes <- liftIO that_aes
   withRunInIO $ \unlift_io -> pure $
     cat_stuff_under folder_chunk digest
       & S.morphInner unlift_io
@@ -455,7 +460,24 @@ instance ByteArrayAccess (ArrayBA Word8) where
 
 checksum :: (MonadThrow m, MonadUnliftIO m, MonadRepository m) => Int -> m ()
 checksum n = do
-  S.fromList [folder_tree, folder_file]
+  S.fromList [folder_tree]
+    & S.concatMap (\p ->
+      listFolderFiles p
+        & fmap (\f -> (Path.fromRelFile f, p </> f))
+    )
+    & S.parMapM (S.maxBuffer (n + 1) . S.eager True) (\(expected_sha, f) -> do
+         actual_sha <- read f
+           & S.fold hashArrayFoldIO
+         if show actual_sha == expected_sha
+           then pure Nothing
+           else pure $ Just (f, actual_sha)
+       )
+    & S.filter (isJust)
+    & fmap (fromJust)
+    & S.fold (F.foldMapM $ \(invalid_f, expect_sha) ->
+        liftIO $ T.putStrLn $ "invalid tree: " <> T.pack (Path.fromRelFile invalid_f) <> ", " <> T.pack (show expect_sha))
+
+  S.fromList [folder_file]
     & S.concatMap (\p ->
       listFolderFiles p
         & fmap (\f -> (Path.fromRelFile f, p </> f))
@@ -483,12 +505,12 @@ checksum n = do
                !expected_sha_str = T.pack $ show expected_sha
                !actual_sha_str = T.pack $ show actual_sha
              in
-               pure $ Just (expected_sha_str, actual_sha_str)
+               pure $ Just (chunk_path, expected_sha_str, actual_sha_str)
        )
     & S.filter (isJust)
     & fmap (fromJust)
-    & S.fold (F.foldMapM $ \(expected_sha, actual_sha) ->
-        liftIO $ T.putStrLn $ "invalid file: " <> actual_sha <> ", checksum: " <> expected_sha)
+    & S.fold (F.foldMapM $ \(chunk_path, expected_sha, actual_sha) ->
+        liftIO $ T.putStrLn $ "invalid chunk: " <> T.pack (show chunk_path) <> ", checksum: " <> expected_sha)
 {-# INLINE checksum #-}
 
 {-# INLINEABLE t2d #-}

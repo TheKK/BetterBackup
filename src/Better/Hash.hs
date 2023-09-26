@@ -40,7 +40,7 @@ hashByteStringFold :: Monad m => F.Fold m BS.ByteString (Digest SHA256)
 hashByteStringFold = unsafeCoerce . toBlock <$> hash_blake3
 {-# INLINE hashByteStringFold #-}
 
-hashByteStringFoldIO :: MonadUnliftIO m => F.Fold m BS.ByteString (Digest SHA256)
+hashByteStringFoldIO :: (MonadUnliftIO m, BA.ByteArrayAccess ba) => F.Fold m ba (Digest SHA256)
 hashByteStringFoldIO = unsafeCoerce . toBlock <$> hash_blake3_io
 {-# INLINE hashByteStringFoldIO #-}
 

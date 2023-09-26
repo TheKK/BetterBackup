@@ -56,7 +56,7 @@ import qualified System.Random.SplitMix as Rng
 
 import Control.Monad (forM_, unless)
 
-import System.IO (Handle, IOMode (ReadMode), SeekMode (AbsoluteSeek, RelativeSeek), hClose, hFileSize, hGetBufSome, hIsEOF, hSeek, openFile, withFile)
+import System.IO (Handle, IOMode (ReadMode), SeekMode (AbsoluteSeek, RelativeSeek), hClose, hFileSize, hGetBufSome, hIsEOF, hSeek, openFile, withFile, hGetBuf)
 
 import qualified Hedgehog as H
 import qualified Hedgehog.Gen as Gen
@@ -107,7 +107,7 @@ defaultGearHashConfig :: GearHashConfig
 defaultGearHashConfig = gearHashConfig normalize_level avg_bytes
   where
     normalize_level :: Word32
-    normalize_level = 1
+    normalize_level = 2
 
     avg_bytes :: Word32
     avg_bytes = 32 * 2 ^ (10 :: Int)
@@ -150,8 +150,8 @@ unsafe_file_read_chunks_unfold = Unfold.bracket (`openFile` ReadMode) hClose $ U
 
 {-# INLINE gearHash #-}
 gearHash :: GearHashConfig -> FilePath -> S.Stream IO Chunk
--- gearHash cfg = S.unfold (Unfold.bracket (`openFile` ReadMode) hClose $ gearHashWithFileUnfold cfg)
-gearHash cfg file = S.unfold unsafe_file_read_chunks_unfold file & gearHashPure cfg
+gearHash cfg = S.unfold (Unfold.bracket (`openFile` ReadMode) hClose $ gearHashWithFileUnfold cfg)
+-- gearHash cfg file = S.unfold unsafe_file_read_chunks_unfold file & gearHashPure cfg
 
 data Buf = Buf
   { buf_offset :: {-# UNPACK #-} !Int
@@ -226,7 +226,7 @@ gearHashWithFileUnfold cfg@(GearHashConfig lomask himask _ avg_chunk_size _) = U
           then pure $! SJust buf
           else do
             MutableBlock.withMutablePtr @IO @Word8 (buf_content buf) $ \ptr -> do
-              bytes <- hGetBufSome h ptr $ buf_capacity buf
+              bytes <- hGetBuf h ptr $ buf_capacity buf
               if bytes /= 0
                 then
                   let new_buf = buf_take bytes $ buf_full buf

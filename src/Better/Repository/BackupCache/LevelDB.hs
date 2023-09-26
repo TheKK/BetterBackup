@@ -50,7 +50,7 @@ save_to db st digest = do
 read_from :: (MonadIO m) => LV.DB -> P.FileStatus -> m (Maybe (Digest SHA256))
 read_from db st = do
   LV.get db LV.defaultReadOptions (key_of_st st)
-    >>= (pure $!) . \case
+    >>= (pure $) . \case
       Just raw_v' -> do
         flip Bin.runGet (BC.fromStrict raw_v') $ do
           (digestFromByteString . BS.pack) <$> replicateM (hashDigestSize SHA256) Bin.getWord8
