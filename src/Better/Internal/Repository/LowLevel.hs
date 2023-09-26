@@ -464,8 +464,8 @@ checksum n = do
        )
     & S.filter (isJust)
     & fmap (fromJust)
-    & S.fold (F.foldMapM $ \(invalid_f, expect_sha) ->
-        liftIO $ T.putStrLn $ "invalid file: " <> T.pack (Path.fromRelFile invalid_f) <> ", " <> T.pack (show expect_sha))
+    & S.fold (F.foldMapM $ \(invalid_f, actual_sha) ->
+        liftIO $ T.putStrLn $ "invalid file: " <> T.pack (Path.fromRelFile invalid_f) <> ", " <> T.pack (show actual_sha))
 
   listFolderFiles folder_chunk
     & S.parMapM (S.maxBuffer (n + 1) . S.eager True) (\chunk_path -> do
@@ -475,15 +475,14 @@ checksum n = do
            then pure Nothing
            else
              let
-               !expected_sha_str = T.pack $ show expected_sha
                !actual_sha_str = T.pack $ show actual_sha
              in
-               pure $ Just (expected_sha_str, actual_sha_str)
+               pure $ Just (folder_chunk </> chunk_path, actual_sha_str)
        )
     & S.filter (isJust)
     & fmap (fromJust)
-    & S.fold (F.foldMapM $ \(expected_sha, actual_sha) ->
-        liftIO $ T.putStrLn $ "invalid file: " <> actual_sha <> ", checksum: " <> expected_sha)
+    & S.fold (F.foldMapM $ \(invalid_f, actual_sha) ->
+        liftIO $ T.putStrLn $ "invalid file: " <> T.pack (Path.toFilePath invalid_f) <> ", checksum: " <> actual_sha)
 {-# INLINE checksum #-}
 
 {-# INLINEABLE t2d #-}
