@@ -107,7 +107,7 @@ defaultGearHashConfig :: GearHashConfig
 defaultGearHashConfig = gearHashConfig normalize_level avg_bytes
   where
     normalize_level :: Word32
-    normalize_level = 1
+    normalize_level = 2
 
     avg_bytes :: Word32
     avg_bytes = 32 * 2 ^ (10 :: Int)
@@ -150,8 +150,7 @@ unsafe_file_read_chunks_unfold = Unfold.bracket (`openFile` ReadMode) hClose $ U
 
 {-# INLINE gearHash #-}
 gearHash :: GearHashConfig -> FilePath -> S.Stream IO Chunk
--- gearHash cfg = S.unfold (Unfold.bracket (`openFile` ReadMode) hClose $ gearHashWithFileUnfold cfg)
-gearHash cfg file = S.unfold unsafe_file_read_chunks_unfold file & gearHashPure cfg
+gearHash cfg = S.unfold (Unfold.bracket (`openFile` ReadMode) hClose $ gearHashWithFileUnfold cfg)
 
 data Buf = Buf
   { buf_offset :: {-# UNPACK #-} !Int
