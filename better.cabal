@@ -85,6 +85,7 @@ library better-core
       Better.Internal.Repository
       Better.Internal.Repository.LowLevel
       Better.Internal.Repository.GarbageCollection
+      Better.Internal.Repository.IntegrityCheck
       Better.Internal.Streamly.Crypto.AES
       Better.Streamly.FileSystem.Dir
       Better.Streamly.FileSystem.Chunker

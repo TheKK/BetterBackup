@@ -28,7 +28,6 @@ module Better.Internal.Repository.LowLevel
   , getChunkSize
   , listFolderFiles
   , listVersions
-  , checksum
   -- * Repositories
   , localRepo
   -- * Monad
@@ -57,36 +56,26 @@ module Better.Internal.Repository.LowLevel
   , s2d
   ) where
 
-import Prelude hiding (read)
-
 import Data.Word
 import Data.Function
-import Data.Foldable
-import Data.Maybe (fromMaybe, isJust, fromJust)
 
-import qualified Data.Set as Set
 
 import UnliftIO
 import qualified UnliftIO.Directory as Un
-import qualified UnliftIO.STM as Un
 
 import qualified Data.Text as T
-import qualified Data.Text.Encoding.Base16 as T16
-import qualified Data.Text.IO as T
 import qualified Data.Text.Encoding as TE
+
+import Data.Maybe (fromMaybe)
 
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Base16 as BS16
-import Data.ByteString.Internal (c2w)
 import qualified Data.ByteString.Builder as BB
 
 import qualified Data.ByteString.Lazy.Base16 as BL16
 
 import qualified Data.ByteString.Short as BShort
-import qualified Data.ByteString.Short.Base16 as BShort16
-
-import qualified Data.ByteString.UTF8 as UTF8
 
 import Text.Read (readMaybe)
 
@@ -94,7 +83,6 @@ import Control.Monad
 import Control.Monad.Catch (MonadCatch, MonadThrow, MonadMask, throwM, handleIf)
 
 import qualified Streamly.Data.Array as Array
-import qualified Streamly.Internal.Data.Array as Array (asPtrUnsafe, castUnsafe, unsafeFreeze)
 
 import qualified Streamly.FileSystem.File as File
 import qualified Streamly.Unicode.Stream as US
@@ -113,11 +101,10 @@ import Crypto.Hash
 
 import qualified Streamly.Data.Stream.Prelude as S
 import qualified Streamly.Data.Fold as F
-import qualified Streamly.Data.Unfold as U
+import qualified Streamly.Internal.Data.Fold as F
 
 import qualified Capability.Reader as C
 
-import Better.Hash
 import Better.Repository.Class
 import qualified Better.Streamly.FileSystem.Dir as Dir
 
@@ -128,29 +115,15 @@ import qualified Data.ByteArray.Encoding as BA
 import qualified Data.ByteArray as BA
 import Better.Internal.Streamly.Crypto.AES (decryptCtr, that_aes)
 
-import qualified Crypto.Cipher.AES as Cipher
-import qualified Crypto.Cipher.Types as Cipher
-import Crypto.Error (CryptoFailable (CryptoFailed, CryptoPassed))
-import qualified Crypto.Hash.Algorithms as Hash
-import qualified Crypto.KDF.PBKDF2 as PBKDF2
-import qualified Control.Monad.IO.Unlift as S
-import qualified Control.Monad.IO.Unlift as Un
 import qualified Streamly.Internal.Data.Array.Mut.Type as MA
 
-pass :: BS.ByteString
-pass = "passwordd"
-
-salt :: BS.ByteString
-salt = "rJ,!)-w\253\213\\"
-
-pbkdf :: BS.ByteString
-pbkdf = PBKDF2.generate (PBKDF2.prfHMAC Hash.SHA256) param pass salt
-  where
-    param =
-      PBKDF2.Parameters
-        { PBKDF2.outputLength = Cipher.blockSize (undefined :: Cipher.AES128)
-        , PBKDF2.iterCounts = 4000
-        }
+import GHC.Ptr (Ptr(..), plusPtr)
+import GHC.PrimopWrappers (byteArrayContents#)
+import Unsafe.Coerce (unsafeCoerce#)
+import Streamly.Internal.Data.Unboxed (getMutableByteArray#)
+import Streamly.Internal.Data.Array.Mut (touch)
+import System.IO (openBinaryFile, hPutBuf)
+import qualified Streamly.Internal.Data.Array.Type as Array
 
 data Repository = Repository
    { _repo_putFile :: Path Path.Rel Path.File -> F.Fold IO (Array.Array Word8) ()
@@ -228,12 +201,6 @@ listFolderFiles :: (MonadIO m, MonadRepository m)
 listFolderFiles d = S.concatEffect $ do
   f <- mkListFolderFiles
   pure $! f d
-
-read :: (MonadIO m, MonadRepository m)
-                => Path Path.Rel Path.File -> S.Stream m (Array.Array Word8)
-read p = S.concatEffect $ do
-  f <- mkRead
-  pure $ f p
 
 {-# INLINE listVersions #-}
 listVersions :: (MonadThrow m, MonadIO m, MonadRepository m) => S.Stream m Version
@@ -454,42 +421,6 @@ newtype ArrayBA a = ArrayBA { un_array_ba :: Array.Array a }
 instance ByteArrayAccess (ArrayBA Word8) where
   length (ArrayBA arr) = Array.length arr
   withByteArray (ArrayBA arr) fp = Array.asPtrUnsafe (Array.castUnsafe arr) fp
-
-checksum :: (MonadThrow m, MonadUnliftIO m, MonadRepository m) => Int -> m ()
-checksum n = do
-  S.fromList [folder_tree, folder_file]
-    & S.concatMap (\p ->
-      listFolderFiles p
-        & fmap (\f -> (Path.fromRelFile f, p </> f))
-    )
-    & S.parMapM (S.maxBuffer (n + 1) . S.eager True) (\(expected_sha, f) -> do
-         actual_sha <- read f
-           & S.fold hashArrayFoldIO
-         if show actual_sha == expected_sha
-           then pure Nothing
-           else pure $ Just (f, actual_sha)
-       )
-    & S.filter (isJust)
-    & fmap (fromJust)
-    & S.fold (F.foldMapM $ \(invalid_f, actual_sha) ->
-        liftIO $ T.putStrLn $ "invalid file: " <> T.pack (Path.fromRelFile invalid_f) <> ", " <> T.pack (show actual_sha))
-
-  listFolderFiles folder_chunk
-    & S.parMapM (S.maxBuffer (n + 1) . S.eager True) (\chunk_path -> do
-         expected_sha <- s2d $ Path.fromRelFile chunk_path
-         actual_sha <- catChunk expected_sha & S.fold hashArrayFoldIO
-         if expected_sha == actual_sha
-           then pure Nothing
-           else
-             let
-               !actual_sha_str = T.pack $ show actual_sha
-             in
-               pure $ Just (folder_chunk </> chunk_path, actual_sha_str)
-       )
-    & S.filter (isJust)
-    & fmap (fromJust)
-    & S.fold (F.foldMapM $ \(invalid_f, actual_sha) ->
-        liftIO $ T.putStrLn $ "invalid file: " <> T.pack (Path.toFilePath invalid_f) <> ", checksum: " <> actual_sha)
 {-# INLINE checksum #-}
 
 {-# INLINEABLE t2d #-}

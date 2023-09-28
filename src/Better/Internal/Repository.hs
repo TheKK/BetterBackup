@@ -16,7 +16,6 @@ module Better.Internal.Repository (
   getChunkSize,
   listFolderFiles,
   listVersions,
-  checksum,
 
   -- * Repositories
   localRepo,

@@ -37,4 +37,5 @@ module Better.Repository
 
 import Better.Internal.Repository
 import Better.Internal.Repository.GarbageCollection
+import Better.Internal.Repository.IntegrityCheck
 import Better.Repository.Types
