@@ -47,7 +47,6 @@ import qualified UnliftIO.IO.File as Un
 import qualified Ki.Unlifted as Ki
 
 import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
 
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Builder as BB
@@ -58,13 +57,11 @@ import qualified Data.ByteString.UTF8 as UTF8
 import Text.Read (readMaybe)
 
 import Control.Applicative ((<|>))
-import Control.Monad (unless, when, (>=>))
+import Control.Monad (unless)
 import Control.Monad.Catch (MonadCatch, MonadMask)
 
-import Data.Functor.Identity (Identity (runIdentity))
-
 import qualified Streamly.Data.Array as Array
-import qualified Streamly.Internal.Data.Array as Array (asPtrUnsafe, castUnsafe)
+import qualified Streamly.Internal.Data.Array as Array (unsafeFreeze)
 import qualified Streamly.Internal.Data.Array.Type as Array (byteLength)
 import Streamly.Internal.System.IO (defaultChunkSize)
 
@@ -82,7 +79,7 @@ import qualified Streamly.Data.Stream.Prelude as S
 
 import Better.Hash (hashArrayFoldIO, hashByteStringFoldIO)
 import Better.Repository.Class (
-  MonadRepository (fileExists, mkListFolderFiles, mkPutFileFold),
+  MonadRepository (mkListFolderFiles),
  )
 import qualified Better.Streamly.FileSystem.Chunker as Chunker
 import qualified Better.Streamly.FileSystem.Dir as Dir
@@ -101,7 +98,7 @@ import Data.ByteArray (ByteArrayAccess (..))
 import qualified Data.ByteArray as BA
 import qualified Data.ByteArray.Encoding as BA
 
-import Better.Internal.Repository.LowLevel (addBlob', addDir', addFile', addVersion)
+import Better.Internal.Repository.LowLevel (addBlob', addDir', addFile', addVersion, array_as_ptr, marray_as_ptr)
 import Control.Concurrent.STM.TSem (TSem, newTSem, signalTSem, waitTSem)
 import qualified Crypto.Cipher.AES as Cipher
 import Crypto.Cipher.Types (ivAdd)
@@ -109,7 +106,9 @@ import qualified Crypto.Cipher.Types as Cipher
 import qualified Crypto.Random.Entropy as CRE
 import qualified Streamly.Internal.FileSystem.Handle as Handle
 import System.Environment (lookupEnv)
-import qualified UnliftIO.Exception as Un
+import qualified UnliftIO as Un
+import qualified UnliftIO.Concurrent as Un
+import qualified Streamly.Internal.Data.Array.Mut.Type as MA
 
 data Ctr = Ctr
   { _ctr_aes :: {-# UNPACK #-} !Cipher.AES128
@@ -391,15 +390,6 @@ withEmitUnfoldr q_size putter go = do
     ret_solver <- atomically $ Ki.await thread_solver
 
     pure (ret_putter, ret_solver)
-
-folder_chunk :: Path Path.Rel Path.Dir
-folder_chunk = [Path.reldir|chunk|]
-
-folder_file :: Path Path.Rel Path.Dir
-folder_file = [Path.reldir|file|]
-
-folder_tree :: Path Path.Rel Path.Dir
-folder_tree = [Path.reldir|tree|]
 
 folder_version :: Path Path.Rel Path.Dir
 folder_version = [Path.reldir|version|]
