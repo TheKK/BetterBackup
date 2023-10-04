@@ -56,7 +56,6 @@ flag plugin
 
 common warnings
     ghc-options:
-      -feager-blackholing
       -Wall
       -fllvm
       -eventlog
@@ -101,6 +100,8 @@ library better-core
       Better.Statistics.Backup
       Better.Statistics.Backup.Class
       Better.Statistics.Backup.Default
+    other-modules:
+      Better.Internal.Streamly.Array
     build-depends:  vector, random, splitmix, leveldb-haskell, binary, ki-unlifted, parallel, fusion-plugin-types, async, ghc-prim, hedgehog, basement, blake3
     hs-source-dirs:   src
     default-language: Haskell2010

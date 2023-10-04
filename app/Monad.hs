@@ -200,9 +200,9 @@ newtype BackupRepoT m a = BackupRepoT {_unBackupRepoT :: ReaderT BackupRepoEnv m
 runBackupRepoT :: BackupRepoT m a -> BackupRepoEnv -> m a
 runBackupRepoT m env = flip runReaderT env $ _unBackupRepoT m
 
-deriving via (TheLevelDBBackupCache (BackupRepoT m)) instance (MonadIO m) => MonadBackupCache (BackupRepoT m)
+deriving via (TheLevelDBBackupCache (BackupRepoT IO)) instance MonadBackupCache (BackupRepoT IO)
 
-deriving via (TheTVarBackupStatistics (BackupRepoT m)) instance (MonadIO m) => MonadBackupStat (BackupRepoT m)
+deriving via (TheTVarBackupStatistics (BackupRepoT IO)) instance MonadBackupStat (BackupRepoT IO)
 
 deriving instance MonadUnliftIO m => MonadUnliftIO (C.Rename k m)
 deriving instance MonadUnliftIO m => MonadUnliftIO (C.Field k k' m)

@@ -15,74 +15,30 @@ where
 import Data.Function ()
 import Data.Word (Word8)
 
-import UnliftIO (
-  IOMode (WriteMode),
-  MonadIO (liftIO),
-  hClose,
-  mask_,
-  onException,
- )
-import qualified UnliftIO.Directory as Un
-
-import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
-
-import Data.Maybe (fromMaybe)
-
-import qualified Data.ByteString as BS
-import qualified Data.ByteString.Base16 as BS16
-import qualified Data.ByteString.Builder as BB
-import qualified Data.ByteString.Char8 as BSC
-
-import qualified Data.ByteString.Lazy.Base16 as BL16
-
-import qualified Data.ByteString.Short as BShort
-
-import Text.Read (readMaybe)
+import UnliftIO (IOMode (WriteMode), hClose, mask_, onException)
 
 import Control.Monad ()
-import Control.Monad.Catch (MonadCatch, MonadMask, MonadThrow, handleIf, throwM)
-
-import qualified Streamly.FileSystem.File as File
-import qualified Streamly.Internal.Unicode.Stream as US
-import qualified Streamly.Unicode.Stream as US
-
-import System.IO.Error (isDoesNotExistError)
-import System.Posix.Types (FileOffset)
-
-import qualified System.Posix.Directory as P
-import qualified System.Posix.Files as P
-
-import Path (Path, (</>))
-import qualified Path
-
-import Crypto.Hash ()
 
 import qualified Streamly.Data.Fold as F
-import qualified Streamly.Data.Stream.Prelude as S
 import qualified Streamly.Internal.Data.Fold as F
 
-import qualified Capability.Reader as C
-
 import Better.Repository.Class ()
-import qualified Better.Streamly.FileSystem.Dir as Dir
 
-import Better.Repository.Types (Version (..))
-
-import Better.Internal.Streamly.Crypto.AES (decryptCtr, that_aes)
 import Data.ByteArray (ByteArrayAccess (..))
 import qualified Data.ByteArray as BA
-import qualified Data.ByteArray.Encoding as BA
 
 import qualified Streamly.Internal.Data.Array.Mut.Type as MA
 
 import GHC.PrimopWrappers (byteArrayContents#)
 import GHC.Ptr (Ptr (..), plusPtr)
+
 import qualified Streamly.Data.Array as Array
 import Streamly.Internal.Data.Array.Mut (touch)
 import qualified Streamly.Internal.Data.Array.Type as Array
 import Streamly.Internal.Data.Unboxed (getMutableByteArray#)
+
 import System.IO (hPutBuf, openBinaryFile)
+
 import Unsafe.Coerce (unsafeCoerce#)
 
 -- * Functions that I need but not exists on upstream.

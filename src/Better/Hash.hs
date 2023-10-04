@@ -13,14 +13,12 @@ module Better.Hash (
   hashArrayFoldIO,
 ) where
 
-import Data.ByteArray (ByteArrayAccess (..))
 import Data.Word (Word8)
 
 import qualified Data.ByteString as BS
 
 import qualified Streamly.Data.Array as Array
 import qualified Streamly.Data.Fold as F
-import qualified Streamly.Internal.Data.Array as Array (asPtrUnsafe, castUnsafe)
 
 import qualified Data.ByteArray as BA
 import qualified Data.ByteArray.Sized as BAS
@@ -33,8 +31,12 @@ import Basement.Sized.Block (BlockN, toBlock)
 import Crypto.Hash (Digest, SHA256)
 
 import Control.Monad.IO.Class (liftIO)
+
 import UnliftIO (MonadUnliftIO)
+
 import Unsafe.Coerce (unsafeCoerce)
+
+import Better.Internal.Streamly.Array (ArrayBA (ArrayBA))
 
 hashByteStringFold :: Monad m => F.Fold m BS.ByteString (Digest SHA256)
 hashByteStringFold = unsafeCoerce . toBlock <$> hash_blake3
@@ -69,7 +71,7 @@ hash_blake3_io = F.rmapM extract $ F.foldlM' step s0
     {-# INLINE [0] step #-}
     step !hasher !bs = liftIO $ BA.withByteArray hasher (\ptr -> BIO.update ptr [bs]) >> pure hasher
 
-    {-# INLINE extract #-}
+    {-# INLINE [0] extract #-}
     extract !hasher = liftIO $ BA.withByteArray hasher BIO.finalize
 
 -- | Pure version of blake3 hash
@@ -94,12 +96,3 @@ hash_blake3 = extract <$> F.foldl' step s0
 
     {-# INLINE extract #-}
     extract = BLAKE3.finalize
-
-newtype ArrayBA a = ArrayBA (Array.Array a)
-
-instance ByteArrayAccess (ArrayBA Word8) where
-  length (ArrayBA arr) = Array.length arr
-  {-# INLINE length #-}
-
-  withByteArray (ArrayBA arr) = Array.asPtrUnsafe (Array.castUnsafe arr)
-  {-# INLINE withByteArray #-}

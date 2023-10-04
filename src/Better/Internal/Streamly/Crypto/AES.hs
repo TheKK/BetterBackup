@@ -44,6 +44,8 @@ import qualified Streamly.Data.MutArray as MA
 import qualified Streamly.Internal.Data.Array.Mut.Type as MA
 import qualified Streamly.Internal.Data.Stream as D
 
+import Better.Internal.Streamly.Array (MutArrayBA(MutArrayBA))
+
 {-# DEPRECATED that_passwd "dev only variable" #-}
 that_passwd :: SBS.ShortByteString
 that_passwd = "happyMeal"
@@ -163,7 +165,7 @@ fill_buffer = do
 {-# INLINE fill_buffer #-}
 
 unsafe_copy_to_muarr :: BA.ByteArrayAccess ba => ba -> MA.MutArray Word8 -> IO (MA.MutArray Word8)
-unsafe_copy_to_muarr ba buf = assert (MA.bytesFree buf >= BA.length ba) $ BA.withByteArray (MArrayBA buf) $ \buf_ptr -> do
+unsafe_copy_to_muarr ba buf = assert (MA.bytesFree buf >= BA.length ba) $ BA.withByteArray (MutArrayBA buf) $ \buf_ptr -> do
   BA.copyByteArrayToPtr ba (buf_ptr `plusPtr` MA.arrEnd buf)
   pure $ buf{MA.arrEnd = MA.arrEnd buf + BA.length ba}
 {-# INLINE unsafe_copy_to_muarr #-}
@@ -187,20 +189,12 @@ compact n (D.Stream inner_step inner_s0) = D.Stream step s0
               rec (marr', next_buf_read_env{br_bufBegin = next_begin + BA.length arr})
             _ -> do
               marr' <- unsafe_copy_to_muarr (BA.takeView arr count_to_read) marr
-              let item = BA.convert $ MArrayBA marr'
+              let item = BA.convert $ MutArrayBA marr'
               pure $ D.Yield item (next_opt_s, next_buf, next_begin + count_to_read)
           else
             if MA.length marr /= 0
               then do
-                let item = BA.convert $ MArrayBA marr
+                let item = BA.convert $ MutArrayBA marr
                 pure $ D.Yield item (next_opt_s, next_buf, next_begin)
               else pure D.Stop
 {-# INLINE compact #-}
-
-newtype MArrayBA = MArrayBA (MA.MutArray Word8)
-
-instance BA.ByteArrayAccess MArrayBA where
-  length (MArrayBA arr) = MA.length arr
-  {-# INLINE length #-}
-  withByteArray (MArrayBA arr) = MA.asPtrUnsafe (MA.castUnsafe arr)
-  {-# INLINE withByteArray #-}

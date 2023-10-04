@@ -4,6 +4,7 @@
 {-# LANGUAGE Strict #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE BangPatterns #-}
 
 module Better.Repository.BackupCache.LevelDB
   ( TheLevelDBBackupCache (..),
@@ -12,7 +13,7 @@ where
 
 import Foreign.C.Types (CTime(CTime))
 import qualified Capability.Reader as C
-import Control.Monad.IO.Class (MonadIO)
+import Control.Monad.IO.Class (MonadIO, liftIO)
 import Crypto.Hash (Digest, HashAlgorithm (hashDigestSize), SHA256 (SHA256), digestFromByteString)
 import qualified Data.Binary.Get as Bin
 import qualified Data.Binary.Put as Bin
@@ -33,30 +34,31 @@ instance (C.HasReader "prev_db" LV.DB m, C.HasReader "cur_db" LV.DB m, MonadIO m
   {-# INLINE saveCurrentFileHash #-}
   saveCurrentFileHash st digest = TheLevelDBBackupCache $ do
     db <- C.ask @"cur_db"
-    save_to db st digest
+    liftIO $ save_to db st digest
 
   {-# INLINE tryReadingCacheHash #-}
   tryReadingCacheHash st = TheLevelDBBackupCache $ do
     db <- C.ask @"prev_db"
-    read_from db st
+    liftIO $ read_from db st
 
-save_to :: (MonadIO m) => LV.DB -> P.FileStatus -> Digest SHA256 -> m ()
+save_to :: LV.DB -> P.FileStatus -> Digest SHA256 -> IO ()
 save_to db st digest = do
-  LV.put db LV.defaultWriteOptions (key_of_st st) $
+  let !k = key_of_st st
+  LV.put db LV.defaultWriteOptions k $
     BC.toStrict $
       Bin.runPut $ do
         for_ (BA.unpack digest) Bin.putWord8
 
-read_from :: (MonadIO m) => LV.DB -> P.FileStatus -> m (Maybe (Digest SHA256))
+read_from :: LV.DB -> P.FileStatus -> IO (Maybe (Digest SHA256))
 read_from db st = do
-  LV.get db LV.defaultReadOptions (key_of_st st)
+  let !k = key_of_st st
+  LV.get db LV.defaultReadOptions k
     >>= (pure $!) . \case
       Just raw_v' -> do
         flip Bin.runGet (BC.fromStrict raw_v') $ do
           (digestFromByteString . BS.pack) <$> replicateM (hashDigestSize SHA256) Bin.getWord8
       Nothing -> Nothing
 
-{-# INLINE key_of_st #-}
 key_of_st :: P.FileStatus -> BS.ByteString
 key_of_st st = BC.toStrict $ Bin.runPut $ do
   Bin.putWord64le $ coerce $ P.fileID st

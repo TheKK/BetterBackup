@@ -1,64 +1,66 @@
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE BangPatterns #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE UndecidableInstances #-}
-{-# LANGUAGE QuasiQuotes #-}
-{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE DerivingVia #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE QuasiQuotes #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE UndecidableInstances #-}
 
-module Better.Internal.Repository.LowLevel
-   -- * Write
-  ( initRepositoryStructure
-  , addBlob'
-  , addFile'
-  , addDir'
-  , addVersion
-  , nextBackupVersionId
+module Better.Internal.Repository.LowLevel (
+  -- * Write
+  initRepositoryStructure,
+  addBlob',
+  addFile',
+  addDir',
+  addVersion,
+  nextBackupVersionId,
+
   -- * Read
-  , catVersion
-  , tryCatingVersion
-  , catTree
-  , catFile
-  , catChunk
-  , getChunkSize
-  , listFolderFiles
-  , listVersions
+  catVersion,
+  tryCatingVersion,
+  catTree,
+  catFile,
+  catChunk,
+  getChunkSize,
+  listFolderFiles,
+  listVersions,
+
   -- * Repositories
-  , localRepo
+  localRepo,
+
   -- * Monad
-  , MonadRepository
-  , TheMonadRepository(..)
+  MonadRepository,
+  TheMonadRepository (..),
+
   -- * Types
-  , Repository
-  , module Better.Repository.Types
+  Repository,
+  module Better.Repository.Types,
 
   -- * Version
-  , Version(..)
-
-  , Tree(..)
-  , FFile(..)
-  , Object(..)
+  Version (..),
+  Tree (..),
+  FFile (..),
+  Object (..),
 
   -- * Constants
-  , folder_tree
-  , folder_file
-  , folder_chunk
-  , folder_version
+  folder_tree,
+  folder_file,
+  folder_chunk,
+  folder_version,
 
   -- * Utils
-  , d2b
-  , t2d
-  , s2d
-  ) where
+  d2b,
+  t2d,
+  s2d,
+) where
 
-import Data.Word
 import Data.Function
-
+import Data.Word
 
 import UnliftIO
 import qualified UnliftIO.Directory as Un
@@ -69,9 +71,9 @@ import qualified Data.Text.Encoding as TE
 import Data.Maybe (fromMaybe)
 
 import qualified Data.ByteString as BS
-import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Base16 as BS16
 import qualified Data.ByteString.Builder as BB
+import qualified Data.ByteString.Char8 as BSC
 
 import qualified Data.ByteString.Lazy.Base16 as BL16
 
@@ -80,27 +82,26 @@ import qualified Data.ByteString.Short as BShort
 import Text.Read (readMaybe)
 
 import Control.Monad
-import Control.Monad.Catch (MonadCatch, MonadThrow, MonadMask, throwM, handleIf)
+import Control.Monad.Catch (MonadCatch, MonadMask, MonadThrow, handleIf, throwM)
 
 import qualified Streamly.Data.Array as Array
 
 import qualified Streamly.FileSystem.File as File
-import qualified Streamly.Unicode.Stream as US
 import qualified Streamly.Internal.Unicode.Stream as US
 
 import System.IO.Error (isDoesNotExistError)
 import System.Posix.Types (FileOffset)
 
-import qualified System.Posix.Files as P
 import qualified System.Posix.Directory as P
+import qualified System.Posix.Files as P
 
 import Path (Path, (</>))
 import qualified Path
 
 import Crypto.Hash
 
-import qualified Streamly.Data.Stream.Prelude as S
 import qualified Streamly.Data.Fold as F
+import qualified Streamly.Data.Stream.Prelude as S
 import qualified Streamly.Internal.Data.Fold as F
 
 import qualified Capability.Reader as C
@@ -108,50 +109,39 @@ import qualified Capability.Reader as C
 import Better.Repository.Class
 import qualified Better.Streamly.FileSystem.Dir as Dir
 
-import Better.Repository.Types (Version(..))
+import Better.Repository.Types (Version (..))
 
-import Data.ByteArray (ByteArrayAccess(..))
-import qualified Data.ByteArray.Encoding as BA
-import qualified Data.ByteArray as BA
 import Better.Internal.Streamly.Crypto.AES (decryptCtr, that_aes)
+import qualified Data.ByteArray.Encoding as BA
 
-import qualified Streamly.Internal.Data.Array.Mut.Type as MA
-
-import GHC.Ptr (Ptr(..), plusPtr)
-import GHC.PrimopWrappers (byteArrayContents#)
-import Unsafe.Coerce (unsafeCoerce#)
-import Streamly.Internal.Data.Unboxed (getMutableByteArray#)
-import Streamly.Internal.Data.Array.Mut (touch)
-import System.IO (openBinaryFile, hPutBuf)
+import Better.Internal.Streamly.Array (ArrayBA (ArrayBA, un_array_ba), fastArrayAsPtrUnsafe)
 import qualified Streamly.Internal.Data.Array.Type as Array
+import System.IO (hPutBuf, openBinaryFile)
 
 data Repository = Repository
-   { _repo_putFile :: Path Path.Rel Path.File -> F.Fold IO (Array.Array Word8) ()
-   , _repo_removeFiles :: [Path Path.Rel Path.File] -> IO ()
-   -- TODO File mode?
-   , _repo_createDirectory :: Path Path.Rel Path.Dir -> IO ()
-   , _repo_fileExists :: Path Path.Rel Path.File -> IO Bool
-   , _repo_fileSize :: Path Path.Rel Path.File -> IO FileOffset
-   , _repo_read :: Path Path.Rel Path.File -> S.Stream IO (Array.Array Word8)
-   , _repo_listFolderFiles :: Path Path.Rel Path.Dir -> S.Stream IO (Path Path.Rel Path.File)
-   }
+  { _repo_putFile :: Path Path.Rel Path.File -> F.Fold IO (Array.Array Word8) ()
+  , _repo_removeFiles :: [Path Path.Rel Path.File] -> IO ()
+  , -- TODO File mode?
+    _repo_createDirectory :: Path Path.Rel Path.Dir -> IO ()
+  , _repo_fileExists :: Path Path.Rel Path.File -> IO Bool
+  , _repo_fileSize :: Path Path.Rel Path.File -> IO FileOffset
+  , _repo_read :: Path Path.Rel Path.File -> S.Stream IO (Array.Array Word8)
+  , _repo_listFolderFiles :: Path Path.Rel Path.Dir -> S.Stream IO (Path Path.Rel Path.File)
+  }
 
-data Tree
-  = Tree
+data Tree = Tree
   { tree_name :: {-# UNPACK #-} !T.Text
   , tree_sha :: {-# UNPACK #-} !(Digest SHA256)
   }
   deriving (Show)
 
-data FFile
-  = FFile
+data FFile = FFile
   { file_name :: {-# UNPACK #-} !T.Text
   , file_sha :: {-# UNPACK #-} !(Digest SHA256)
   }
   deriving (Show)
 
-data Object
-  = Object
+data Object = Object
   { chunk_name :: {-# UNPACK #-} !(Digest SHA256)
   }
   deriving (Show)
@@ -196,8 +186,10 @@ instance (C.HasReader "repo" Repository m, MonadIO m) => MonadRepository (TheMon
     pure $ S.morphInner liftIO . f
 
 {-# INLINE listFolderFiles #-}
-listFolderFiles :: (MonadIO m, MonadRepository m)
-                => Path Path.Rel Path.Dir -> S.Stream m (Path Path.Rel Path.File)
+listFolderFiles
+  :: (MonadIO m, MonadRepository m)
+  => Path Path.Rel Path.Dir
+  -> S.Stream m (Path Path.Rel Path.File)
 listFolderFiles d = S.concatEffect $ do
   f <- mkListFolderFiles
   pure $! f d
@@ -206,10 +198,11 @@ listFolderFiles d = S.concatEffect $ do
 listVersions :: (MonadThrow m, MonadIO m, MonadRepository m) => S.Stream m Version
 listVersions =
   listFolderFiles folder_version
-    & S.mapM (\v -> do
-      v' <- liftIO $ readIO $ Path.fromRelFile v
-      catVersion v'
-    )
+    & S.mapM
+      ( \v -> do
+          v' <- liftIO $ readIO $ Path.fromRelFile v
+          catVersion v'
+      )
 
 tryCatingVersion :: (MonadThrow m, MonadIO m, MonadRepository m) => Integer -> m (Maybe Version)
 tryCatingVersion vid = do
@@ -219,38 +212,58 @@ tryCatingVersion vid = do
   -- specific exception, which is also hard to achieve.
   exists <- fileExists $ folder_version </> path_vid
   if exists
-  then Just <$> catVersion vid
-  else pure Nothing
+    then Just <$> catVersion vid
+    else pure Nothing
 
-  -- hbk <- C.asks @"hbk" hbk_path
-  -- let ver_path = T.unpack $ hbk <> "/version"
-  -- pure $ Dir.readFiles ver_path
-  --   & S.mapM (\v -> do
-  --     optSha <- fmap (BS.decode . BS.pack)
-  --       $ S.toList
-  --       $ File.read (ver_path <> "/" <> v)
-  --     v' <- liftIO $ readIO v
+-- hbk <- C.asks @"hbk" hbk_path
+-- let ver_path = T.unpack $ hbk <> "/version"
+-- pure $ Dir.readFiles ver_path
+--   & S.mapM (\v -> do
+--     optSha <- fmap (BS.decode . BS.pack)
+--       $ S.toList
+--       $ File.read (ver_path <> "/" <> v)
+--     v' <- liftIO $ readIO v
 
-  --     sha <- case optSha of
-  --       Left err -> throwM $ userError $ "invalid sha of version, " <> err
-  --       Right sha -> pure $ sha
+--     sha <- case optSha of
+--       Left err -> throwM $ userError $ "invalid sha of version, " <> err
+--       Right sha -> pure $ sha
 
-  --     digest <- case digestFromByteString @SHA256 sha of
-  --       Nothing -> throwM $ userError "invalid sha of version"
-  --       Just digest -> pure digest
+--     digest <- case digestFromByteString @SHA256 sha of
+--       Nothing -> throwM $ userError "invalid sha of version"
+--       Just digest -> pure digest
 
-  --     pure $ Version v' digest
-  --   )
+--     pure $ Version v' digest
+--   )
+--
+
+{-# INLINE write_chunk #-}
+write_chunk :: FilePath -> F.Fold IO (Array.Array Word8) ()
+write_chunk path = F.Fold step initial extract
+  where
+    {-# INLINE [0] initial #-}
+    initial = mask_ $ do
+      hd <- openBinaryFile path WriteMode
+      pure $! F.Partial hd
+
+    {-# INLINE [0] step #-}
+    step hd arr = (`onException` (hClose hd)) $ do
+      fastArrayAsPtrUnsafe arr $ \ptr -> hPutBuf hd ptr (Array.byteLength arr)
+      pure $! F.Partial hd
+
+    {-# INLINE [0] extract #-}
+    extract hd = mask_ $ do
+      hClose hd
 
 localRepo :: Path Path.Abs Path.Dir -> Repository
-localRepo root = Repository
-  (File.writeChunks . Path.fromAbsFile . (root </>))
-  (mapM_ $ (handleIf isDoesNotExistError (const $ pure ())) . Un.removeFile . Path.fromAbsFile . (root </>))
-  (flip P.createDirectory 700 . Path.fromAbsDir . (root </>))
-  (P.fileExist . Path.fromAbsFile . (root </>))
-  (fmap P.fileSize . P.getFileStatus . Path.fromAbsFile . (root </>))
-  (File.readChunks . Path.fromAbsFile . (root </>))
-  (S.mapM Path.parseRelFile . Dir.read . (root </>))
+localRepo root =
+  Repository
+    (write_chunk . Path.fromAbsFile . (root </>))
+    (mapM_ $ (handleIf isDoesNotExistError (const $ pure ())) . Un.removeFile . Path.fromAbsFile . (root </>))
+    (flip P.createDirectory 700 . Path.fromAbsDir . (root </>))
+    (P.fileExist . Path.fromAbsFile . (root </>))
+    (fmap P.fileSize . P.getFileStatus . Path.fromAbsFile . (root </>))
+    (File.readChunks . Path.fromAbsFile . (root </>))
+    (S.mapM Path.parseRelFile . Dir.read . (root </>))
 
 folder_chunk :: Path Path.Rel Path.Dir
 folder_chunk = [Path.reldir|chunk|]
@@ -266,14 +279,15 @@ folder_version = [Path.reldir|version|]
 
 initRepositoryStructure :: (MonadRepository m) => m ()
 initRepositoryStructure = do pure ()
-  -- mapM_ createDirectory $
-  --   [ [Path.reldir| |]
-  --   , folder_chunk
-  --   , folder_file
-  --   , folder_tree
-  --   , folder_version
-  --   ]
-  --
+
+-- mapM_ createDirectory $
+--   [ [Path.reldir| |]
+--   , folder_chunk
+--   , folder_file
+--   , folder_tree
+--   , folder_version
+--   ]
+--
 
 {-# INLINE addBlob' #-}
 addBlob'
@@ -290,10 +304,12 @@ addBlob' digest chunks = do
     then pure 0
     else do
       putFileFold <- mkPutFileFold
-      fmap snd $ chunks & S.fold (F.tee (putFileFold f) (F.lmap (fromIntegral . Array.length) F.sum))
+      ((), !len) <- chunks & S.fold (F.tee (putFileFold f) (F.lmap (fromIntegral . Array.byteLength) F.sum))
+      pure len
 
 {-# INLINE addFile' #-}
-addFile' :: (MonadCatch m, MonadIO m, MonadRepository m)
+addFile'
+  :: (MonadCatch m, MonadIO m, MonadRepository m)
   => Digest SHA256
   -> S.Stream m (Array.Array Word8)
   -> m ()
@@ -306,7 +322,8 @@ addFile' digest chunks = do
     chunks & S.fold (putFileFold f)
 
 {-# INLINE addDir' #-}
-addDir' :: (MonadCatch m, MonadIO m, MonadRepository m)
+addDir'
+  :: (MonadCatch m, MonadIO m, MonadRepository m)
   => Digest SHA256
   -> S.Stream m (Array.Array Word8)
   -> m ()
@@ -319,8 +336,11 @@ addDir' digest chunks = do
     chunks & S.fold (putFileFold f)
 
 {-# INLINE addVersion #-}
-addVersion :: (MonadIO m, MonadCatch m, MonadRepository m)
-  => Integer -> Digest SHA256 -> m ()
+addVersion
+  :: (MonadIO m, MonadCatch m, MonadRepository m)
+  => Integer
+  -> Digest SHA256
+  -> m ()
 addVersion v_id v_root = do
   ver_id_file_name <- Path.parseRelFile $ show v_id
   let f = folder_version </> ver_id_file_name
@@ -336,8 +356,11 @@ nextBackupVersionId = do
     & S.fold F.maximum
     & fmap (succ . fromMaybe 0)
 
-cat_stuff_under :: (Show a, MonadThrow m, MonadIO m, MonadRepository m)
-                => Path Path.Rel Path.Dir -> a -> S.Stream m (Array.Array Word8)
+cat_stuff_under
+  :: (Show a, MonadThrow m, MonadIO m, MonadRepository m)
+  => Path Path.Rel Path.Dir
+  -> a
+  -> S.Stream m (Array.Array Word8)
 cat_stuff_under folder stuff = S.concatEffect $ do
   read_blob <- mkRead
   liftIO $ do
@@ -346,31 +369,28 @@ cat_stuff_under folder stuff = S.concatEffect $ do
 {-# INLINE cat_stuff_under #-}
 
 catFile :: (MonadThrow m, MonadIO m, MonadRepository m) => Digest SHA256 -> S.Stream m Object
-catFile sha = cat_stuff_under folder_file sha
-  & US.decodeUtf8Chunks
-  & US.lines (fmap T.pack F.toList)
-  & S.mapM parse_file_content
+catFile sha =
+  cat_stuff_under folder_file sha
+    & US.decodeUtf8Chunks
+    & US.lines (fmap T.pack F.toList)
+    & S.mapM parse_file_content
   where
     parse_file_content :: (MonadThrow m, Applicative m) => T.Text -> m Object
     parse_file_content = fmap Object . t2d
 {-# INLINE catFile #-}
 
-instance BA.ByteArray (ArrayBA Word8) where
-  allocRet n f = do
-    ma <- MA.newPinned @_ @Word8 n
-    MA.asPtrUnsafe (MA.castUnsafe ma) $ \p -> do
-      ret <- f p
-      pure (ret, ArrayBA $ Array.unsafeFreeze $ ma { MA.arrEnd = MA.arrBound ma })
-
-catChunk :: (MonadUnliftIO m, MonadThrow m, MonadIO m, MonadRepository m)
-         => Digest SHA256 -> S.Stream m (Array.Array Word8)
+catChunk
+  :: (MonadUnliftIO m, MonadThrow m, MonadIO m, MonadRepository m)
+  => Digest SHA256
+  -> S.Stream m (Array.Array Word8)
 catChunk digest = S.concatEffect $ do
   aes <- liftIO that_aes
-  withRunInIO $ \unlift_io -> pure $
-    cat_stuff_under folder_chunk digest
-      & S.morphInner unlift_io
-      & (fmap un_array_ba . decryptCtr aes (32 * 1024) . fmap ArrayBA)
-      & S.morphInner liftIO
+  withRunInIO $ \unlift_io ->
+    pure $
+      cat_stuff_under folder_chunk digest
+        & S.morphInner unlift_io
+        & (fmap un_array_ba . decryptCtr aes (32 * 1024) . fmap ArrayBA)
+        & S.morphInner liftIO
 {-# INLINE catChunk #-}
 
 getChunkSize :: (MonadThrow m, MonadIO m, MonadRepository m) => Digest SHA256 -> m FileOffset
@@ -381,10 +401,11 @@ getChunkSize sha = do
 
 catVersion :: (MonadThrow m, MonadIO m, MonadRepository m) => Integer -> m Version
 catVersion vid = do
-  optSha <- cat_stuff_under folder_version vid
-    & fmap (BB.shortByteString . BShort.pack . Array.toList)
-    & S.fold F.mconcat
-    & fmap (BL16.decodeBase16Untyped . BB.toLazyByteString)
+  optSha <-
+    cat_stuff_under folder_version vid
+      & fmap (BB.shortByteString . BShort.pack . Array.toList)
+      & S.fold F.mconcat
+      & fmap (BL16.decodeBase16Untyped . BB.toLazyByteString)
 
   sha <- case optSha of
     Left err -> throwM $ userError $ "invalid sha of version, " <> T.unpack err
@@ -398,12 +419,13 @@ catVersion vid = do
 {-# INLINE catVersion #-}
 
 catTree :: (MonadThrow m, MonadIO m, MonadRepository m) => Digest SHA256 -> S.Stream m (Either Tree FFile)
-catTree tree_sha' = cat_stuff_under folder_tree tree_sha'
-  & US.decodeUtf8Chunks
-  & US.lines (fmap T.pack F.toList)
-  & S.mapM parse_tree_content
+catTree tree_sha' =
+  cat_stuff_under folder_tree tree_sha'
+    & US.decodeUtf8Chunks
+    & US.lines (fmap T.pack F.toList)
+    & S.mapM parse_tree_content
   where
-    {-# INLINE[0] parse_tree_content #-}
+    {-# INLINE [0] parse_tree_content #-}
     parse_tree_content :: MonadThrow m => T.Text -> m (Either Tree FFile)
     parse_tree_content buf = case T.splitOn " " buf of
       ["dir", name, sha] -> do
@@ -414,14 +436,6 @@ catTree tree_sha' = cat_stuff_under folder_tree tree_sha'
         pure $ Right $ FFile name digest
       _ -> throwM $ userError $ "invalid dir content: " <> T.unpack buf
 {-# INLINE catTree #-}
-
-newtype ArrayBA a = ArrayBA { un_array_ba :: Array.Array a }
-  deriving (Eq, Ord, Monoid, Semigroup)
-
-instance ByteArrayAccess (ArrayBA Word8) where
-  length (ArrayBA arr) = Array.length arr
-  withByteArray (ArrayBA arr) fp = Array.asPtrUnsafe (Array.castUnsafe arr) fp
-{-# INLINE checksum #-}
 
 {-# INLINEABLE t2d #-}
 t2d :: MonadThrow m => T.Text -> m (Digest SHA256)

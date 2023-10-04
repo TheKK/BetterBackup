@@ -30,7 +30,6 @@ import Data.Foldable (Foldable (fold))
 
 import qualified Data.Text as T
 
-
 import Path (Dir)
 import qualified Path
 
