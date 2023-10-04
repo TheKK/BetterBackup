@@ -255,21 +255,17 @@ run_backup_repo_t_from_cwd m = do
       LV.withDB "cur" (LV.defaultOptions{LV.createIfMissing = True, LV.errorIfExists = True}) $ \cur ->
         -- Remove cur if failed to backup and keep prev intact.
         (`Un.onException` try_removing "cur") $
-          Un.withSystemTempDirectory ("better-tmp-" <> show pid <> "-") $ \raw_tmp_dir ->
-            -- XXX Streamly does LEAK thread so it's possible for removing raw_tmp_dirand
-            -- and creating tmp file run concurrently when process is canceled by async exception. So try
-            -- removing it 10 times and hope it works for now as workaround.
-            (`Un.finally` (replicateM_ 10 (P.removeDirectoryRecursive raw_tmp_dir) `Un.catchAny` print)) $ do
-              abs_tmp_dir <- Path.parseAbsDir raw_tmp_dir
-              runBackupRepoT m $
-                BackupRepoEnv
-                  abs_tmp_dir
-                  cwd
-                  repository
-                  abs_tmp_dir
-                  statistics
-                  prev
-                  cur
+          Un.withSystemTempDirectory ("better-tmp-" <> show pid <> "-") $ \raw_tmp_dir -> do
+            abs_tmp_dir <- Path.parseAbsDir raw_tmp_dir
+            runBackupRepoT m $
+              BackupRepoEnv
+                abs_tmp_dir
+                cwd
+                repository
+                abs_tmp_dir
+                statistics
+                prev
+                cur
 
   try_removing "prev_bac"
   D.renameDirectory "prev" "prev.bac"
