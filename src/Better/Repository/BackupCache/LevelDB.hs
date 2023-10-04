@@ -13,7 +13,6 @@ where
 
 import Foreign.C.Types (CTime(CTime))
 import qualified Capability.Reader as C
-import Control.Monad.IO.Class (MonadIO, liftIO)
 import Crypto.Hash (Digest, HashAlgorithm (hashDigestSize), SHA256 (SHA256), digestFromByteString)
 import qualified Data.Binary.Get as Bin
 import qualified Data.Binary.Put as Bin
@@ -27,19 +26,20 @@ import qualified System.Posix as P
 import Control.Monad (replicateM)
 
 import Better.Repository.BackupCache.Class (MonadBackupCache (..))
+import qualified Control.Monad.IO.Unlift as Un
 
 newtype TheLevelDBBackupCache m a = TheLevelDBBackupCache (m a)
 
-instance (C.HasReader "prev_db" LV.DB m, C.HasReader "cur_db" LV.DB m, MonadIO m) => MonadBackupCache (TheLevelDBBackupCache m) where
+instance (C.HasReader "prev_db" LV.DB m, C.HasReader "cur_db" LV.DB m, Un.MonadUnliftIO m) => MonadBackupCache (TheLevelDBBackupCache m) where
   {-# INLINE saveCurrentFileHash #-}
-  saveCurrentFileHash st digest = TheLevelDBBackupCache $ do
-    db <- C.ask @"cur_db"
-    liftIO $ save_to db st digest
+  saveCurrentFileHash st digest = TheLevelDBBackupCache $ Un.withRunInIO $ \un -> do
+    db <- un $ C.ask @"cur_db"
+    save_to db st digest
 
   {-# INLINE tryReadingCacheHash #-}
-  tryReadingCacheHash st = TheLevelDBBackupCache $ do
-    db <- C.ask @"prev_db"
-    liftIO $ read_from db st
+  tryReadingCacheHash st = TheLevelDBBackupCache $ Un.withRunInIO $ \un -> do
+    db <- un $ C.ask @"prev_db"
+    read_from db st
 
 save_to :: LV.DB -> P.FileStatus -> Digest SHA256 -> IO ()
 save_to db st digest = do
