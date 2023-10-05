@@ -98,8 +98,6 @@ import qualified System.Posix.Files as P
 import Path (Path, (</>))
 import qualified Path
 
-import Crypto.Hash
-
 import qualified Streamly.Data.Fold as F
 import qualified Streamly.Data.Stream.Prelude as S
 import qualified Streamly.Internal.Data.Fold as F
@@ -117,6 +115,7 @@ import qualified Data.ByteArray.Encoding as BA
 import Better.Internal.Streamly.Array (ArrayBA (ArrayBA, un_array_ba), fastArrayAsPtrUnsafe)
 import qualified Streamly.Internal.Data.Array.Type as Array
 import System.IO (hPutBuf, openBinaryFile)
+import Better.Hash (Digest, digestFromByteString, digestToBase16ByteString)
 
 data Repository = Repository
   { _repo_putFile :: Path Path.Rel Path.File -> F.Fold IO (Array.Array Word8) ()
@@ -131,18 +130,18 @@ data Repository = Repository
 
 data Tree = Tree
   { tree_name :: {-# UNPACK #-} !T.Text
-  , tree_sha :: {-# UNPACK #-} !(Digest SHA256)
+  , tree_sha :: {-# UNPACK #-} !Digest
   }
   deriving (Show)
 
 data FFile = FFile
   { file_name :: {-# UNPACK #-} !T.Text
-  , file_sha :: {-# UNPACK #-} !(Digest SHA256)
+  , file_sha :: {-# UNPACK #-} !Digest
   }
   deriving (Show)
 
 data Object = Object
-  { chunk_name :: {-# UNPACK #-} !(Digest SHA256)
+  { chunk_name :: {-# UNPACK #-} !Digest
   }
   deriving (Show)
 
@@ -292,7 +291,7 @@ initRepositoryStructure = do pure ()
 {-# INLINE addBlob' #-}
 addBlob'
   :: (MonadCatch m, MonadIO m, MonadRepository m)
-  => Digest SHA256
+  => Digest
   -> S.Stream m (Array.Array Word8)
   -> m Word32
   -- ^ Bytes written
@@ -310,7 +309,7 @@ addBlob' digest chunks = do
 {-# INLINE addFile' #-}
 addFile'
   :: (MonadCatch m, MonadIO m, MonadRepository m)
-  => Digest SHA256
+  => Digest
   -> S.Stream m (Array.Array Word8)
   -> m ()
 addFile' digest chunks = do
@@ -324,7 +323,7 @@ addFile' digest chunks = do
 {-# INLINE addDir' #-}
 addDir'
   :: (MonadCatch m, MonadIO m, MonadRepository m)
-  => Digest SHA256
+  => Digest
   -> S.Stream m (Array.Array Word8)
   -> m ()
 addDir' digest chunks = do
@@ -339,7 +338,7 @@ addDir' digest chunks = do
 addVersion
   :: (MonadIO m, MonadCatch m, MonadRepository m)
   => Integer
-  -> Digest SHA256
+  -> Digest
   -> m ()
 addVersion v_id v_root = do
   ver_id_file_name <- Path.parseRelFile $ show v_id
@@ -368,7 +367,7 @@ cat_stuff_under folder stuff = S.concatEffect $ do
     pure $ read_blob (folder </> stuff_path)
 {-# INLINE cat_stuff_under #-}
 
-catFile :: (MonadThrow m, MonadIO m, MonadRepository m) => Digest SHA256 -> S.Stream m Object
+catFile :: (MonadThrow m, MonadIO m, MonadRepository m) => Digest -> S.Stream m Object
 catFile sha =
   cat_stuff_under folder_file sha
     & US.decodeUtf8Chunks
@@ -381,7 +380,7 @@ catFile sha =
 
 catChunk
   :: (MonadUnliftIO m, MonadThrow m, MonadIO m, MonadRepository m)
-  => Digest SHA256
+  => Digest
   -> S.Stream m (Array.Array Word8)
 catChunk digest = S.concatEffect $ do
   aes <- liftIO that_aes
@@ -393,7 +392,7 @@ catChunk digest = S.concatEffect $ do
         & S.morphInner liftIO
 {-# INLINE catChunk #-}
 
-getChunkSize :: (MonadThrow m, MonadIO m, MonadRepository m) => Digest SHA256 -> m FileOffset
+getChunkSize :: (MonadThrow m, MonadIO m, MonadRepository m) => Digest -> m FileOffset
 getChunkSize sha = do
   sha_path <- Path.parseRelFile $ show sha
   fileSize $ folder_chunk </> sha_path
@@ -411,14 +410,14 @@ catVersion vid = do
     Left err -> throwM $ userError $ "invalid sha of version, " <> T.unpack err
     Right sha -> pure $ sha
 
-  digest <- case digestFromByteString @SHA256 $ BS.toStrict sha of
+  digest <- case digestFromByteString $ BS.toStrict sha of
     Nothing -> throwM $ userError "invalid sha of version"
     Just digest -> pure digest
 
   pure $ Version vid digest
 {-# INLINE catVersion #-}
 
-catTree :: (MonadThrow m, MonadIO m, MonadRepository m) => Digest SHA256 -> S.Stream m (Either Tree FFile)
+catTree :: (MonadThrow m, MonadIO m, MonadRepository m) => Digest -> S.Stream m (Either Tree FFile)
 catTree tree_sha' =
   cat_stuff_under folder_tree tree_sha'
     & US.decodeUtf8Chunks
@@ -438,32 +437,32 @@ catTree tree_sha' =
 {-# INLINE catTree #-}
 
 {-# INLINEABLE t2d #-}
-t2d :: MonadThrow m => T.Text -> m (Digest SHA256)
+t2d :: MonadThrow m => T.Text -> m (Digest)
 t2d sha = do
   sha_decoded <- case BS16.decodeBase16Untyped $ TE.encodeUtf8 sha of
     Left err ->
       throwM $ userError $ "invalid sha: " <> T.unpack sha <> ", " <> T.unpack err
     Right sha' -> pure $ sha'
 
-  digest <- case digestFromByteString @SHA256 sha_decoded of
+  digest <- case digestFromByteString sha_decoded of
     Nothing -> throwM $ userError $ "invalid sha: " <> T.unpack sha
     Just digest -> pure digest
 
   pure digest
 
 {-# INLINEABLE s2d #-}
-s2d :: MonadThrow m => String -> m (Digest SHA256)
+s2d :: MonadThrow m => String -> m (Digest)
 s2d sha = do
   sha_decoded <- case BS16.decodeBase16Untyped $ BSC.pack sha of
     Left err ->
       throwM $ userError $ "invalid sha: " <> sha <> ", " <> T.unpack err
     Right sha' -> pure $ sha'
 
-  digest <- case digestFromByteString @SHA256 sha_decoded of
+  digest <- case digestFromByteString sha_decoded of
     Nothing -> throwM $ userError $ "invalid sha: " <> sha
     Just digest -> pure digest
 
   pure digest
 
-d2b :: Digest SHA256 -> BS.ByteString
-d2b = BA.convertToBase BA.Base16
+d2b :: Digest -> BS.ByteString
+d2b = digestToBase16ByteString

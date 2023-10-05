@@ -2,8 +2,17 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE DerivingVia #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 
 module Better.Hash (
+  -- * Digest
+  Digest,
+  digestSize,
+  digestUnpack,
+  digestToBase16ByteString,
+  digestFromByteString,
+
   -- * Pure versions
   hashByteStringFold,
   hashArrayFold,
@@ -28,7 +37,7 @@ import qualified BLAKE3.IO as BIO
 
 import Basement.Sized.Block (BlockN, toBlock)
 
-import Crypto.Hash (Digest, SHA256)
+import qualified Crypto.Hash as C
 
 import Control.Monad.IO.Class (liftIO)
 
@@ -37,20 +46,37 @@ import UnliftIO (MonadUnliftIO)
 import Unsafe.Coerce (unsafeCoerce)
 
 import Better.Internal.Streamly.Array (ArrayBA (ArrayBA))
+import qualified Data.ByteArray.Encoding as BA
 
-hashByteStringFold :: Monad m => F.Fold m BS.ByteString (Digest SHA256)
+newtype Digest = Digest (C.Digest C.SHA256)
+  deriving newtype Show
+  deriving (Ord, Eq)
+
+digestSize :: Int
+digestSize = C.hashDigestSize C.SHA256
+
+digestUnpack :: Digest -> [Word8]
+digestUnpack (Digest di) = BA.unpack di
+
+digestToBase16ByteString :: Digest -> BS.ByteString
+digestToBase16ByteString (Digest di) = BA.convertToBase BA.Base16 di
+
+digestFromByteString :: BS.ByteString -> Maybe Digest
+digestFromByteString = fmap Digest . C.digestFromByteString
+
+hashByteStringFold :: Monad m => F.Fold m BS.ByteString Digest
 hashByteStringFold = unsafeCoerce . toBlock <$> hash_blake3
 {-# INLINE hashByteStringFold #-}
 
-hashByteStringFoldIO :: MonadUnliftIO m => F.Fold m BS.ByteString (Digest SHA256)
+hashByteStringFoldIO :: MonadUnliftIO m => F.Fold m BS.ByteString Digest
 hashByteStringFoldIO = unsafeCoerce . toBlock <$> hash_blake3_io
 {-# INLINE hashByteStringFoldIO #-}
 
-hashArrayFold :: (Monad m) => F.Fold m (Array.Array Word8) (Digest SHA256)
+hashArrayFold :: (Monad m) => F.Fold m (Array.Array Word8) Digest
 hashArrayFold = F.lmap ArrayBA $ unsafeCoerce . toBlock <$> hash_blake3
 {-# INLINE hashArrayFold #-}
 
-hashArrayFoldIO :: (MonadUnliftIO m) => F.Fold m (Array.Array Word8) (Digest SHA256)
+hashArrayFoldIO :: (MonadUnliftIO m) => F.Fold m (Array.Array Word8) Digest
 hashArrayFoldIO = F.lmap ArrayBA $ unsafeCoerce . toBlock <$> hash_blake3_io
 {-# INLINE hashArrayFoldIO #-}
 

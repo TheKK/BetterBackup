@@ -39,8 +39,6 @@ import qualified Streamly.Data.Stream.Prelude as S
 import Control.Monad (unless, void, when)
 import Control.Monad.Catch (MonadCatch)
 
-import Crypto.Hash (Digest, SHA256)
-
 import Better.Internal.Repository.LowLevel (
   FFile (file_sha),
   Object (chunk_name),
@@ -57,13 +55,14 @@ import Better.Internal.Repository.LowLevel (
  )
 
 import Better.Repository.Class (MonadRepository (..))
+import Better.Hash (Digest)
 
 {-# INLINE garbageCollection #-}
 garbageCollection :: (MonadCatch m, MonadRepository m, MonadUnliftIO m) => m ()
 garbageCollection = gc_tree >>= gc_file >>= gc_chunk
   where
     {-# INLINE [2] gc_tree #-}
-    gc_tree :: (MonadCatch m, MonadRepository m, MonadUnliftIO m) => m (Set.Set (Digest SHA256))
+    gc_tree :: (MonadCatch m, MonadRepository m, MonadUnliftIO m) => m (Set.Set Digest)
     gc_tree = Debug.Trace.traceMarker "gc_tree" $ do
       (traversal_queue, live_tree_set) <- do
         trees <-
@@ -143,7 +142,7 @@ garbageCollection = gc_tree >>= gc_file >>= gc_chunk
       Un.atomically $ Un.readTVar live_file_set
 
     {-# INLINE [2] gc_file #-}
-    gc_file :: (MonadCatch m, MonadRepository m, MonadUnliftIO m) => Set.Set (Digest SHA256) -> m (Set.Set (Digest SHA256))
+    gc_file :: (MonadCatch m, MonadRepository m, MonadUnliftIO m) => Set.Set Digest -> m (Set.Set Digest)
     gc_file live_file_set = Debug.Trace.traceMarker "gc_file" $ do
       listFolderFiles folder_file
         & S.parMapM
@@ -164,7 +163,7 @@ garbageCollection = gc_tree >>= gc_file >>= gc_chunk
         & S.fold F.toSet
 
     {-# INLINE [2] gc_chunk #-}
-    gc_chunk :: (MonadCatch m, MonadRepository m, MonadUnliftIO m) => Set.Set (Digest SHA256) -> m ()
+    gc_chunk :: (MonadCatch m, MonadRepository m, MonadUnliftIO m) => Set.Set Digest -> m ()
     gc_chunk live_chunk_set = Debug.Trace.traceMarker "gc_chunk" $ do
       listFolderFiles folder_chunk
         & S.parMapM

@@ -25,8 +25,6 @@ import Options.Applicative (
 import Control.Exception (Exception (displayException))
 import Control.Monad.IO.Class (MonadIO (liftIO))
 
-import Crypto.Hash (Digest, SHA256, digestFromByteString)
-
 import Data.Bifunctor (first)
 import Data.Foldable (Foldable (fold))
 import Data.Function ((&))
@@ -49,6 +47,7 @@ import Config (Config (..))
 import qualified Config
 
 import qualified Better.Repository as Repo
+import Better.Hash (Digest, digestFromByteString)
 
 import qualified Cli.Ref as Ref
 
@@ -152,7 +151,7 @@ parser_info_cat_chunk = info (helper <*> parser) infoMod
           )
 
     {-# NOINLINE go #-}
-    go :: Digest SHA256 -> IO ()
+    go :: Digest -> IO ()
     go sha =
       run_readonly_repo_t_from_cwd $
         Repo.catChunk sha
@@ -177,7 +176,7 @@ parser_info_cat_file = info (helper <*> parser) infoMod
           )
 
     {-# NOINLINE go #-}
-    go :: Digest SHA256 -> IO ()
+    go :: Digest -> IO ()
     go sha =
       run_readonly_repo_t_from_cwd $
         Repo.catFile sha
@@ -246,12 +245,12 @@ some_base_dir_read = eitherReader $ first displayException . Path.parseSomeDir
 abs_dir_read :: ReadM (Path Abs Dir)
 abs_dir_read = eitherReader $ first displayException . Path.parseAbsDir
 
-digest_read :: ReadM (Digest SHA256)
+digest_read :: ReadM Digest
 digest_read = eitherReader $ \raw_sha -> do
   sha_decoded <- case BSBase16.decodeBase16Untyped $ fromString raw_sha of
     Left err -> Left $ "invalid sha256: " <> raw_sha <> ", " <> T.unpack err
     Right sha' -> pure sha'
 
-  case digestFromByteString @SHA256 sha_decoded of
+  case digestFromByteString sha_decoded of
     Nothing -> Left $ "invalid sha256: " <> raw_sha <> ", incorrect length"
     Just digest -> pure digest

@@ -13,7 +13,6 @@ where
 
 import Foreign.C.Types (CTime(CTime))
 import qualified Capability.Reader as C
-import Crypto.Hash (Digest, HashAlgorithm (hashDigestSize), SHA256 (SHA256), digestFromByteString)
 import qualified Data.Binary.Get as Bin
 import qualified Data.Binary.Put as Bin
 import qualified Data.ByteArray as BA
@@ -25,8 +24,10 @@ import qualified Database.LevelDB.Base as LV
 import qualified System.Posix as P
 import Control.Monad (replicateM)
 
-import Better.Repository.BackupCache.Class (MonadBackupCache (..))
 import qualified Control.Monad.IO.Unlift as Un
+
+import Better.Repository.BackupCache.Class (MonadBackupCache (..))
+import Better.Hash (Digest, digestSize, digestFromByteString, digestUnpack)
 
 newtype TheLevelDBBackupCache m a = TheLevelDBBackupCache (m a)
 
@@ -41,22 +42,22 @@ instance (C.HasReader "prev_db" LV.DB m, C.HasReader "cur_db" LV.DB m, Un.MonadU
     db <- un $ C.ask @"prev_db"
     read_from db st
 
-save_to :: LV.DB -> P.FileStatus -> Digest SHA256 -> IO ()
+save_to :: LV.DB -> P.FileStatus -> Digest -> IO ()
 save_to db st digest = do
   let !k = key_of_st st
   LV.put db LV.defaultWriteOptions k $
     BC.toStrict $
       Bin.runPut $ do
-        for_ (BA.unpack digest) Bin.putWord8
+        for_ (digestUnpack digest) Bin.putWord8
 
-read_from :: LV.DB -> P.FileStatus -> IO (Maybe (Digest SHA256))
+read_from :: LV.DB -> P.FileStatus -> IO (Maybe Digest)
 read_from db st = do
   let !k = key_of_st st
   LV.get db LV.defaultReadOptions k
     >>= (pure $!) . \case
       Just raw_v' -> do
         flip Bin.runGet (BC.fromStrict raw_v') $ do
-          (digestFromByteString . BS.pack) <$> replicateM (hashDigestSize SHA256) Bin.getWord8
+          (digestFromByteString . BS.pack) <$> replicateM digestSize Bin.getWord8
       Nothing -> Nothing
 
 key_of_st :: P.FileStatus -> BS.ByteString

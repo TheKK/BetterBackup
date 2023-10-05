@@ -64,7 +64,6 @@ import qualified Path
 import qualified Crypto.Cipher.AES as Cipher
 import Crypto.Cipher.Types (ivAdd)
 import qualified Crypto.Cipher.Types as Cipher
-import Crypto.Hash (Digest, SHA256)
 import qualified Crypto.Random.Entropy as CRE
 
 import qualified Streamly.Data.Fold as F
@@ -76,7 +75,7 @@ import Control.Exception (mask)
 
 import System.Environment (lookupEnv)
 
-import Better.Hash (hashArrayFoldIO, hashByteStringFoldIO)
+import Better.Hash (Digest, hashArrayFoldIO, hashByteStringFoldIO, digestToBase16ByteString)
 import Better.Internal.Repository.LowLevel (addBlob', addDir', addFile', addVersion)
 import Better.Internal.Streamly.Array (ArrayBA (ArrayBA, un_array_ba))
 import Better.Internal.Streamly.Crypto.AES (encryptCtr, that_aes)
@@ -111,13 +110,13 @@ init_ctr = do
 
 data Tree = Tree
   { tree_name :: {-# UNPACK #-} !T.Text
-  , tree_sha :: {-# UNPACK #-} !(Digest SHA256)
+  , tree_sha :: {-# UNPACK #-} !(Digest)
   }
   deriving (Show)
 
 data FFile = FFile
   { file_name :: {-# UNPACK #-} !T.Text
-  , file_sha :: {-# UNPACK #-} !(Digest SHA256)
+  , file_sha :: {-# UNPACK #-} !(Digest)
   }
   deriving (Show)
 
@@ -137,12 +136,12 @@ nextBackupVersionId = do
     & fmap (succ . fromMaybe 0)
 
 data UploadTask
-  = UploadTree {-# UNPACK #-} !(Digest SHA256) !(Path Path.Abs Path.File)
-  | UploadFile {-# UNPACK #-} !(Digest SHA256) !(Path Path.Abs Path.File) !P.FileStatus
-  | UploadChunk {-# UNPACK #-} !(Digest SHA256) !(S.Stream IO (Array.Array Word8))
-  | FindNoChangeFile {-# UNPACK #-} !(Digest SHA256) !P.FileStatus
+  = UploadTree {-# UNPACK #-} !(Digest) !(Path Path.Abs Path.File)
+  | UploadFile {-# UNPACK #-} !(Digest) !(Path Path.Abs Path.File) !P.FileStatus
+  | UploadChunk {-# UNPACK #-} !(Digest) !(S.Stream IO (Array.Array Word8))
+  | FindNoChangeFile {-# UNPACK #-} !(Digest) !P.FileStatus
 
-tree_content :: Either (Path Path.Rel Path.File) (Path Path.Rel Path.Dir) -> Digest SHA256 -> BS.ByteString
+tree_content :: Either (Path Path.Rel Path.File) (Path Path.Rel Path.Dir) -> Digest -> BS.ByteString
 tree_content file_or_dir hash' =
   let
     !name = either file_name' dir_name' file_or_dir
@@ -204,11 +203,11 @@ fork_or_run_directly s = \scope io -> mask $ \restore -> do
 
 data ForkFns
   = ForkFns
-      {-# UNPACK #-} !(IO (Digest SHA256) -> IO (IO (Digest SHA256)))
-      {-# UNPACK #-} !(IO (Digest SHA256) -> IO (IO (Digest SHA256)))
+      {-# UNPACK #-} !(IO (Digest) -> IO (IO (Digest)))
+      {-# UNPACK #-} !(IO (Digest) -> IO (IO (Digest)))
 
 {-# INLINE backup_dir #-}
-backup_dir :: (MonadBackupCache m, MonadTmp m, MonadMask m, MonadUnliftIO m) => Ctr -> ForkFns -> Un.TBQueue UploadTask -> Path Path.Rel Path.Dir -> m (Digest SHA256)
+backup_dir :: (MonadBackupCache m, MonadTmp m, MonadMask m, MonadUnliftIO m) => Ctr -> ForkFns -> Un.TBQueue UploadTask -> Path Path.Rel Path.Dir -> m (Digest)
 backup_dir ctr fork_fns@(ForkFns file_fork_or_not dir_fork_or_not) tbq rel_tree_name = withEmptyTmpFile $ \file_name' -> Un.withRunInIO $ \un -> do
   (dir_hash, ()) <- Un.withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
     Dir.readEither rel_tree_name
@@ -225,7 +224,7 @@ backup_dir ctr fork_fns@(ForkFns file_fork_or_not dir_fork_or_not) tbq rel_tree_
 
   pure $! dir_hash
 
-backup_file :: (MonadBackupCache m, MonadTmp m, MonadMask m, MonadUnliftIO m) => Ctr -> Un.TBQueue UploadTask -> Path Path.Rel Path.File -> m (Digest SHA256)
+backup_file :: (MonadBackupCache m, MonadTmp m, MonadMask m, MonadUnliftIO m) => Ctr -> Un.TBQueue UploadTask -> Path Path.Rel Path.File -> m (Digest)
 backup_file ctr tbq rel_file_name = Un.withRunInIO $ \un -> do
   st <- P.getFileStatus $ Path.fromRelFile rel_file_name
   to_scan <- un $ BackupCache.tryReadingCacheHash st
@@ -280,7 +279,7 @@ backup
 backup dir = Un.withRunInIO $ \un -> do
   let
     mk_uniq_gate = do
-      running_set <- newTVarIO $ Set.empty @(Digest SHA256)
+      running_set <- newTVarIO $ Set.empty @(Digest)
       pure $ \hash' m -> do
         other_is_running <- atomically $ do
           set <- readTVar running_set
@@ -343,8 +342,8 @@ backup dir = Un.withRunInIO $ \un -> do
   un $ addVersion version_id root_hash
   return $ Version version_id root_hash
 
-d2b :: Digest SHA256 -> BS.ByteString
-d2b = BA.convertToBase BA.Base16
+d2b :: Digest -> BS.ByteString
+d2b = digestToBase16ByteString
 
 withEmitUnfoldr :: MonadUnliftIO m => Natural -> (Un.TBQueue e -> m a) -> (S.Stream m e -> m b) -> m (a, b)
 withEmitUnfoldr q_size putter go = Un.withRunInIO $ \un -> do
