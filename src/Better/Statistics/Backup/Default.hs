@@ -14,9 +14,7 @@ import Data.Word (Word64)
 
 import qualified Capability.Reader as C
 
-import qualified UnliftIO as Un
-
-import Control.Concurrent.STM.TVar (TVar)
+import Control.Concurrent.STM.TVar (TVar, newTVarIO)
 
 import Better.Statistics.Backup.Class (MonadBackupStat(..))
 
@@ -29,14 +27,14 @@ data Statistics = Statistics
   , _uploadedBytes :: TVar Word64
   }
 
-initStatistics :: Un.MonadUnliftIO m => m Statistics
+initStatistics :: IO Statistics
 initStatistics = do
-  process_file_count <- Un.newTVarIO 0
-  total_file_count <- Un.newTVarIO 0
-  process_dir_count <- Un.newTVarIO 0
-  total_dir_count <- Un.newTVarIO 0
-  process_chunk_count <- Un.newTVarIO 0
-  uploaded_bytes <- Un.newTVarIO 0
+  process_file_count <- newTVarIO 0
+  total_file_count <- newTVarIO 0
+  process_dir_count <- newTVarIO 0
+  total_dir_count <- newTVarIO 0
+  process_chunk_count <- newTVarIO 0
+  uploaded_bytes <- newTVarIO 0
 
   pure $ Statistics
     process_file_count

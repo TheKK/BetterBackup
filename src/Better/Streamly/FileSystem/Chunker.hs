@@ -42,6 +42,7 @@ import Data.Function (fix, (&))
 import Data.Functor.Identity (runIdentity)
 import Data.List (foldl')
 import Data.Word (Word32, Word64, Word8)
+import qualified Data.Primitive.ByteArray as Prim
 
 import qualified Data.Vector.Unboxed as UV
 
@@ -53,8 +54,10 @@ import Streamly.Internal.Data.Unfold.Type (Unfold (Unfold))
 import Streamly.Internal.System.IO (defaultChunkSize)
 import qualified System.Random as Rng
 import qualified System.Random.SplitMix as Rng
+import System.Posix.Temp (mkstemp)
 
 import Control.Monad (forM_, unless)
+import Control.Exception (bracket)
 
 import System.IO (Handle, IOMode (ReadMode), SeekMode (AbsoluteSeek, RelativeSeek), hClose, hFileSize, hGetBufSome, hIsEOF, hSeek, openFile, withFile)
 
@@ -62,15 +65,12 @@ import qualified Hedgehog as H
 import qualified Hedgehog.Gen as Gen
 import qualified Hedgehog.Range as Range
 
-import Basement.Block (MutableBlock)
-import qualified Basement.Block as B
-import qualified Basement.Block.Mutable as BM
-import qualified Basement.Block.Mutable as MutableBlock
-import qualified Basement.Block.Mutable as Mutableblock
-import Basement.Monad (PrimState)
-import Basement.Types.OffsetSize (CountOf (CountOf), Offset (Offset))
 import Control.Monad.IO.Class (liftIO)
-import qualified UnliftIO.Temporary as Un
+import System.Directory (removeFile)
+import Control.Monad.Primitive ( RealWorld )
+
+import Better.Internal.Primitive (withMutableByteArrayContents)
+import System.IO.Temp (withSystemTempFile)
 
 -- | Chunk section after chunking.
 data Chunk = Chunk
@@ -127,27 +127,6 @@ data GearState s
   | GearSeeking !Int Word64 !Int !Int s
   | GearEnd
 
-{- | Unsafe: we reuse same buffer underlying multiple yields, so comsumer of this Unfold MUST NOT use the value we
- yield after calling next "step" function.
--}
-{-# INLINE unsafe_file_read_chunks_unfold #-}
-unsafe_file_read_chunks_unfold :: Unfold IO FilePath (BA.View (B.Block Word8))
-unsafe_file_read_chunks_unfold = Unfold.bracket (`openFile` ReadMode) hClose $ Unfold step inject
-  where
-    inject h = do
-      buf <- BM.newPinned @_ @Word8 (CountOf defaultChunkSize)
-      pure (h, buf)
-
-    {-# INLINE [0] step #-}
-    step (h, buf) = do
-      read_bytes <- BM.withMutablePtr @IO @Word8 buf $ \ptr -> hGetBufSome h ptr (coerce $ BM.mutableLengthBytes buf)
-      if read_bytes /= 0
-        then do
-          block_buf <- BM.unsafeFreeze buf
-          let !ret = BA.takeView block_buf read_bytes
-          pure $! S.Yield ret (h, buf)
-        else pure S.Stop
-
 {-# INLINE gearHash #-}
 gearHash :: GearHashConfig -> FilePath -> S.Stream IO Chunk
 gearHash cfg = S.unfold (Unfold.bracket (`openFile` ReadMode) hClose $ gearHashWithFileUnfold cfg)
@@ -155,7 +134,7 @@ gearHash cfg = S.unfold (Unfold.bracket (`openFile` ReadMode) hClose $ gearHashW
 data Buf = Buf
   { buf_offset :: {-# UNPACK #-} !Int
   , buf_len :: {-# UNPACK #-} !Int
-  , buf_content :: {-# UNPACK #-} !(MutableBlock Word8 (PrimState IO))
+  , buf_content :: {-# UNPACK #-} !(Prim.MutableByteArray RealWorld)
   }
 
 instance Show Buf where
@@ -163,23 +142,25 @@ instance Show Buf where
 
 buf_new_pinned :: Int -> IO Buf
 buf_new_pinned n = do
-  content <- Mutableblock.newPinned $ CountOf n
+  content <- Prim.newPinnedByteArray n
   pure $! Buf 0 0 content
 
-buf_full :: Buf -> Buf
-buf_full (Buf _ _ content) = Buf 0 (coerce $ MutableBlock.mutableLength content) content
+buf_full :: Buf -> IO Buf
+buf_full (Buf _ _ content) = do
+  content_len <- Prim.getSizeofMutableByteArray content
+  pure $! Buf 0 content_len content
 
 buf_reset :: Buf -> Buf
 buf_reset (Buf _ _ content) = Buf 0 0 content
 
 buf_unsafe_index :: Int -> Buf -> IO Word8
-buf_unsafe_index n (Buf off _ content) = MutableBlock.unsafeRead content $ Offset (n + off)
+buf_unsafe_index n (Buf off _ content) = Prim.readByteArray content $! (n + off)
 
 buf_length :: Buf -> Int
 buf_length (Buf _ len _) = len
 
-buf_capacity :: Buf -> Int
-buf_capacity (Buf _ _ content) = coerce $ MutableBlock.mutableLength content
+buf_capacity :: Buf -> IO Int
+buf_capacity (Buf _ _ content) = Prim.getSizeofMutableByteArray content
 
 buf_take :: Int -> Buf -> Buf
 buf_take !n (Buf off len content) =
@@ -224,13 +205,14 @@ gearHashWithFileUnfold cfg@(GearHashConfig lomask himask _ avg_chunk_size _) = U
         if buf_length buf /= 0
           then pure $! SJust buf
           else do
-            MutableBlock.withMutablePtr @IO @Word8 (buf_content buf) $ \ptr -> do
-              bytes <- hGetBufSome h ptr $ buf_capacity buf
-              if bytes /= 0
-                then
-                  let new_buf = buf_take bytes $ buf_full buf
-                  in  pure $! SJust new_buf
-                else pure SNothing
+            let !content = buf_content buf
+            capacity <- buf_capacity buf
+            bytes <- withMutableByteArrayContents content $ \ptr -> hGetBufSome h ptr capacity
+            if bytes /= 0
+              then do
+                new_buf <- buf_take bytes <$> buf_full buf
+                pure $! SJust new_buf
+              else pure SNothing
 
       case ret of
         SJust entire_buf -> do
@@ -590,7 +572,7 @@ props_fast_cdc =
             & S.toList
             & runIdentity
 
-      chunks_from_file <- liftIO $ Un.withSystemTempFile "tt" $ \tmp_p tmp_h -> do
+      chunks_from_file <- liftIO $ withSystemTempFile "tt" $ \tmp_p tmp_h -> do
         -- Close tmp_h so it can be read by others
         mapM_ (BS.hPut tmp_h) input_stream >> hClose tmp_h
 

@@ -18,7 +18,7 @@ import qualified Path as Path
 
 import qualified System.Directory as D
 
-import qualified UnliftIO as Un
+import qualified Control.Monad.IO.Unlift as Un
 
 import Config(Config(..))
 import qualified Config
@@ -29,12 +29,12 @@ initialize cache_p config = do
 
     repo_exists <- D.doesDirectoryExist $ Path.toFilePath repo_path
     unless repo_exists $ do
-      Un.throwString $ "path '" <> Path.toFilePath repo_path <> "' does not exist, please construct it properly first" 
+      error $ "path '" <> Path.toFilePath repo_path <> "' does not exist, please construct it properly first"
 
     let config_path = Path.toFilePath $ repo_path </> config_filename
     config_exists <- D.doesFileExist config_path
     when config_exists $ do
-      Un.throwString $ "config file '" <> config_path <> "' has already existed" 
+      error $ "config file '" <> config_path <> "' has already existed"
 
     initialize_config repo_path config
 
@@ -43,7 +43,7 @@ readConfig cwd = do
   let config_path = cwd </> config_filename
   parse_result <- Config.parseConfig <$> (T.readFile $ Path.fromAbsFile config_path)
   case parse_result of
-    Left err -> Un.throwString $ T.unpack err
+    Left err -> error $ T.unpack err
     Right config -> pure config
 
 initialize_config :: Path Abs Dir -> Config -> IO ()

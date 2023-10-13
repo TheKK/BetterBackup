@@ -59,11 +59,8 @@ module Better.Internal.Repository.LowLevel (
   s2d,
 ) where
 
-import Data.Function
-import Data.Word
-
-import UnliftIO
-import qualified UnliftIO.Directory as Un
+import Data.Function ( (&) )
+import Data.Word ( Word8, Word32 )
 
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -81,7 +78,7 @@ import qualified Data.ByteString.Short as BShort
 
 import Text.Read (readMaybe)
 
-import Control.Monad
+import Control.Monad ( unless )
 import Control.Monad.Catch (MonadCatch, MonadMask, MonadThrow, handleIf, throwM)
 
 import qualified Streamly.Data.Array as Array
@@ -102,20 +99,25 @@ import qualified Streamly.Data.Fold as F
 import qualified Streamly.Data.Stream.Prelude as S
 import qualified Streamly.Internal.Data.Fold as F
 
+import Control.Exception (mask_, onException)
+
 import qualified Capability.Reader as C
 
-import Better.Repository.Class
+import Better.Repository.Class ( MonadRepository(..) )
 import qualified Better.Streamly.FileSystem.Dir as Dir
 
 import Better.Repository.Types (Version (..))
 
 import Better.Internal.Streamly.Crypto.AES (decryptCtr, that_aes)
-import qualified Data.ByteArray.Encoding as BA
 
 import Better.Internal.Streamly.Array (ArrayBA (ArrayBA, un_array_ba), fastArrayAsPtrUnsafe)
 import qualified Streamly.Internal.Data.Array.Type as Array
-import System.IO (hPutBuf, openBinaryFile)
+import System.IO (hPutBuf, openBinaryFile, IOMode (..), hClose)
 import Better.Hash (Digest, digestFromByteString, digestToBase16ByteString)
+import qualified System.Directory as D
+import Control.Monad.IO.Class
+import qualified Control.Monad.IO.Unlift as Un
+import Unsafe.Coerce (unsafeCoerce)
 
 data Repository = Repository
   { _repo_putFile :: Path Path.Rel Path.File -> F.Fold IO (Array.Array Word8) ()
@@ -257,7 +259,7 @@ localRepo :: Path Path.Abs Path.Dir -> Repository
 localRepo root =
   Repository
     (write_chunk . Path.fromAbsFile . (root </>))
-    (mapM_ $ (handleIf isDoesNotExistError (const $ pure ())) . Un.removeFile . Path.fromAbsFile . (root </>))
+    (mapM_ $ (handleIf isDoesNotExistError (const $ pure ())) . D.removeFile . Path.fromAbsFile . (root </>))
     (flip P.createDirectory 700 . Path.fromAbsDir . (root </>))
     (P.fileExist . Path.fromAbsFile . (root </>))
     (fmap P.fileSize . P.getFileStatus . Path.fromAbsFile . (root </>))
@@ -303,7 +305,7 @@ addBlob' digest chunks = do
     then pure 0
     else do
       putFileFold <- mkPutFileFold
-      ((), !len) <- chunks & S.fold (F.tee (putFileFold f) (F.lmap (fromIntegral . Array.byteLength) F.sum))
+      ((), !len) <- chunks & S.fold (F.tee (putFileFold f) (fromIntegral <$> F.lmap Array.byteLength F.sum))
       pure len
 
 {-# INLINE addFile' #-}
@@ -379,12 +381,12 @@ catFile sha =
 {-# INLINE catFile #-}
 
 catChunk
-  :: (MonadUnliftIO m, MonadThrow m, MonadIO m, MonadRepository m)
+  :: (Un.MonadUnliftIO m, MonadThrow m, MonadIO m, MonadRepository m)
   => Digest
   -> S.Stream m (Array.Array Word8)
 catChunk digest = S.concatEffect $ do
   aes <- liftIO that_aes
-  withRunInIO $ \unlift_io ->
+  Un.withRunInIO $ \unlift_io ->
     pure $
       cat_stuff_under folder_chunk digest
         & S.morphInner unlift_io

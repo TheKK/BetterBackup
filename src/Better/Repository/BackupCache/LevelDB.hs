@@ -15,7 +15,6 @@ import Foreign.C.Types (CTime(CTime))
 import qualified Capability.Reader as C
 import qualified Data.Binary.Get as Bin
 import qualified Data.Binary.Put as Bin
-import qualified Data.ByteArray as BA
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC
 import Data.Coerce (coerce)

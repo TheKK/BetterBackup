@@ -2,6 +2,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE MagicHash #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Better.Internal.Streamly.Array (
   ArrayBA (..),
@@ -9,13 +10,12 @@ module Better.Internal.Streamly.Array (
   fastWriteChunkFold,
   fastArrayAsPtrUnsafe,
   fastMutArrayAsPtrUnsafe,
+  chunkReaderFromToWith,
 )
 where
 
 import Data.Function ()
 import Data.Word (Word8)
-
-import UnliftIO (IOMode (WriteMode), hClose, mask_, onException)
 
 import Control.Monad ()
 
@@ -29,7 +29,7 @@ import qualified Data.ByteArray as BA
 
 import qualified Streamly.Internal.Data.Array.Mut.Type as MA
 
-import GHC.PrimopWrappers (byteArrayContents#)
+import GHC.Exts (byteArrayContents#)
 import GHC.Ptr (Ptr (..), plusPtr)
 
 import qualified Streamly.Data.Array as Array
@@ -37,9 +37,13 @@ import Streamly.Internal.Data.Array.Mut (touch)
 import qualified Streamly.Internal.Data.Array.Type as Array
 import Streamly.Internal.Data.Unboxed (getMutableByteArray#)
 
-import System.IO (hPutBuf, openBinaryFile)
+import System.IO (IOMode (..), hClose, hPutBuf, openBinaryFile, Handle, hSeek, SeekMode (AbsoluteSeek), hGetBufSome)
 
+import Control.Exception (mask_, onException, assert)
 import Unsafe.Coerce (unsafeCoerce#)
+import qualified Streamly.Internal.Data.Unfold.Type as Un
+import qualified Streamly.Internal.Data.Stream as S
+import qualified Streamly.Internal.Data.Array.Mut as MArray
 
 -- * Functions that I need but not exists on upstream.
 
@@ -107,10 +111,48 @@ fastWriteChunkFold path = F.Fold step initial extract
       pure $! F.Partial hd
 
     {-# INLINE [0] step #-}
-    step hd arr = (`onException` (hClose hd)) $ do
+    step hd arr = (`onException` hClose hd) $ do
       fastArrayAsPtrUnsafe arr $ \ptr -> hPutBuf hd ptr (Array.byteLength arr)
       pure $! F.Partial hd
 
     {-# INLINE [0] extract #-}
     extract hd = mask_ $ do
       hClose hd
+
+
+-- Copy from streamly-core.
+{-# INLINE chunkReaderFromToWith #-}
+chunkReaderFromToWith :: Un.Unfold IO (Int, Int, Int, Handle) (Array.Array Word8)
+chunkReaderFromToWith = Un.Unfold step inject
+
+    where
+
+    inject (from :: Int, to :: Int, bufSize :: Int, h) = do
+        hSeek h AbsoluteSeek $! fromIntegral from
+        -- XXX Use a strict Tuple?
+        return (to - from + 1, bufSize, h)
+
+    {-# INLINE [0] step #-}
+    step (remaining, bufSize, h) =
+        if remaining <= 0
+        then return S.Stop
+        else do
+            arr <- getChunk (min bufSize remaining) h
+            return $
+                case Array.byteLength arr of
+                    0 -> S.Stop
+                    len ->
+                        assert (len <= remaining)
+                            $ S.Yield arr (remaining - len, bufSize, h)
+
+-- Copy from streamly-core.
+getChunk :: Int -> Handle -> IO (Array.Array Word8)
+getChunk size h = do
+    arr <- MArray.newPinnedBytes size
+    -- ptr <- mallocPlainForeignPtrAlignedBytes size (alignment (undefined :: Word8))
+    fastMutArrayAsPtrUnsafe arr $ \p -> do
+        n <- hGetBufSome h p size
+        -- XXX shrink only if the diff is significant
+        return $
+            Array.unsafeFreezeWithShrink $
+            arr { MArray.arrEnd = n, MArray.arrBound = size }

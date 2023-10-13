@@ -38,10 +38,11 @@ import Crypto.Hash (
 import qualified Crypto.Cipher.Types as Cipher
 
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Base16 as BS16
 
 import qualified Better.Hash as Hash
 import Better.Internal.Streamly.Crypto.AES (compact, decryptCtr, encryptCtr, that_aes, unsafeEncryptCtr)
-import Better.Streamly.FileSystem.Chunker (defaultGearHashConfig, gearHash, gearHashWithFileUnfold, gearHashConfig)
+import Better.Streamly.FileSystem.Chunker (defaultGearHashConfig, gearHash, gearHashConfig, gearHashWithFileUnfold)
 import qualified Better.Streamly.FileSystem.Chunker as Chunker
 import Data.Functor.Identity (Identity (runIdentity))
 import qualified Streamly.Internal.FileSystem.File as File
@@ -58,6 +59,10 @@ import Data.IORef
 import qualified Streamly.Data.Array as Array
 import qualified Streamly.Internal.Data.Array as Array
 import qualified Streamly.Internal.Data.Array.Type as Array
+import qualified Data.ByteArray.Encoding as BA
+import qualified Data.Base16.Types as Base16
+import qualified Data.ByteString.Short as BSS
+import qualified Data.ByteString.Short.Base16 as BSS16
 
 newtype ArrayBA = ArrayBA {un_array_ba :: Array.Array Word8}
   deriving (Eq, Ord)

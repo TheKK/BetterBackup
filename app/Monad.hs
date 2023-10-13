@@ -28,11 +28,12 @@ import qualified Capability.Reader as C
 import qualified Capability.Source as C
 
 import Control.Monad (replicateM_, void)
-import Control.Monad.Catch (MonadCatch (..), MonadMask (..), MonadThrow (..))
+import Control.Monad.Catch (MonadCatch (..), MonadMask (..), MonadThrow (..), tryJust, onException)
 import Control.Monad.IO.Class (MonadIO ())
 import Control.Monad.Reader (ReaderT (..))
 
-import UnliftIO (MonadUnliftIO (..))
+import Control.Monad.IO.Unlift (MonadUnliftIO (..))
+import qualified Control.Monad.IO.Unlift as Un
 
 import qualified Database.LevelDB.Base as LV
 
@@ -45,14 +46,13 @@ import Better.Statistics.Backup.Default (TheTVarBackupStatistics)
 import qualified Better.Statistics.Backup.Default as BackupSt
 import Better.TempDir (MonadTmp, TheMonadTmp (..))
 
+import System.IO.Temp (withSystemTempDirectory)
 import qualified System.IO.Error as IOE
 import qualified System.Posix as P
-import qualified UnliftIO as Un
-import qualified UnliftIO.Directory as D
-import qualified UnliftIO.Directory as P
 
 import qualified Config
 import qualified LocalCache
+import qualified System.Directory as D
 
 data ReadonlyRepoEnv = ReadonlyRepoEnv
   { ro_repo_path :: Path Path.Abs Path.Dir
@@ -105,13 +105,13 @@ newtype ReadonlyRepoT m a = ReadonlyRepoT {runReadonlyRepoT :: ReaderT ReadonlyR
           )
 
 data BackupRepoEnv = BackupRepoEnv
-  { backup_repo_path :: Path Path.Abs Path.Dir
-  , backup_repo_cwd :: Path Path.Abs Path.Dir
-  , backup_repo_repo :: Repository
-  , backup_repo_tmpdir :: Path Path.Abs Path.Dir
-  , backup_repo_statistic :: BackupSt.Statistics
-  , backup_repo_previousBackupCache :: LV.DB
-  , backup_repo_currentBackupCache :: LV.DB
+  { backup_repo_path :: {-- UNPACK #-} !(Path Path.Abs Path.Dir)
+  , backup_repo_cwd :: {-- UNPACK #-}  !(Path Path.Abs Path.Dir)
+  , backup_repo_repo :: {-- UNPACK #-} !Repository
+  , backup_repo_tmpdir :: {-- UNPACK #-} !(Path Path.Abs Path.Dir)
+  , backup_repo_statistic :: {-- UNPACK #-} !BackupSt.Statistics
+  , backup_repo_previousBackupCache :: {-- UNPACK #-} !LV.DB
+  , backup_repo_currentBackupCache :: {-- UNPACK #-} !LV.DB
   }
   deriving (Generic)
 
@@ -241,7 +241,7 @@ run_backup_repo_t_from_cwd m = do
   let
     try_removing p =
       void $
-        Un.tryJust (\e -> if IOE.isDoesNotExistError e then Just e else Nothing) $
+        tryJust (\e -> if IOE.isDoesNotExistError e then Just e else Nothing) $
           D.removeDirectoryRecursive p
 
   pid <- P.getProcessID
@@ -254,8 +254,8 @@ run_backup_repo_t_from_cwd m = do
     LV.withDB "prev" (LV.defaultOptions{LV.createIfMissing = True}) $ \prev ->
       LV.withDB "cur" (LV.defaultOptions{LV.createIfMissing = True, LV.errorIfExists = True}) $ \cur ->
         -- Remove cur if failed to backup and keep prev intact.
-        (`Un.onException` try_removing "cur") $
-          Un.withSystemTempDirectory ("better-tmp-" <> show pid <> "-") $ \raw_tmp_dir -> do
+        (`onException` try_removing "cur") $
+          withSystemTempDirectory ("better-tmp-" <> show pid <> "-") $ \raw_tmp_dir -> do
             abs_tmp_dir <- Path.parseAbsDir raw_tmp_dir
             runBackupRepoT m $
               BackupRepoEnv

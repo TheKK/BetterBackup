@@ -35,7 +35,7 @@ import Prelude hiding (read)
 
 import Data.Void
 import Foreign.C.Error
-import System.IO (hPrint)
+import System.IO (hPrint, stderr)
 import System.LibFuse3
 
 import Numeric.Natural
@@ -51,10 +51,6 @@ import qualified Capability.Source as C
 
 import Data.Set (Set)
 import qualified Data.Set as Set
-
-import UnliftIO
-import qualified UnliftIO.Directory as Un
-import qualified UnliftIO.IO.File as Un
 
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -75,6 +71,9 @@ import Control.Monad
 import Control.Monad.Catch (MonadCatch, MonadMask, MonadThrow, handleIf, throwM)
 import Control.Monad.Reader
 import Control.Monad.State
+
+import Control.Monad.IO.Unlift (MonadUnliftIO)
+import qualified Control.Monad.IO.Unlift as Un
 
 import qualified Streamly.Data.Array as Array
 import qualified Streamly.Internal.Data.Array as Array (asPtrUnsafe, castUnsafe)
@@ -113,6 +112,7 @@ import Data.ByteArray (ByteArrayAccess (..))
 
 import qualified Better.Repository as Repo
 import Better.Hash (Digest)
+import Control.Exception (SomeException, handle)
 
 exception_to_errno :: SomeException -> Errno
 exception_to_errno e = eIO
@@ -136,11 +136,11 @@ traverse_repo' p = do
   v_id <- liftIO $ readIO $ T.unpack $ head pathes
 
   opt_ver <- Repo.tryCatingVersion $ v_id
-  when (isNothing opt_ver) $ throwString $ "oh no " <> p
+  when (isNothing opt_ver) $ error $ "oh no " <> p
 
   a <- foldlM step (Just (Left (Repo.ver_root $ fromJust opt_ver))) $ tail pathes
   case a of
-    Nothing -> throwString $ "noent " <> p
+    Nothing -> error $ "noent " <> p
     Just sha -> pure sha
   where
     step (Just (Left sha)) p =
@@ -223,19 +223,20 @@ fuseReaddir'
   => FilePath
   -> Maybe Digest
   -> m (Either Errno [(String, Maybe FileStat)])
-fuseReaddir' _ (Just tree_sha) = do
-  files <-
+fuseReaddir' _ (Just tree_sha) = Un.withRunInIO $ \un -> do
+  files <- un $
     Repo.catTree tree_sha
       & fmap ((\n -> (n, Nothing)) . T.unpack . either Repo.tree_name Repo.file_name)
       & S.toList
   pure $ Right $ [(".", Nothing), ("..", Nothing)] <> files
-fuseReaddir' "/" Nothing = handle (pure . Left . exception_to_errno) $ fmap Right $ do
+fuseReaddir' "/" Nothing = Un.withRunInIO $ \un -> handle (pure . Left . exception_to_errno) $ fmap Right $ do
   versions <-
     Repo.listVersions
       & fmap Repo.ver_id
       & S.toList
+      & un
   pure $ [(".", Nothing), ("..", Nothing)] <> fmap (\v -> (show v, Nothing)) versions
-fuseReaddir' _ Nothing = throwString "fuseReaddir: unexpected case"
+fuseReaddir' _ Nothing = error "fuseReaddir: unexpected case"
 
 fuseReleasedir' _ _ = pure $ eOK
 

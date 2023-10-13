@@ -18,12 +18,12 @@ import Options.Applicative (
 
 import qualified Ki.Unlifted as Ki
 
-import qualified UnliftIO.Concurrent as Un
-import qualified UnliftIO.Exception as Un
-
-import Control.Exception (Exception (displayException))
+import Control.Exception (Exception (displayException), mask_)
 import Control.Monad (forever)
 import Control.Monad.IO.Class (MonadIO (liftIO))
+
+import Control.Monad.IO.Unlift (MonadUnliftIO)
+import qualified Control.Monad.IO.Unlift as Un
 
 import Data.Bifunctor (first)
 import Data.Foldable (Foldable (fold))
@@ -37,8 +37,8 @@ import qualified Better.Repository.Backup as Repo
 
 import Monad (run_backup_repo_t_from_cwd)
 import Better.Statistics.Backup (MonadBackupStat)
-import UnliftIO (MonadUnliftIO)
 import qualified Better.Statistics.Backup as BackupSt
+import Control.Concurrent (threadDelay)
 
 parser_info :: ParserInfo (IO ())
 parser_info = info (helper <*> parser) infoMod
@@ -58,18 +58,18 @@ parser_info = info (helper <*> parser) infoMod
               ]
           )
 
-    go dir_to_backup = run_backup_repo_t_from_cwd $ do
+    go dir_to_backup = run_backup_repo_t_from_cwd $ Un.withRunInIO $ \un -> do
       let
         process_reporter = forever $ do
-          Un.mask_ report_backup_stat
-          Un.threadDelay (1000 * 1000)
+          mask_ $ un report_backup_stat
+          threadDelay (1000 * 1000)
 
       v <- Ki.scoped $ \scope -> do
         _ <- Ki.fork scope process_reporter
-        Repo.backup $ T.pack $ Path.fromSomeDir dir_to_backup
+        un $ Repo.backup $ T.pack $ Path.fromSomeDir dir_to_backup
 
-      liftIO (putStrLn "result:") >> report_backup_stat
-      liftIO $ print v
+      putStrLn "result:" >> un report_backup_stat
+      print v
 
 some_base_dir_read :: ReadM (Path.SomeBase Dir)
 some_base_dir_read = eitherReader $ first displayException . Path.parseSomeDir

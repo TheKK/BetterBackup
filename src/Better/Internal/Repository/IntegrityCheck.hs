@@ -19,11 +19,6 @@ import Data.Function ((&))
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 
-import UnliftIO (
-  MonadIO (..),
-  MonadUnliftIO,
- )
-
 import Path (Path, (</>))
 import qualified Path
 
@@ -46,9 +41,11 @@ import Better.Repository.Class (MonadRepository (..))
 import Data.Maybe (fromJust, isJust)
 import Data.Word (Word8)
 import qualified Streamly.Data.Array as Array
+import Control.Monad.IO.Class (MonadIO, liftIO)
+import qualified Control.Monad.IO.Unlift as Un
 
 {-# INLINE checksum #-}
-checksum :: (MonadThrow m, MonadUnliftIO m, MonadRepository m) => Int -> m ()
+checksum :: (MonadThrow m, Un.MonadUnliftIO m, MonadRepository m) => Int -> m ()
 checksum n = do
   S.fromList [folder_tree, folder_file]
     & S.concatMap
@@ -61,7 +58,7 @@ checksum n = do
       ( \(expected_sha, f) -> do
           actual_sha <-
             read f
-              & S.fold hashArrayFoldIO
+              & S.fold (F.morphInner liftIO hashArrayFoldIO)
           if show actual_sha == expected_sha
             then pure Nothing
             else pure $ Just (f, actual_sha)
@@ -78,7 +75,7 @@ checksum n = do
       (S.maxBuffer (n + 1) . S.eager True)
       ( \chunk_path -> do
           expected_sha <- s2d $ Path.fromRelFile chunk_path
-          actual_sha <- catChunk expected_sha & S.fold hashArrayFoldIO
+          actual_sha <- catChunk expected_sha & S.fold (F.morphInner liftIO hashArrayFoldIO)
           if expected_sha == actual_sha
             then pure Nothing
             else

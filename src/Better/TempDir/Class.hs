@@ -2,9 +2,6 @@ module Better.TempDir.Class
   ( MonadTmp(..)
   ) where
 
-import Control.Monad.IO.Class
-import UnliftIO
-
 import qualified Path
 import Path (Path)
 

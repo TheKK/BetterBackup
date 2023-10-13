@@ -1,9 +1,10 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE DerivingVia #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 module Better.Hash (
   -- * Digest
@@ -11,6 +12,7 @@ module Better.Hash (
   digestSize,
   digestUnpack,
   digestToBase16ByteString,
+  digestToBase16ShortByteString,
   digestFromByteString,
 
   -- * Pure versions
@@ -24,7 +26,15 @@ module Better.Hash (
 
 import Data.Word (Word8)
 
+import qualified Data.Base16.Types as B16
+
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Char8 as BSC
+import qualified Data.ByteString.Short as BSS
+import qualified Data.ByteString.Short.Base16 as BSS16
+import qualified Data.ByteString.Short.Internal as BSS
+
+import Data.Hashable (Hashable)
 
 import qualified Streamly.Data.Array as Array
 import qualified Streamly.Data.Fold as F
@@ -35,49 +45,50 @@ import qualified Data.ByteArray.Sized as BAS
 import qualified BLAKE3
 import qualified BLAKE3.IO as BIO
 
-import Basement.Sized.Block (BlockN, toBlock)
-
-import qualified Crypto.Hash as C
-
-import Control.Monad.IO.Class (liftIO)
-
-import UnliftIO (MonadUnliftIO)
-
-import Unsafe.Coerce (unsafeCoerce)
-
 import Better.Internal.Streamly.Array (ArrayBA (ArrayBA))
-import qualified Data.ByteArray.Encoding as BA
 
-newtype Digest = Digest (C.Digest C.SHA256)
-  deriving newtype Show
-  deriving (Ord, Eq)
+import Control.Parallel.Strategies (NFData)
+
+import qualified Foreign.Marshal as Alloc
+
+newtype Digest = Digest BSS.ShortByteString
+  deriving (Ord, Eq, NFData, Hashable)
+
+instance Show Digest where
+  {-# INLINE show #-}
+  show = BSC.unpack . digestToBase16ByteString
 
 digestSize :: Int
-digestSize = C.hashDigestSize C.SHA256
+digestSize = 32
 
 digestUnpack :: Digest -> [Word8]
-digestUnpack (Digest di) = BA.unpack di
+digestUnpack (Digest di) = BSS.unpack di
 
 digestToBase16ByteString :: Digest -> BS.ByteString
-digestToBase16ByteString (Digest di) = BA.convertToBase BA.Base16 di
+digestToBase16ByteString = BSS.fromShort . digestToBase16ShortByteString
+
+digestToBase16ShortByteString :: Digest -> BSS.ShortByteString
+digestToBase16ShortByteString (Digest di) = B16.extractBase16 $ BSS16.encodeBase16' di
 
 digestFromByteString :: BS.ByteString -> Maybe Digest
-digestFromByteString = fmap Digest . C.digestFromByteString
+digestFromByteString bs
+  | BS.length bs == digestSize = Just $! Digest $ BSS.toShort bs
+  | otherwise = Nothing
 
 hashByteStringFold :: Monad m => F.Fold m BS.ByteString Digest
-hashByteStringFold = unsafeCoerce . toBlock <$> hash_blake3
+hashByteStringFold = fmap Digest hash_blake3
 {-# INLINE hashByteStringFold #-}
 
-hashByteStringFoldIO :: MonadUnliftIO m => F.Fold m BS.ByteString Digest
-hashByteStringFoldIO = unsafeCoerce . toBlock <$> hash_blake3_io
+hashByteStringFoldIO :: F.Fold IO BS.ByteString Digest
+hashByteStringFoldIO = fmap Digest hash_blake3_io
 {-# INLINE hashByteStringFoldIO #-}
 
-hashArrayFold :: (Monad m) => F.Fold m (Array.Array Word8) Digest
-hashArrayFold = F.lmap ArrayBA $ unsafeCoerce . toBlock <$> hash_blake3
+hashArrayFold :: Monad m => F.Fold m (Array.Array Word8) Digest
+hashArrayFold = F.lmap ArrayBA $ fmap Digest hash_blake3
 {-# INLINE hashArrayFold #-}
 
-hashArrayFoldIO :: (MonadUnliftIO m) => F.Fold m (Array.Array Word8) Digest
-hashArrayFoldIO = F.lmap ArrayBA $ unsafeCoerce . toBlock <$> hash_blake3_io
+hashArrayFoldIO :: F.Fold IO (Array.Array Word8) Digest
+hashArrayFoldIO = F.lmap ArrayBA $ fmap Digest hash_blake3_io
 {-# INLINE hashArrayFoldIO #-}
 
 -- | IO version of blake3 hash
@@ -89,16 +100,22 @@ hashArrayFoldIO = F.lmap ArrayBA $ unsafeCoerce . toBlock <$> hash_blake3_io
 -- The drawback of IO version is that you need to run them in IO, which might not
 -- always the case.
 {-# INLINE hash_blake3_io #-}
-hash_blake3_io :: (MonadUnliftIO m, BA.ByteArrayAccess ba) => F.Fold m ba (BlockN 32 Word8)
+hash_blake3_io :: (BA.ByteArrayAccess ba) => F.Fold IO ba BSS.ShortByteString
 hash_blake3_io = F.rmapM extract $ F.foldlM' step s0
   where
-    s0 = liftIO $ BAS.alloc @_ @BLAKE3.Hasher $ flip BIO.init Nothing
+    s0 = BAS.alloc @_ @BLAKE3.Hasher $ flip BIO.init Nothing
 
     {-# INLINE [0] step #-}
-    step !hasher !bs = liftIO $ BA.withByteArray hasher (\ptr -> BIO.update ptr [bs]) >> pure hasher
+    step (!hasher :: BLAKE3.Hasher) !bs = do
+      BA.withByteArray hasher $ \hasher_ptr -> BA.withByteArray bs $ \bs_ptr ->
+        BIO.c_update hasher_ptr bs_ptr $! fromIntegral (BA.length bs)
+      pure $! hasher
 
     {-# INLINE [0] extract #-}
-    extract !hasher = liftIO $ BA.withByteArray hasher BIO.finalize
+    extract !hasher =
+      BA.withByteArray hasher $ \hasher_ptr -> Alloc.allocaBytes digestSize $ \buf_ptr -> do
+        BIO.c_finalize hasher_ptr buf_ptr $! fromIntegral digestSize
+        BSS.createFromPtr buf_ptr digestSize
 
 -- | Pure version of blake3 hash
 --
@@ -112,7 +129,7 @@ hash_blake3_io = F.rmapM extract $ F.foldlM' step s0
 -- We've tried using unsafe famliy but had no luck. Seems like that compiler treated `s0` as
 -- pure value and share it between multiple call site to cause terrible wrong result.
 {-# INLINE hash_blake3 #-}
-hash_blake3 :: (Monad m, BA.ByteArrayAccess ba) => F.Fold m ba (BlockN 32 Word8)
+hash_blake3 :: (Monad m, BA.ByteArrayAccess ba) => F.Fold m ba BSS.ShortByteString
 hash_blake3 = extract <$> F.foldl' step s0
   where
     s0 = BLAKE3.init Nothing
@@ -120,5 +137,5 @@ hash_blake3 = extract <$> F.foldl' step s0
     {-# INLINE [0] step #-}
     step !hasher !bs = BLAKE3.update hasher [bs]
 
-    {-# INLINE extract #-}
-    extract = BLAKE3.finalize
+    {-# INLINE [0] extract #-}
+    extract !hasher = BSS.toShort . BAS.unSizedByteArray @32 . BLAKE3.finalize $ hasher

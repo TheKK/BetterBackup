@@ -21,15 +21,6 @@ import Debug.Trace (traceMarker, traceMarkerIO)
 
 import qualified Data.Set as Set
 
-import UnliftIO (
-  MonadIO (..),
-  MonadUnliftIO,
-  replicateConcurrently_,
-  tryIO,
- )
-import qualified UnliftIO.Exception as Un
-import qualified UnliftIO.STM as Un
-
 import Path ((</>))
 import qualified Path
 
@@ -38,6 +29,8 @@ import qualified Streamly.Data.Stream.Prelude as S
 
 import Control.Monad (unless, void, when)
 import Control.Monad.Catch (MonadCatch)
+
+import qualified Control.Monad.IO.Unlift as Un
 
 import Better.Internal.Repository.LowLevel (
   FFile (file_sha),
@@ -56,95 +49,103 @@ import Better.Internal.Repository.LowLevel (
 
 import Better.Repository.Class (MonadRepository (..))
 import Better.Hash (Digest)
+import Control.Concurrent.STM
+import Control.Concurrent.Async (replicateConcurrently_)
+import Control.Exception (bracket_)
+import System.IO.Error (tryIOError)
 
 {-# INLINE garbageCollection #-}
-garbageCollection :: (MonadCatch m, MonadRepository m, MonadUnliftIO m) => m ()
+garbageCollection :: (MonadCatch m, MonadRepository m, Un.MonadUnliftIO m) => m ()
 garbageCollection = gc_tree >>= gc_file >>= gc_chunk
   where
     {-# INLINE [2] gc_tree #-}
-    gc_tree :: (MonadCatch m, MonadRepository m, MonadUnliftIO m) => m (Set.Set Digest)
-    gc_tree = Debug.Trace.traceMarker "gc_tree" $ do
+    gc_tree :: (MonadCatch m, MonadRepository m, Un.MonadUnliftIO m) => m (Set.Set Digest)
+    gc_tree = Un.withRunInIO $ \un -> Debug.Trace.traceMarker "gc_tree" $ do
       (traversal_queue, live_tree_set) <- do
         trees <-
           listVersions
+            & S.morphInner un
             & fmap ver_root
             & S.fold F.toSet
 
-        q <- Un.newTQueueIO
-        Un.atomically $ for_ trees $ Un.writeTQueue q
+        q <- newTQueueIO
+        atomically $ for_ trees $ writeTQueue q
 
-        set <- Un.newTVarIO trees
+        set <- newTVarIO trees
 
         pure (q, set)
 
-      live_file_set <- Un.newTVarIO Set.empty
+      live_file_set <- newTVarIO Set.empty
 
       let worker_num = 10 :: Int
-      live_worker_num <- Un.newTVarIO worker_num
-      waiting_num <- Un.newTVarIO (0 :: Int)
+      live_worker_num <- newTVarIO worker_num
+      waiting_num <- newTVarIO (0 :: Int)
       replicateConcurrently_ worker_num $ do
         fix $ \cont -> do
-          opt_to_traverse <- Un.bracket_ (Un.atomically $ Un.modifyTVar' waiting_num succ) (Un.atomically $ Un.modifyTVar' waiting_num pred) $ Un.atomically $ do
-            opt_to_traverse' <- Un.tryReadTQueue traversal_queue
+          opt_to_traverse <- bracket_ (atomically $ modifyTVar' waiting_num succ) (atomically $ modifyTVar' waiting_num pred) $ atomically $ do
+            opt_to_traverse' <- tryReadTQueue traversal_queue
             case opt_to_traverse' of
               Just _ -> pure opt_to_traverse'
               Nothing -> do
-                waiting <- Un.readTVar waiting_num
-                live_num <- Un.readTVar live_worker_num
+                waiting <- readTVar waiting_num
+                live_num <- readTVar live_worker_num
                 if waiting == live_num
                   then do
-                    Un.modifyTVar' live_worker_num pred
+                    modifyTVar' live_worker_num pred
                     pure Nothing
-                  else Un.retrySTM
+                  else retry
 
           case opt_to_traverse of
             Just e -> do
               catTree e
+                & S.morphInner un
                 & S.mapM
                   ( \case
                       Left dir -> do
                         let dir_sha = tree_sha dir
-                        Un.atomically $ do
-                          prev_size <- Set.size <$> Un.readTVar live_tree_set
-                          Un.modifyTVar' live_tree_set $ Set.insert dir_sha
-                          cur_size <- Set.size <$> Un.readTVar live_tree_set
+                        atomically $ do
+                          prev_size <- Set.size <$> readTVar live_tree_set
+                          modifyTVar' live_tree_set $ Set.insert dir_sha
+                          cur_size <- Set.size <$> readTVar live_tree_set
 
                           let is_new_item = prev_size /= cur_size
                           when is_new_item $ do
-                            Un.writeTQueue traversal_queue dir_sha
-                            Un.modifyTVar' live_tree_set . Set.insert $ dir_sha
-                      Right file -> Un.atomically $ do
-                        Un.modifyTVar' live_file_set $ Set.insert $ file_sha file
+                            writeTQueue traversal_queue dir_sha
+                            modifyTVar' live_tree_set . Set.insert $ dir_sha
+                      Right file -> atomically $ do
+                        modifyTVar' live_file_set $ Set.insert $ file_sha file
                   )
                 & S.fold F.drain
               cont
             Nothing -> pure ()
 
       -- Now marked_set should be filled with live nodes.
-      n <- Set.size <$> Un.readTVarIO live_tree_set
-      liftIO $ putStrLn $ "size of live tree set: " <> show n
+      n <- Set.size <$> readTVarIO live_tree_set
+      putStrLn $ "size of live tree set: " <> show n
 
       -- TODO compact it
-      liftIO $ Debug.Trace.traceMarkerIO "gc_tree/delete/begin"
+      Debug.Trace.traceMarkerIO "gc_tree/delete/begin"
       listFolderFiles folder_tree
+        & S.morphInner un
         & S.parMapM
           (S.eager True . S.maxBuffer 10)
-          ( \rel_tree_file -> tryIO $ do
+          ( \rel_tree_file -> tryIOError $ do
               tree_sha' <- s2d $ Path.fromRelFile rel_tree_file
-              exist <- Set.member tree_sha' <$> Un.atomically (Un.readTVar live_tree_set)
-              unless exist $ void $ tryIO $ do
-                liftIO $ putStrLn $ "delete tree: " <> Path.toFilePath rel_tree_file
-                removeFiles [folder_tree </> rel_tree_file]
+              exist <- Set.member tree_sha' <$> atomically (readTVar live_tree_set)
+              unless exist $ void $ tryIOError $ do
+                putStrLn $ "delete tree: " <> Path.toFilePath rel_tree_file
+                un $ removeFiles [folder_tree </> rel_tree_file]
           )
         & S.fold F.drain
-      liftIO $ Debug.Trace.traceMarkerIO "gc_tree/delete/end"
+      Debug.Trace.traceMarkerIO "gc_tree/delete/end"
 
-      Un.atomically $ Un.readTVar live_file_set
+      atomically $ readTVar live_file_set
 
     {-# INLINE [2] gc_file #-}
-    gc_file :: (MonadCatch m, MonadRepository m, MonadUnliftIO m) => Set.Set Digest -> m (Set.Set Digest)
-    gc_file live_file_set = Debug.Trace.traceMarker "gc_file" $ do
+    gc_file :: (MonadCatch m, MonadRepository m, Un.MonadUnliftIO m) => Set.Set Digest -> m (Set.Set Digest)
+    gc_file live_file_set = Un.withRunInIO $ \un -> Debug.Trace.traceMarker "gc_file" $ do
       listFolderFiles folder_file
+        & S.morphInner un
         & S.parMapM
           (S.eager True . S.maxBuffer 10)
           ( \rel_file -> do
@@ -153,26 +154,27 @@ garbageCollection = gc_tree >>= gc_file >>= gc_chunk
 
               if still_alive
                 then do
-                  pure $! (catFile file_sha' & fmap chunk_name)
+                  pure $! (catFile file_sha' & S.morphInner un & fmap chunk_name)
                 else do
-                  liftIO $ putStrLn $ "delete file: " <> Path.toFilePath rel_file
-                  void $ tryIO $ removeFiles [folder_file </> rel_file]
+                  putStrLn $ "delete file: " <> Path.toFilePath rel_file
+                  void $ tryIOError $ un $ removeFiles [folder_file </> rel_file]
                   pure S.nil
           )
         & S.concatMap id
         & S.fold F.toSet
 
     {-# INLINE [2] gc_chunk #-}
-    gc_chunk :: (MonadCatch m, MonadRepository m, MonadUnliftIO m) => Set.Set Digest -> m ()
-    gc_chunk live_chunk_set = Debug.Trace.traceMarker "gc_chunk" $ do
+    gc_chunk :: (MonadCatch m, MonadRepository m, Un.MonadUnliftIO m) => Set.Set Digest -> m ()
+    gc_chunk live_chunk_set = Un.withRunInIO $ \un -> Debug.Trace.traceMarker "gc_chunk" $ do
       listFolderFiles folder_chunk
+        & S.morphInner un
         & S.parMapM
           (S.eager True . S.maxBuffer 10)
           ( \rel_chunk -> do
               chunk_sha' <- s2d $ Path.fromRelFile rel_chunk
               let exist = Set.member chunk_sha' live_chunk_set
-              unless exist $ void $ tryIO $ do
-                liftIO $ putStrLn $ "delete chunk: " <> Path.toFilePath rel_chunk
-                removeFiles [folder_chunk </> rel_chunk]
+              unless exist $ void $ tryIOError $ do
+                putStrLn $ "delete chunk: " <> Path.toFilePath rel_chunk
+                un $ removeFiles [folder_chunk </> rel_chunk]
           )
         & S.fold F.drain
