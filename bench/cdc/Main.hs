@@ -400,12 +400,15 @@ main =
           ]
     , bench_concurrent
     , bench_as_ptr
+    , bench_base16
     ]
   where
     file = "data2"
 
 bench_as_ptr :: Benchmark
-bench_as_ptr = bgroup "as_ptr"
+bench_as_ptr =
+  bgroup
+    "as_ptr"
     [ bench "Streamly.Array" $
         whnfAppIO
           ( \array' -> Array.asPtrUnsafe array' (\ptr -> pure ())
@@ -417,9 +420,9 @@ bench_as_ptr = bgroup "as_ptr"
           )
           bs
     ]
-    where
-      array = Array.fromList (BS.unpack "sjdfklsdjfsdkfl")
-      bs = "sjdfklsdjfsdkfl" :: BS.ByteString
+  where
+    array = Array.fromList (BS.unpack "sjdfklsdjfsdkfl")
+    bs = "sjdfklsdjfsdkfl" :: BS.ByteString
 
 bench_concurrent :: Benchmark
 bench_concurrent = env (pure $ take 100000 $ Rng.randoms @Word64 (Sp.mkSMGen 123)) $ \vec' ->
@@ -473,6 +476,24 @@ bench_concurrent = env (pure $ take 100000 $ Rng.randoms @Word64 (Sp.mkSMGen 123
               readTVarIO set
           )
           vec'
+    ]
+
+bench_base16 :: Benchmark
+bench_base16 =
+  bgroup
+    "base16"
+    [ env (pure ("asdfkj; lweqruasd fjkl;asdfjk as" :: BS.ByteString)) $ \bs ->
+        bgroup
+          "encode bytestring"
+          [ bench "ByteArrayAccess" $ nf (BA.convertToBase @_ @BS.ByteString BA.Base16) bs
+          , bench "base16-bytestring" $ nf (Base16.extractBase16 . BS16.encodeBase16) bs
+          ]
+    , env (pure ("asdfkj; lweqruasd fjkl;asdfjk as" :: BSS.ShortByteString)) $ \bs ->
+        bgroup
+          "encode shortbytestring"
+          [ bench "ByteArrayAccess" $ nf (BA.convertToBase @_ @BS.ByteString BA.Base16 . BSS.fromShort) bs
+          , bench "base16-bytestring" $ nf (Base16.extractBase16 . BSS16.encodeBase16) bs
+          ]
     ]
 
 hashByteStringFoldX :: (HashAlgorithm a, Monad m) => F.Fold m BS.ByteString (Digest a)
