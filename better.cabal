@@ -76,7 +76,7 @@ common warnings
       ghc-options: -fplugin=Fusion.Plugin
 
 common deps
-    build-depends:    base ^>=4.16, text, streamly, streamly-core, containers, unix, time, stm, unliftio-core, fusion-plugin, memory, crypton, bytestring, capability, exceptions, base16 ^>= 1.0, path, mtl, utf8-string, directory
+    build-depends:    base >=4.16 && < 5, text, streamly, streamly-core, containers, unix, time, stm, unliftio-core, fusion-plugin, memory, crypton, bytestring, capability, exceptions, base16 ^>= 1.0, path, mtl, utf8-string, directory
 
 library better-core
     import:           warnings, deps
@@ -137,7 +137,7 @@ test-suite test
     main-is:          Main.hs
     hs-source-dirs:   test
     default-language: Haskell2010
-    build-depends:  base ^>=4.16, better-core, hedgehog, crypton, bytestring, streamly-core, fusion-plugin, tasty, tasty-hedgehog
+    build-depends:  base >=4.16 && < 5, better-core, hedgehog, crypton, bytestring, streamly-core, fusion-plugin, tasty, tasty-hedgehog
 
 benchmark cdc
     import:           warnings
@@ -145,4 +145,4 @@ benchmark cdc
     main-is:          Main.hs
     hs-source-dirs:   bench/cdc
     default-language: Haskell2010
-    build-depends:  base ^>=4.16, better-core, streamly, streamly-core, criterion, fusion-plugin, crypton, bytestring, path, stm, random, splitmix, containers, unordered-containers, memory, blake3, base16 ^>= 1.0
+    build-depends:  base >=4.16 && < 5, better-core, streamly, streamly-core, criterion, fusion-plugin, crypton, bytestring, path, stm, random, splitmix, containers, unordered-containers, memory, blake3, base16 ^>= 1.0
