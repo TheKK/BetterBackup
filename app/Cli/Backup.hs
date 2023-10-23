@@ -18,7 +18,7 @@ import Options.Applicative (
   progDesc,
  )
 
-import qualified Ki.Unlifted as Ki
+import qualified Ki
 
 import Control.Exception (Exception (displayException), mask_)
 import Control.Monad (forever)
