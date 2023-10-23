@@ -122,6 +122,7 @@ executable ff
       Cli.Backup
       Cli.GarbageCollection
       Cli.IntegrityCheck
+      Cli.RestoreTree
       Cli.Ref
       Cli.Ref.Cat
       Config

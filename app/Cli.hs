@@ -56,6 +56,7 @@ import qualified Cli.Ref as Ref
 import Cli.Backup (parser_info)
 import Cli.GarbageCollection (parser_info)
 import Cli.IntegrityCheck (parser_info)
+import Cli.RestoreTree (parser_info)
 
 import qualified LocalCache
 import Monad (run_readonly_repo_t_from_cwd)
@@ -82,6 +83,7 @@ cmds = info (helper <*> parser) infoMod
           , command "cat-file" parser_info_cat_file
           , command "cat-file-chunks" parser_info_cat_file_chunks
           , command "cat-tree" parser_info_cat_tree
+          , command "restore-tree" Cli.RestoreTree.parser_info
           , command "ref" Ref.cmds
           ]
 
