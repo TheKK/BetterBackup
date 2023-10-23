@@ -7,6 +7,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE TypeOperators #-}
 
 module Better.Internal.Repository.GarbageCollection (
   garbageCollection,
@@ -28,9 +29,9 @@ import qualified Streamly.Data.Fold as F
 import qualified Streamly.Data.Stream.Prelude as S
 
 import Control.Monad (unless, void, when)
-import Control.Monad.Catch (MonadCatch)
 
-import qualified Control.Monad.IO.Unlift as Un
+import qualified Effectful as E
+import qualified Effectful.Dispatch.Static.Unsafe as E
 
 import Better.Internal.Repository.LowLevel (
   FFile (file_sha),
@@ -44,27 +45,25 @@ import Better.Internal.Repository.LowLevel (
   folder_tree,
   listFolderFiles,
   listVersions,
-  s2d,
+  s2d, removeFiles,
  )
 
-import Better.Repository.Class (MonadRepository (..))
 import Better.Hash (Digest)
 import Control.Concurrent.STM
 import Control.Concurrent.Async (replicateConcurrently_)
 import Control.Exception (bracket_)
 import System.IO.Error (tryIOError)
+import qualified Better.Repository.Class as E
 
-{-# INLINE garbageCollection #-}
-garbageCollection :: (MonadCatch m, MonadRepository m, Un.MonadUnliftIO m) => m ()
+garbageCollection :: (E.Repository E.:> es) => E.Eff es ()
 garbageCollection = gc_tree >>= gc_file >>= gc_chunk
   where
     {-# INLINE [2] gc_tree #-}
-    gc_tree :: (MonadCatch m, MonadRepository m, Un.MonadUnliftIO m) => m (Set.Set Digest)
-    gc_tree = Un.withRunInIO $ \un -> Debug.Trace.traceMarker "gc_tree" $ do
+    gc_tree :: (E.Repository E.:> es) => E.Eff es (Set.Set Digest)
+    gc_tree = Debug.Trace.traceMarker "gc_tree" $ E.reallyUnsafeUnliftIO $ \un -> do
       (traversal_queue, live_tree_set) <- do
-        trees <-
+        trees <- un $
           listVersions
-            & S.morphInner un
             & fmap ver_root
             & S.fold F.toSet
 
@@ -142,8 +141,8 @@ garbageCollection = gc_tree >>= gc_file >>= gc_chunk
       atomically $ readTVar live_file_set
 
     {-# INLINE [2] gc_file #-}
-    gc_file :: (MonadCatch m, MonadRepository m, Un.MonadUnliftIO m) => Set.Set Digest -> m (Set.Set Digest)
-    gc_file live_file_set = Un.withRunInIO $ \un -> Debug.Trace.traceMarker "gc_file" $ do
+    gc_file :: (E.Repository E.:> es) => Set.Set Digest -> E.Eff es (Set.Set Digest)
+    gc_file live_file_set = E.reallyUnsafeUnliftIO $ \un -> Debug.Trace.traceMarker "gc_file" $ do
       listFolderFiles folder_file
         & S.morphInner un
         & S.parMapM
@@ -164,8 +163,8 @@ garbageCollection = gc_tree >>= gc_file >>= gc_chunk
         & S.fold F.toSet
 
     {-# INLINE [2] gc_chunk #-}
-    gc_chunk :: (MonadCatch m, MonadRepository m, Un.MonadUnliftIO m) => Set.Set Digest -> m ()
-    gc_chunk live_chunk_set = Un.withRunInIO $ \un -> Debug.Trace.traceMarker "gc_chunk" $ do
+    gc_chunk :: (E.Repository E.:> es) => Set.Set Digest -> E.Eff es ()
+    gc_chunk live_chunk_set = E.reallyUnsafeUnliftIO $ \un -> Debug.Trace.traceMarker "gc_chunk" $ do
       listFolderFiles folder_chunk
         & S.morphInner un
         & S.parMapM

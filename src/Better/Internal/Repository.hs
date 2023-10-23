@@ -1,12 +1,4 @@
 module Better.Internal.Repository (
-  -- * Write
-  initRepositoryStructure,
-  addBlob',
-  addFile',
-  addDir',
-  addVersion,
-  nextBackupVersionId,
-
   -- * Read
   catVersion,
   tryCatingVersion,
@@ -19,10 +11,6 @@ module Better.Internal.Repository (
 
   -- * Repositories
   localRepo,
-
-  -- * Monad
-  MonadRepository,
-  TheMonadRepository (..),
 
   -- * Types
   Repository,

@@ -9,11 +9,16 @@
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
 
 module Better.Internal.Repository.LowLevel (
+  -- * Effectful
+  runRepository,
+
   -- * Write
-  initRepositoryStructure,
+  removeFiles,
   addBlob',
   addFile',
   addDir',
@@ -21,6 +26,7 @@ module Better.Internal.Repository.LowLevel (
   nextBackupVersionId,
 
   -- * Read
+  read,
   catVersion,
   tryCatingVersion,
   catTree,
@@ -32,10 +38,6 @@ module Better.Internal.Repository.LowLevel (
 
   -- * Repositories
   localRepo,
-
-  -- * Monad
-  MonadRepository,
-  TheMonadRepository (..),
 
   -- * Types
   Repository,
@@ -59,8 +61,10 @@ module Better.Internal.Repository.LowLevel (
   s2d,
 ) where
 
-import Data.Function ( (&) )
-import Data.Word ( Word8, Word32 )
+import Prelude hiding (read)
+
+import Data.Function ((&))
+import Data.Word (Word32, Word8)
 
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -78,56 +82,53 @@ import qualified Data.ByteString.Short as BShort
 
 import Text.Read (readMaybe)
 
-import Control.Monad ( unless )
-import Control.Monad.Catch (MonadCatch, MonadMask, MonadThrow, handleIf, throwM)
+import Control.Monad (unless)
+import Control.Monad.Catch (MonadThrow, handleIf, throwM)
 
 import qualified Streamly.Data.Array as Array
 
 import qualified Streamly.FileSystem.File as File
 import qualified Streamly.Internal.Unicode.Stream as US
 
+import System.IO (IOMode (..), hClose, hPutBuf, openBinaryFile)
 import System.IO.Error (isDoesNotExistError)
-import System.Posix.Types (FileOffset)
+
+import qualified System.Directory as D
 
 import qualified System.Posix.Directory as P
 import qualified System.Posix.Files as P
+import System.Posix.Types (FileOffset)
 
 import Path (Path, (</>))
 import qualified Path
 
 import qualified Streamly.Data.Fold as F
 import qualified Streamly.Data.Stream.Prelude as S
+import qualified Streamly.Internal.Data.Array.Type as Array
 import qualified Streamly.Internal.Data.Fold as F
 
 import Control.Exception (mask_, onException)
 
-import qualified Capability.Reader as C
+import qualified Effectful as E
+import qualified Effectful.Dispatch.Static as E
+import qualified Effectful.Dispatch.Static.Unsafe as E
 
-import Better.Repository.Class ( MonadRepository(..) )
+import Better.Hash (Digest, digestFromByteString, digestToBase16ByteString)
+import Better.Internal.Streamly.Array (ArrayBA (ArrayBA, un_array_ba), fastArrayAsPtrUnsafe)
+import Better.Internal.Streamly.Crypto.AES (decryptCtr, that_aes)
+import qualified Better.Repository.Class as E
+import Better.Repository.Types (Version (..))
 import qualified Better.Streamly.FileSystem.Dir as Dir
 
-import Better.Repository.Types (Version (..))
-
-import Better.Internal.Streamly.Crypto.AES (decryptCtr, that_aes)
-
-import Better.Internal.Streamly.Array (ArrayBA (ArrayBA, un_array_ba), fastArrayAsPtrUnsafe)
-import qualified Streamly.Internal.Data.Array.Type as Array
-import System.IO (hPutBuf, openBinaryFile, IOMode (..), hClose)
-import Better.Hash (Digest, digestFromByteString, digestToBase16ByteString)
-import qualified System.Directory as D
-import Control.Monad.IO.Class
-import qualified Control.Monad.IO.Unlift as Un
-import Unsafe.Coerce (unsafeCoerce)
-
 data Repository = Repository
-  { _repo_putFile :: Path Path.Rel Path.File -> F.Fold IO (Array.Array Word8) ()
-  , _repo_removeFiles :: [Path Path.Rel Path.File] -> IO ()
+  { _repo_putFile :: !(Path Path.Rel Path.File -> F.Fold IO (Array.Array Word8) ())
+  , _repo_removeFiles :: !([Path Path.Rel Path.File] -> IO ())
   , -- TODO File mode?
-    _repo_createDirectory :: Path Path.Rel Path.Dir -> IO ()
-  , _repo_fileExists :: Path Path.Rel Path.File -> IO Bool
-  , _repo_fileSize :: Path Path.Rel Path.File -> IO FileOffset
-  , _repo_read :: Path Path.Rel Path.File -> S.Stream IO (Array.Array Word8)
-  , _repo_listFolderFiles :: Path Path.Rel Path.Dir -> S.Stream IO (Path Path.Rel Path.File)
+    _repo_createDirectory :: !(Path Path.Rel Path.Dir -> IO ())
+  , _repo_fileExists :: !(Path Path.Rel Path.File -> IO Bool)
+  , _repo_fileSize :: !(Path Path.Rel Path.File -> IO FileOffset)
+  , _repo_read :: !(Path Path.Rel Path.File -> S.Stream IO (Array.Array Word8))
+  , _repo_listFolderFiles :: !(Path Path.Rel Path.Dir -> S.Stream IO (Path Path.Rel Path.File))
   }
 
 data Tree = Tree
@@ -147,65 +148,24 @@ data Object = Object
   }
   deriving (Show)
 
-newtype TheMonadRepository m a = TheMonadRepository (m a)
-  deriving (Functor, Applicative, Monad, MonadIO, MonadThrow, MonadCatch, MonadMask)
-
-instance (C.HasReader "repo" Repository m, MonadIO m) => MonadRepository (TheMonadRepository m) where
-  {-# INLINE mkPutFileFold #-}
-  mkPutFileFold = TheMonadRepository $ do
-    f <- C.asks @"repo" _repo_putFile
-    pure $ F.morphInner liftIO . f
-
-  {-# INLINE removeFiles #-}
-  removeFiles files = TheMonadRepository $ do
-    f <- C.asks @"repo" _repo_removeFiles
-    liftIO $ f files
-
-  {-# INLINE createDirectory #-}
-  createDirectory d = TheMonadRepository $ do
-    f <- C.asks @"repo" _repo_createDirectory
-    liftIO $ f d
-
-  {-# INLINE fileExists #-}
-  fileExists file = TheMonadRepository $ do
-    f <- C.asks @"repo" _repo_fileExists
-    liftIO $ f file
-
-  {-# INLINE fileSize #-}
-  fileSize file = TheMonadRepository $ do
-    f <- C.asks @"repo" _repo_fileSize
-    liftIO $ f file
-
-  {-# INLINE mkRead #-}
-  mkRead = TheMonadRepository $ do
-    f <- C.asks @"repo" _repo_read
-    pure $ S.morphInner liftIO . f
-
-  {-# INLINE mkListFolderFiles #-}
-  mkListFolderFiles = TheMonadRepository $ do
-    f <- C.asks @"repo" _repo_listFolderFiles
-    pure $ S.morphInner liftIO . f
-
 {-# INLINE listFolderFiles #-}
 listFolderFiles
-  :: (MonadIO m, MonadRepository m)
+  :: (E.Repository E.:> es)
   => Path Path.Rel Path.Dir
-  -> S.Stream m (Path Path.Rel Path.File)
-listFolderFiles d = S.concatEffect $ do
-  f <- mkListFolderFiles
-  pure $! f d
+  -> S.Stream (E.Eff es) (Path Path.Rel Path.File)
+listFolderFiles = mkListFolderFiles
 
 {-# INLINE listVersions #-}
-listVersions :: (MonadThrow m, MonadIO m, MonadRepository m) => S.Stream m Version
+listVersions :: (E.Repository E.:> es) => S.Stream (E.Eff es) Version
 listVersions =
   listFolderFiles folder_version
     & S.mapM
       ( \v -> do
-          v' <- liftIO $ readIO $ Path.fromRelFile v
+          v' <- E.unsafeEff_ $ readIO $ Path.fromRelFile v
           catVersion v'
       )
 
-tryCatingVersion :: (MonadThrow m, MonadIO m, MonadRepository m) => Integer -> m (Maybe Version)
+tryCatingVersion :: (E.Repository E.:> es) => Integer -> E.Eff es (Maybe Version)
 tryCatingVersion vid = do
   path_vid <- Path.parseRelFile $ show vid
   -- TODO using fileExists could cause issue of TOCTOU,
@@ -215,27 +175,6 @@ tryCatingVersion vid = do
   if exists
     then Just <$> catVersion vid
     else pure Nothing
-
--- hbk <- C.asks @"hbk" hbk_path
--- let ver_path = T.unpack $ hbk <> "/version"
--- pure $ Dir.readFiles ver_path
---   & S.mapM (\v -> do
---     optSha <- fmap (BS.decode . BS.pack)
---       $ S.toList
---       $ File.read (ver_path <> "/" <> v)
---     v' <- liftIO $ readIO v
-
---     sha <- case optSha of
---       Left err -> throwM $ userError $ "invalid sha of version, " <> err
---       Right sha -> pure $ sha
-
---     digest <- case digestFromByteString @SHA256 sha of
---       Nothing -> throwM $ userError "invalid sha of version"
---       Just digest -> pure digest
-
---     pure $ Version v' digest
---   )
---
 
 {-# INLINE write_chunk #-}
 write_chunk :: FilePath -> F.Fold IO (Array.Array Word8) ()
@@ -258,13 +197,64 @@ write_chunk path = F.Fold step initial extract
 localRepo :: Path Path.Abs Path.Dir -> Repository
 localRepo root =
   Repository
-    (write_chunk . Path.fromAbsFile . (root </>))
-    (mapM_ $ (handleIf isDoesNotExistError (const $ pure ())) . D.removeFile . Path.fromAbsFile . (root </>))
+    local_write
+    local_remove_file
     (flip P.createDirectory 700 . Path.fromAbsDir . (root </>))
-    (P.fileExist . Path.fromAbsFile . (root </>))
+    local_exist
     (fmap P.fileSize . P.getFileStatus . Path.fromAbsFile . (root </>))
     (File.readChunks . Path.fromAbsFile . (root </>))
     (S.mapM Path.parseRelFile . Dir.read . (root </>))
+  where
+    {-# NOINLINE local_write #-}
+    local_write = write_chunk . Path.fromAbsFile . (root </>)
+
+    {-# NOINLINE local_remove_file #-}
+    local_remove_file = mapM_ $ (handleIf isDoesNotExistError (const $ pure ())) . D.removeFile . Path.fromAbsFile . (root </>)
+
+    {-# NOINLINE local_exist #-}
+    local_exist = P.fileExist . Path.fromAbsFile . (root </>)
+
+newtype instance E.StaticRep E.Repository = RepositoryRep Repository
+
+runRepository :: (E.IOE E.:> es, E.IOE E.:> es) => Repository -> E.Eff (E.Repository : es) a -> E.Eff es a
+runRepository = E.evalStaticRep . RepositoryRep
+
+mkPutFileFold :: (E.Repository E.:> es) => E.Eff es (Path Path.Rel Path.File -> F.Fold (E.Eff es) (Array.Array Word8) ())
+mkPutFileFold = do
+  RepositoryRep repo <- E.getStaticRep
+  pure $! F.morphInner E.unsafeEff_ . _repo_putFile repo
+
+removeFiles :: (E.Repository E.:> es) => [Path Path.Rel Path.File] -> E.Eff es ()
+removeFiles files = do
+  RepositoryRep repo <- E.getStaticRep
+  E.unsafeEff_ $ _repo_removeFiles repo files
+
+createDirectory :: (E.Repository E.:> es) => Path Path.Rel Path.Dir -> E.Eff es ()
+createDirectory d = do
+  RepositoryRep repo <- E.getStaticRep
+  E.unsafeEff_ $ _repo_createDirectory repo d
+
+fileExists :: (E.Repository E.:> es) => Path Path.Rel Path.File -> E.Eff es Bool
+fileExists d = do
+  RepositoryRep repo <- E.getStaticRep
+  E.unsafeEff_ $ _repo_fileExists repo d
+
+fileSize :: (E.Repository E.:> es) => Path Path.Rel Path.File -> E.Eff es FileOffset
+fileSize d = do
+  RepositoryRep repo <- E.getStaticRep
+  E.unsafeEff_ $ _repo_fileSize repo d
+
+{-# INLINE read #-}
+read :: (E.Repository E.:> es) => Path Path.Rel Path.File -> S.Stream (E.Eff es) (Array.Array Word8)
+read f = S.concatEffect $ do
+  RepositoryRep repo <- E.getStaticRep
+  pure $! S.morphInner E.unsafeEff_ $ _repo_read repo f
+
+{-# INLINE mkListFolderFiles #-}
+mkListFolderFiles :: (E.Repository E.:> es) => Path Path.Rel Path.Dir -> S.Stream (E.Eff es) (Path Path.Rel Path.File)
+mkListFolderFiles d = S.concatEffect $ do
+  RepositoryRep repo <- E.getStaticRep
+  pure $! S.morphInner E.unsafeEff_ . _repo_listFolderFiles repo $ d
 
 folder_chunk :: Path Path.Rel Path.Dir
 folder_chunk = [Path.reldir|chunk|]
@@ -278,24 +268,11 @@ folder_tree = [Path.reldir|tree|]
 folder_version :: Path Path.Rel Path.Dir
 folder_version = [Path.reldir|version|]
 
-initRepositoryStructure :: (MonadRepository m) => m ()
-initRepositoryStructure = do pure ()
-
--- mapM_ createDirectory $
---   [ [Path.reldir| |]
---   , folder_chunk
---   , folder_file
---   , folder_tree
---   , folder_version
---   ]
---
-
-{-# INLINE addBlob' #-}
 addBlob'
-  :: (MonadCatch m, MonadIO m, MonadRepository m)
+  :: (E.Repository E.:> es)
   => Digest
-  -> S.Stream m (Array.Array Word8)
-  -> m Word32
+  -> S.Stream (E.Eff es) (Array.Array Word8)
+  -> E.Eff es Word32
   -- ^ Bytes written
 addBlob' digest chunks = do
   file_name' <- Path.parseRelFile $ show digest
@@ -308,12 +285,11 @@ addBlob' digest chunks = do
       ((), !len) <- chunks & S.fold (F.tee (putFileFold f) (fromIntegral <$> F.lmap Array.byteLength F.sum))
       pure len
 
-{-# INLINE addFile' #-}
 addFile'
-  :: (MonadCatch m, MonadIO m, MonadRepository m)
+  :: (E.Repository E.:> es)
   => Digest
-  -> S.Stream m (Array.Array Word8)
-  -> m ()
+  -> S.Stream (E.Eff es) (Array.Array Word8)
+  -> E.Eff es ()
 addFile' digest chunks = do
   file_name' <- Path.parseRelFile $ show digest
   let f = folder_file </> file_name'
@@ -322,12 +298,11 @@ addFile' digest chunks = do
     putFileFold <- mkPutFileFold
     chunks & S.fold (putFileFold f)
 
-{-# INLINE addDir' #-}
 addDir'
-  :: (MonadCatch m, MonadIO m, MonadRepository m)
+  :: (E.Repository E.:> es)
   => Digest
-  -> S.Stream m (Array.Array Word8)
-  -> m ()
+  -> S.Stream (E.Eff es) (Array.Array Word8)
+  -> E.Eff es ()
 addDir' digest chunks = do
   file_name' <- Path.parseRelFile $ show digest
   let f = folder_tree </> file_name'
@@ -336,21 +311,19 @@ addDir' digest chunks = do
     putFileFold <- mkPutFileFold
     chunks & S.fold (putFileFold f)
 
-{-# INLINE addVersion #-}
 addVersion
-  :: (MonadIO m, MonadCatch m, MonadRepository m)
+  :: (E.Repository E.:> es)
   => Integer
   -> Digest
-  -> m ()
+  -> E.Eff es ()
 addVersion v_id v_root = do
   ver_id_file_name <- Path.parseRelFile $ show v_id
   let f = folder_version </> ver_id_file_name
   putFileFold <- mkPutFileFold
-  liftIO $
-    S.fromPure (Array.fromList $ BS.unpack $ TE.encodeUtf8 $ T.pack $ show v_root)
-      & S.fold (putFileFold f)
+  S.fromPure (Array.fromList $ BS.unpack $ TE.encodeUtf8 $ T.pack $ show v_root)
+    & S.fold (putFileFold f)
 
-nextBackupVersionId :: (MonadIO m, MonadCatch m, MonadRepository m) => m Integer
+nextBackupVersionId :: (E.Repository E.:> es) => E.Eff es Integer
 nextBackupVersionId = do
   listFolderFiles folder_version
     & S.mapMaybe (readMaybe @Integer . Path.fromRelFile)
@@ -358,49 +331,48 @@ nextBackupVersionId = do
     & fmap (succ . fromMaybe 0)
 
 cat_stuff_under
-  :: (Show a, MonadThrow m, MonadIO m, MonadRepository m)
+  :: (Show a, E.Repository E.:> es)
   => Path Path.Rel Path.Dir
   -> a
-  -> S.Stream m (Array.Array Word8)
+  -> S.Stream (E.Eff es) (Array.Array Word8)
 cat_stuff_under folder stuff = S.concatEffect $ do
-  read_blob <- mkRead
-  liftIO $ do
-    stuff_path <- Path.parseRelFile $ show stuff
-    pure $ read_blob (folder </> stuff_path)
+  stuff_path <- E.unsafeEff_ $ Path.parseRelFile $ show stuff
+  pure $! read (folder </> stuff_path)
 {-# INLINE cat_stuff_under #-}
 
-catFile :: (MonadThrow m, MonadIO m, MonadRepository m) => Digest -> S.Stream m Object
-catFile sha =
-  cat_stuff_under folder_file sha
-    & US.decodeUtf8Chunks
-    & US.lines (fmap T.pack F.toList)
-    & S.mapM parse_file_content
+catFile :: (E.Repository E.:> es) => Digest -> S.Stream (E.Eff es) Object
+catFile sha = S.concatEffect $ E.reallyUnsafeUnliftIO $ \un -> do
+  pure $!
+    cat_stuff_under folder_file sha
+      & S.morphInner un
+      & US.decodeUtf8Chunks
+      & US.lines (fmap T.pack F.toList)
+      & S.mapM parse_file_content
+      & S.morphInner E.unsafeEff_
   where
     parse_file_content :: (MonadThrow m, Applicative m) => T.Text -> m Object
     parse_file_content = fmap Object . t2d
 {-# INLINE catFile #-}
 
 catChunk
-  :: (Un.MonadUnliftIO m, MonadThrow m, MonadIO m, MonadRepository m)
+  :: (E.Repository E.:> es)
   => Digest
-  -> S.Stream m (Array.Array Word8)
-catChunk digest = S.concatEffect $ do
-  aes <- liftIO that_aes
-  Un.withRunInIO $ \unlift_io ->
-    pure $
-      cat_stuff_under folder_chunk digest
-        & S.morphInner unlift_io
-        & (fmap un_array_ba . decryptCtr aes (32 * 1024) . fmap ArrayBA)
-        & S.morphInner liftIO
+  -> S.Stream (E.Eff es) (Array.Array Word8)
+catChunk digest = S.concatEffect $ E.reallyUnsafeUnliftIO $ \un -> do
+  aes <- that_aes
+  pure $!
+    cat_stuff_under folder_chunk digest
+      & S.morphInner un
+      & (fmap un_array_ba . decryptCtr aes (32 * 1024) . fmap ArrayBA)
+      & S.morphInner E.unsafeEff_
 {-# INLINE catChunk #-}
 
-getChunkSize :: (MonadThrow m, MonadIO m, MonadRepository m) => Digest -> m FileOffset
+getChunkSize :: (E.Repository E.:> es) => Digest -> E.Eff es FileOffset
 getChunkSize sha = do
-  sha_path <- Path.parseRelFile $ show sha
+  sha_path <- E.unsafeEff_ $ Path.parseRelFile $ show sha
   fileSize $ folder_chunk </> sha_path
-{-# INLINE getChunkSize #-}
 
-catVersion :: (MonadThrow m, MonadIO m, MonadRepository m) => Integer -> m Version
+catVersion :: (E.Repository E.:> es) => Integer -> E.Eff es Version
 catVersion vid = do
   optSha <-
     cat_stuff_under folder_version vid
@@ -417,14 +389,16 @@ catVersion vid = do
     Just digest -> pure digest
 
   pure $ Version vid digest
-{-# INLINE catVersion #-}
 
-catTree :: (MonadThrow m, MonadIO m, MonadRepository m) => Digest -> S.Stream m (Either Tree FFile)
-catTree tree_sha' =
-  cat_stuff_under folder_tree tree_sha'
-    & US.decodeUtf8Chunks
-    & US.lines (fmap T.pack F.toList)
-    & S.mapM parse_tree_content
+catTree :: (E.Repository E.:> es) => Digest -> S.Stream (E.Eff es) (Either Tree FFile)
+catTree tree_sha' = S.concatEffect $ E.reallyUnsafeUnliftIO $ \un -> do
+  pure $!
+    cat_stuff_under folder_tree tree_sha'
+      & S.morphInner un
+      & US.decodeUtf8Chunks
+      & US.lines (fmap T.pack F.toList)
+      & S.mapM parse_tree_content
+      & S.morphInner E.unsafeEff_
   where
     {-# INLINE [0] parse_tree_content #-}
     parse_tree_content :: MonadThrow m => T.Text -> m (Either Tree FFile)

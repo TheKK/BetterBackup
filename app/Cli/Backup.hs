@@ -1,4 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 module Cli.Backup (
   parser_info,
@@ -22,9 +24,6 @@ import Control.Exception (Exception (displayException), mask_)
 import Control.Monad (forever)
 import Control.Monad.IO.Class (MonadIO (liftIO))
 
-import Control.Monad.IO.Unlift (MonadUnliftIO)
-import qualified Control.Monad.IO.Unlift as Un
-
 import Data.Bifunctor (first)
 import Data.Foldable (Foldable (fold))
 
@@ -36,9 +35,11 @@ import qualified Path
 import qualified Better.Repository.Backup as Repo
 
 import Monad (run_backup_repo_t_from_cwd)
-import Better.Statistics.Backup (MonadBackupStat)
 import qualified Better.Statistics.Backup as BackupSt
 import Control.Concurrent (threadDelay)
+import qualified Effectful as E
+import Better.Statistics.Backup.Class (BackupStatistics, processedFileCount, totalFileCount, processedDirCount, totalDirCount, processedChunkCount, uploadedBytes)
+import qualified Effectful.Dispatch.Static.Unsafe as EU
 
 parser_info :: ParserInfo (IO ())
 parser_info = info (helper <*> parser) infoMod
@@ -58,7 +59,7 @@ parser_info = info (helper <*> parser) infoMod
               ]
           )
 
-    go dir_to_backup = run_backup_repo_t_from_cwd $ Un.withRunInIO $ \un -> do
+    go dir_to_backup = run_backup_repo_t_from_cwd $ EU.reallyUnsafeUnliftIO $ \un -> do
       let
         process_reporter = forever $ do
           mask_ $ un report_backup_stat
@@ -74,14 +75,14 @@ parser_info = info (helper <*> parser) infoMod
 some_base_dir_read :: ReadM (Path.SomeBase Dir)
 some_base_dir_read = eitherReader $ first displayException . Path.parseSomeDir
 
-report_backup_stat :: (MonadBackupStat m, MonadUnliftIO m) => m ()
+report_backup_stat :: (BackupStatistics E.:> es, E.IOE E.:> es) => E.Eff es ()
 report_backup_stat = do
-  process_file_count <- BackupSt.readStatistics BackupSt.processedFileCount
-  total_file_count <- BackupSt.readStatistics BackupSt.totalFileCount
-  process_dir_count <- BackupSt.readStatistics BackupSt.processedDirCount
-  total_dir_count <- BackupSt.readStatistics BackupSt.totalDirCount
-  process_chunk_count <- BackupSt.readStatistics BackupSt.processedChunkCount
-  upload_bytes <- BackupSt.readStatistics BackupSt.uploadedBytes
+  process_file_count <- BackupSt.readStatistics processedFileCount
+  total_file_count <- BackupSt.readStatistics totalFileCount
+  process_dir_count <- BackupSt.readStatistics processedDirCount
+  total_dir_count <- BackupSt.readStatistics totalDirCount
+  process_chunk_count <- BackupSt.readStatistics processedChunkCount
+  upload_bytes <- BackupSt.readStatistics uploadedBytes
   liftIO $
     putStrLn $
       fold
@@ -98,4 +99,3 @@ report_backup_stat = do
         , show upload_bytes
         , " bytes"
         ]
-

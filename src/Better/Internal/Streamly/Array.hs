@@ -37,13 +37,13 @@ import Streamly.Internal.Data.Array.Mut (touch)
 import qualified Streamly.Internal.Data.Array.Type as Array
 import Streamly.Internal.Data.Unboxed (getMutableByteArray#)
 
-import System.IO (IOMode (..), hClose, hPutBuf, openBinaryFile, Handle, hSeek, SeekMode (AbsoluteSeek), hGetBufSome)
+import System.IO (Handle, IOMode (..), SeekMode (AbsoluteSeek), hClose, hGetBufSome, hPutBuf, hSeek, openBinaryFile)
 
-import Control.Exception (mask_, onException, assert)
-import Unsafe.Coerce (unsafeCoerce#)
-import qualified Streamly.Internal.Data.Unfold.Type as Un
-import qualified Streamly.Internal.Data.Stream as S
+import Control.Exception (assert, mask_, onException)
 import qualified Streamly.Internal.Data.Array.Mut as MArray
+import qualified Streamly.Internal.Data.Stream as S
+import qualified Streamly.Internal.Data.Unfold.Type as Un
+import Unsafe.Coerce (unsafeCoerce#)
 
 -- * Functions that I need but not exists on upstream.
 
@@ -72,10 +72,11 @@ instance ByteArrayAccess MutArrayBA where
   withByteArray (MutArrayBA marr) = fastMutArrayAsPtrUnsafe marr
 
 -- Copy from streamly-core
+{-# INLINE fastArrayAsPtrUnsafe #-}
 fastArrayAsPtrUnsafe :: Array.Array Word8 -> (Ptr a -> IO b) -> IO b
 fastArrayAsPtrUnsafe arr f = do
   let marr = Array.unsafeThaw arr
-      contents = MA.arrContents marr
+      !contents = MA.arrContents marr
       !ptr =
         Ptr
           ( byteArrayContents# (unsafeCoerce# (getMutableByteArray# contents))
@@ -83,13 +84,14 @@ fastArrayAsPtrUnsafe arr f = do
   -- XXX Check if the array is pinned, if not, copy it to a pinned array
   -- XXX We should probably pass to the IO action the byte length of the array
   -- as well so that bounds can be checked.
-  r <- f (ptr `plusPtr` MA.arrStart marr)
+  r <- f $! (ptr `plusPtr` MA.arrStart marr)
   touch contents
   return r
 
+{-# INLINE fastMutArrayAsPtrUnsafe #-}
 fastMutArrayAsPtrUnsafe :: MA.MutArray Word8 -> (Ptr a -> IO b) -> IO b
 fastMutArrayAsPtrUnsafe marr f = do
-  let contents = MA.arrContents marr
+  let !contents = MA.arrContents marr
       !ptr =
         Ptr
           ( byteArrayContents# (unsafeCoerce# (getMutableByteArray# contents))
@@ -97,7 +99,7 @@ fastMutArrayAsPtrUnsafe marr f = do
   -- XXX Check if the array is pinned, if not, copy it to a pinned array
   -- XXX We should probably pass to the IO action the byte length of the array
   -- as well so that bounds can be checked.
-  r <- f (ptr `plusPtr` MA.arrStart marr)
+  r <- f $! (ptr `plusPtr` MA.arrStart marr)
   touch contents
   return r
 
@@ -119,40 +121,39 @@ fastWriteChunkFold path = F.Fold step initial extract
     extract hd = mask_ $ do
       hClose hd
 
-
 -- Copy from streamly-core.
 {-# INLINE chunkReaderFromToWith #-}
 chunkReaderFromToWith :: Un.Unfold IO (Int, Int, Int, Handle) (Array.Array Word8)
 chunkReaderFromToWith = Un.Unfold step inject
-
-    where
-
-    inject (from :: Int, to :: Int, bufSize :: Int, h) = do
-        hSeek h AbsoluteSeek $! fromIntegral from
-        -- XXX Use a strict Tuple?
-        return (to - from + 1, bufSize, h)
+  where
+    inject (!from :: Int, !to :: Int, !bufSize :: Int, !h) = do
+      hSeek h AbsoluteSeek $! fromIntegral from
+      -- XXX Use a strict Tuple?
+      let !remaining = to - from + 1
+      return (remaining, bufSize, h)
 
     {-# INLINE [0] step #-}
-    step (remaining, bufSize, h) =
-        if remaining <= 0
+    step (!remaining, !bufSize, !h) =
+      if remaining <= 0
         then return S.Stop
         else do
-            arr <- getChunk (min bufSize remaining) h
-            return $
-                case Array.byteLength arr of
-                    0 -> S.Stop
-                    len ->
-                        assert (len <= remaining)
-                            $ S.Yield arr (remaining - len, bufSize, h)
+          arr <- getChunk (min bufSize remaining) h
+          return $!
+            case Array.byteLength arr of
+              0 -> S.Stop
+              len ->
+                assert (len <= remaining) $
+                  let !remaining' = remaining - len
+                  in  S.Yield arr (remaining', bufSize, h)
 
 -- Copy from streamly-core.
 getChunk :: Int -> Handle -> IO (Array.Array Word8)
-getChunk size h = do
-    arr <- MArray.newPinnedBytes size
-    -- ptr <- mallocPlainForeignPtrAlignedBytes size (alignment (undefined :: Word8))
-    fastMutArrayAsPtrUnsafe arr $ \p -> do
-        n <- hGetBufSome h p size
-        -- XXX shrink only if the diff is significant
-        return $
-            Array.unsafeFreezeWithShrink $
-            arr { MArray.arrEnd = n, MArray.arrBound = size }
+getChunk !size h = do
+  arr <- MArray.newPinnedBytes size
+  -- ptr <- mallocPlainForeignPtrAlignedBytes size (alignment (undefined :: Word8))
+  fastMutArrayAsPtrUnsafe arr $ \p -> do
+    !n <- hGetBufSome h p size
+    -- XXX shrink only if the diff is significant
+    return $!
+      Array.unsafeFreezeWithShrink $
+        arr{MArray.arrEnd = n, MArray.arrBound = size}

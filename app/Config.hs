@@ -35,22 +35,22 @@ config_toml_codec = Config
     repo_type_codec
       =  Toml.dimatch match_local Local (Toml.table local_repo_config_codec "local")
 
-data RepoType = Local LocalRepoConfig
+data RepoType = Local !LocalRepoConfig
   deriving Show
 
-data Config = Config 
- { config_repoType :: RepoType
+data Config = Config
+ { config_repoType :: !RepoType
  }
   deriving Show
 
 data LocalRepoConfig = LocalRepoConfig
-  { local_repo_path :: Path Path.Abs Path.Dir
+  { local_repo_path :: !(Path Path.Abs Path.Dir)
   }
   deriving Show
 
 local_repo_config_codec :: TomlCodec LocalRepoConfig
 local_repo_config_codec = LocalRepoConfig
-  <$> abs_dir_codec "path" .= local_repo_path 
+  <$> abs_dir_codec "path" .= local_repo_path
 
 abs_dir_codec :: Toml.Key -> TomlCodec (Path Path.Abs Path.Dir)
 abs_dir_codec = Toml.textBy to_text from_text

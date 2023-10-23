@@ -14,11 +14,9 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as T
 
 import Path (Path, Abs, Rel, File, Dir, (</>), relfile)
-import qualified Path as Path
+import qualified Path
 
 import qualified System.Directory as D
-
-import qualified Control.Monad.IO.Unlift as Un
 
 import Config(Config(..))
 import qualified Config

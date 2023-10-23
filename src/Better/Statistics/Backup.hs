@@ -1,7 +1,6 @@
 {-# LANGUAGE Strict #-}
 
 module Better.Statistics.Backup (
-  Base.MonadBackupStat (..),
   -- | General operations
   readStatistics,
   modifyStatistic',
@@ -12,8 +11,6 @@ import qualified Control.Monad.IO.Unlift as Un
 import Control.Monad.IO.Class (liftIO)
 
 import Control.Concurrent.STM (TVar, atomically, modifyTVar', readTVarIO)
-
-import qualified Better.Statistics.Backup.Class as Base
 
 -- TODO Maybe could move to Better.Statistics
 {-# INLINE readStatistics #-}

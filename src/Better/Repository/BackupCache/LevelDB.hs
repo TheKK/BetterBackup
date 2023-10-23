@@ -1,18 +1,19 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE Strict #-}
-{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
-{-# LANGUAGE BangPatterns #-}
 
-module Better.Repository.BackupCache.LevelDB
-  ( TheLevelDBBackupCache (..),
-  )
+module Better.Repository.BackupCache.LevelDB (
+  saveCurrentFileHash,
+  tryReadingCacheHash,
+  runBackupCacheLevelDB,
+)
 where
 
-import Foreign.C.Types (CTime(CTime))
-import qualified Capability.Reader as C
+import Control.Monad (replicateM)
 import qualified Data.Binary.Get as Bin
 import qualified Data.Binary.Put as Bin
 import qualified Data.ByteString as BS
@@ -20,26 +21,30 @@ import qualified Data.ByteString.Char8 as BC
 import Data.Coerce (coerce)
 import Data.Foldable (for_)
 import qualified Database.LevelDB.Base as LV
+import Foreign.C.Types (CTime (CTime))
 import qualified System.Posix as P
-import Control.Monad (replicateM)
 
-import qualified Control.Monad.IO.Unlift as Un
+import Effectful ((:>))
+import qualified Effectful as E
+import qualified Effectful.Dispatch.Static as ES
 
-import Better.Repository.BackupCache.Class (MonadBackupCache (..))
-import Better.Hash (Digest, digestSize, digestFromByteString, digestUnpack)
+import Better.Hash (Digest, digestFromByteString, digestSize, digestUnpack)
+import Better.Repository.BackupCache.Class (BackupCache)
 
-newtype TheLevelDBBackupCache m a = TheLevelDBBackupCache (m a)
+data instance ES.StaticRep BackupCache = BackupCacheStat {-# UNPACK #-} !LV.DB {-# UNPACK #-} !LV.DB
 
-instance (C.HasReader "prev_db" LV.DB m, C.HasReader "cur_db" LV.DB m, Un.MonadUnliftIO m) => MonadBackupCache (TheLevelDBBackupCache m) where
-  {-# INLINE saveCurrentFileHash #-}
-  saveCurrentFileHash st digest = TheLevelDBBackupCache $ Un.withRunInIO $ \un -> do
-    db <- un $ C.ask @"cur_db"
-    save_to db st digest
+saveCurrentFileHash :: BackupCache :> es => P.FileStatus -> Digest -> E.Eff es ()
+saveCurrentFileHash st digest = do
+  BackupCacheStat _prev cur <- ES.getStaticRep
+  ES.unsafeEff_ $ save_to cur st digest
 
-  {-# INLINE tryReadingCacheHash #-}
-  tryReadingCacheHash st = TheLevelDBBackupCache $ Un.withRunInIO $ \un -> do
-    db <- un $ C.ask @"prev_db"
-    read_from db st
+tryReadingCacheHash :: BackupCache :> es => P.FileStatus -> E.Eff es (Maybe Digest)
+tryReadingCacheHash st = do
+  BackupCacheStat prev _cur <- ES.getStaticRep
+  ES.unsafeEff_ $ read_from prev st
+
+runBackupCacheLevelDB :: E.IOE :> es => LV.DB -> LV.DB -> E.Eff (BackupCache : es) a -> E.Eff es a
+runBackupCacheLevelDB prev cur = ES.evalStaticRep $ BackupCacheStat prev cur
 
 save_to :: LV.DB -> P.FileStatus -> Digest -> IO ()
 save_to db st digest = do

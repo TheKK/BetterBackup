@@ -2,7 +2,7 @@
 {-# LANGUAGE Strict #-}
 
 module Cli.Ref.Cat
-  ( parserInfo,
+  ( parserInfo
   )
 where
 

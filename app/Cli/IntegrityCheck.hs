@@ -24,3 +24,4 @@ parser_info = info (helper <*> parser) infoMod
 
     {-# NOINLINE go #-}
     go = run_readonly_repo_t_from_cwd $ Repo.checksum 10
+
