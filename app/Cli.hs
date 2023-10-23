@@ -1,5 +1,5 @@
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TypeApplications #-}
 
 module Cli (
   cmds,
@@ -43,11 +43,13 @@ import qualified Streamly.Console.Stdio as Stdio
 import Path (Abs, Dir, Path)
 import qualified Path
 
+import qualified Effectful.Dispatch.Static.Unsafe as E
+
 import Config (Config (..))
 import qualified Config
 
-import qualified Better.Repository as Repo
 import Better.Hash (Digest, digestFromByteString)
+import qualified Better.Repository as Repo
 
 import qualified Cli.Ref as Ref
 
@@ -178,14 +180,14 @@ parser_info_cat_file = info (helper <*> parser) infoMod
     {-# NOINLINE go #-}
     go :: Digest -> IO ()
     go sha =
-      run_readonly_repo_t_from_cwd $
+      run_readonly_repo_t_from_cwd $ E.reallyUnsafeUnliftIO $ \un -> liftIO $ do
         Repo.catFile sha
+          & S.morphInner un
           -- Use parConcatMap to open multiple chunk files concurrently.
           -- This allow us to read from catFile and open chunk file ahead of time before catual writing.
-          & S.parConcatMap (S.eager True . S.ordered True . S.maxBuffer (6 * 5)) (S.mapM (\e -> par e $ pure e) . Repo.catChunk . Repo.chunk_name)
+          & S.parConcatMap (S.eager True . S.ordered True . S.maxBuffer (6 * 5)) (S.mapM (\e -> par e $ pure e) . S.morphInner un . Repo.catChunk . Repo.chunk_name)
           -- Use parEval to read from chunks concurrently.
           -- Since read is often faster than write, using parEval with buffer should reduce running time.
-          -- & S.mapM (\(~e) -> par e $ pure e)
           & S.parEval (S.maxBuffer 30)
           & S.fold Stdio.writeChunks
 
