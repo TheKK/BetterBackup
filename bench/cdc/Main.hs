@@ -59,10 +59,12 @@ import Data.IORef
 import qualified Streamly.Data.Array as Array
 import qualified Streamly.Internal.Data.Array as Array
 import qualified Streamly.Internal.Data.Array.Type as Array
+import qualified Streamly.Internal.Data.Array.Mut.Type as MutArray
 import qualified Data.ByteArray.Encoding as BA
 import qualified Data.Base16.Types as Base16
 import qualified Data.ByteString.Short as BSS
 import qualified Data.ByteString.Short.Base16 as BSS16
+import Better.Internal.Streamly.Array (fastMutArrayAsPtrUnsafe, fastArrayAsPtrUnsafe)
 
 newtype ArrayBA = ArrayBA {un_array_ba :: Array.Array Word8}
   deriving (Eq, Ord)
@@ -414,6 +416,21 @@ bench_as_ptr =
           ( \array' -> Array.asPtrUnsafe array' (\ptr -> pure ())
           )
           array
+    , bench "Streamly.MutArray" $
+        whnfAppIO
+          ( \array' -> MutArray.asPtrUnsafe array' (\ptr -> pure ())
+          )
+          mu_array
+    , bench "fastArrayAsPtrUnsafe" $
+        whnfAppIO
+          ( \array' -> fastArrayAsPtrUnsafe array' (\ptr -> pure ())
+          )
+          array
+    , bench "fastMutArrayAsPtrUnsafe" $
+        whnfAppIO
+          ( \array' -> fastMutArrayAsPtrUnsafe array' (\ptr -> pure ())
+          )
+          mu_array
     , bench "ByteString" $
         whnfAppIO
           ( \bs' -> BA.withByteArray bs' (\ptr -> pure ())
@@ -422,6 +439,7 @@ bench_as_ptr =
     ]
   where
     array = Array.fromList (BS.unpack "sjdfklsdjfsdkfl")
+    mu_array = Array.unsafeThaw array
     bs = "sjdfklsdjfsdkfl" :: BS.ByteString
 
 bench_concurrent :: Benchmark

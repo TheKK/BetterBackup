@@ -87,6 +87,7 @@ library better-core
       Better.Internal.Repository.GarbageCollection
       Better.Internal.Repository.IntegrityCheck
       Better.Internal.Streamly.Crypto.AES
+      Better.Internal.Streamly.Array
       Better.Streamly.FileSystem.Dir
       Better.Streamly.FileSystem.Chunker
       Better.Repository
@@ -102,7 +103,6 @@ library better-core
       Better.Statistics.Backup.Class
       Better.Statistics.Backup.Default
     other-modules:
-      Better.Internal.Streamly.Array
     build-depends:  vector, random, splitmix, leveldb-haskell, binary, ki, parallel, fusion-plugin-types, hedgehog, blake3, ghc-prim, async, primitive, stm-containers, hashable, temporary, effectful-core, effectful-th
     hs-source-dirs:   src
     default-language: Haskell2010
