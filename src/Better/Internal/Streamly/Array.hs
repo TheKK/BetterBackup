@@ -10,6 +10,7 @@ module Better.Internal.Streamly.Array (
   fastWriteChunkFold,
   fastArrayAsPtrUnsafe,
   fastMutArrayAsPtrUnsafe,
+  readChunks,
   chunkReaderFromToWith,
 )
 where
@@ -44,6 +45,8 @@ import qualified Streamly.Internal.Data.Array.Mut as MArray
 import qualified Streamly.Internal.Data.Stream as S
 import qualified Streamly.Internal.Data.Unfold.Type as Un
 import Unsafe.Coerce (unsafeCoerce#)
+import qualified Streamly.FileSystem.File as File
+import Streamly.Internal.System.IO (defaultChunkSize)
 
 -- * Functions that I need but not exists on upstream.
 
@@ -145,6 +148,22 @@ chunkReaderFromToWith = Un.Unfold step inject
                 assert (len <= remaining) $
                   let !remaining' = remaining - len
                   in  S.Yield arr (remaining', bufSize, h)
+
+{-# INLINE readChunks #-}
+readChunks :: FilePath -> S.Stream IO (Array.Array Word8)
+readChunks file = File.withFile file ReadMode (readChunksWith defaultChunkSize)
+
+{-# INLINE readChunksWith #-}
+readChunksWith :: Int -> Handle -> S.Stream IO (Array.Array Word8)
+readChunksWith size h = S.Stream step ()
+  where
+    {-# INLINE [0] step #-}
+    step _ _ = do
+        arr <- getChunk size h
+        return $
+            case Array.byteLength arr of
+                0 -> S.Stop
+                _ -> S.Yield arr ()
 
 -- Copy from streamly-core.
 getChunk :: Int -> Handle -> IO (Array.Array Word8)

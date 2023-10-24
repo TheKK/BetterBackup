@@ -119,6 +119,7 @@ import Better.Internal.Streamly.Crypto.AES (decryptCtr, that_aes)
 import qualified Better.Repository.Class as E
 import Better.Repository.Types (Version (..))
 import qualified Better.Streamly.FileSystem.Dir as Dir
+import qualified Better.Internal.Streamly.Array as BetterArray
 
 data Repository = Repository
   { _repo_putFile :: !(Path Path.Rel Path.File -> F.Fold IO (Array.Array Word8) ())
@@ -202,7 +203,7 @@ localRepo root =
     (flip P.createDirectory 700 . Path.fromAbsDir . (root </>))
     local_exist
     (fmap P.fileSize . P.getFileStatus . Path.fromAbsFile . (root </>))
-    (File.readChunks . Path.fromAbsFile . (root </>))
+    (BetterArray.readChunks . Path.fromAbsFile . (root </>))
     (S.mapM Path.parseRelFile . Dir.read . (root </>))
   where
     {-# NOINLINE local_write #-}
