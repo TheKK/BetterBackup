@@ -38,7 +38,7 @@ import Monad (run_backup_repo_t_from_cwd)
 import qualified Better.Statistics.Backup as BackupSt
 import Control.Concurrent (threadDelay)
 import qualified Effectful as E
-import Better.Statistics.Backup.Class (BackupStatistics, processedFileCount, totalFileCount, processedDirCount, totalDirCount, processedChunkCount, uploadedBytes)
+import Better.Statistics.Backup.Class (BackupStatistics, processedFileCount, totalFileCount, processedDirCount, totalDirCount, processedChunkCount, uploadedBytes, newFileCount, newDirCount, newChunkCount)
 import qualified Effectful.Dispatch.Static.Unsafe as EU
 
 parser_info :: ParserInfo (IO ())
@@ -78,24 +78,34 @@ some_base_dir_read = eitherReader $ first displayException . Path.parseSomeDir
 report_backup_stat :: (BackupStatistics E.:> es, E.IOE E.:> es) => E.Eff es ()
 report_backup_stat = do
   process_file_count <- BackupSt.readStatistics processedFileCount
+  new_file_count <- BackupSt.readStatistics newFileCount
   total_file_count <- BackupSt.readStatistics totalFileCount
   process_dir_count <- BackupSt.readStatistics processedDirCount
+  new_dir_count <- BackupSt.readStatistics newDirCount
   total_dir_count <- BackupSt.readStatistics totalDirCount
   process_chunk_count <- BackupSt.readStatistics processedChunkCount
+  new_chunk_count <- BackupSt.readStatistics newChunkCount
   upload_bytes <- BackupSt.readStatistics uploadedBytes
   liftIO $
     putStrLn $
       fold
-        [ show process_file_count
+        [ "(new "
+        , show new_file_count
+        , ") "
+        , show process_file_count
         , "/"
         , show total_file_count
-        , " files, "
+        , " processed files, (new "
+        , show new_dir_count
+        , ") "
         , show process_dir_count
         , "/"
         , show total_dir_count
-        , " dirs, "
+        , " processed dirs, (new "
+        , show new_chunk_count
+        , ") "
         , show process_chunk_count
-        , " chunks, "
+        , " processed chunks, "
         , show upload_bytes
-        , " bytes"
+        , " uploaded/transfered bytes"
         ]

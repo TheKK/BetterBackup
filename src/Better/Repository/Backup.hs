@@ -35,7 +35,7 @@ import qualified Data.ByteString.Short as BSS
 import Text.Read (readMaybe)
 
 import Control.Applicative ((<|>))
-import Control.Monad (unless)
+import Control.Monad (unless, when)
 import Control.Monad.IO.Class (liftIO)
 
 import Control.Monad.IO.Unlift (MonadUnliftIO)
@@ -172,7 +172,6 @@ fork_or_wait s = \scope io -> do
     Ki.fork scope (restore io `finally` signalQSem s) `onException` signalQSem s
   pure $! atomically $ Ki.await a
 
-
 fork_or_run_directly :: TSem -> Ki.Scope -> IO a -> IO (IO a)
 fork_or_run_directly s = \scope io -> mask $ \restore -> do
   to_fork <- atomically $ (True <$ waitTSem s) <|> pure False
@@ -219,15 +218,14 @@ backup_file ctr tbq rel_file_name = do
     Nothing -> Tmp.withEmptyTmpFile $ \file_name' -> liftIO $ do
       (!file_hash, _) <- withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd ->
         withBinaryFile (Path.fromRelFile rel_file_name) ReadMode $ \fdd ->
-          withBinaryFile (Path.fromRelFile rel_file_name) ReadMode $ \fd_chunking ->
-            Chunker.gearHash Chunker.defaultGearHashConfig (Path.fromRelFile rel_file_name)
-              & S.mapM
-                ( \(Chunker.Chunk b e) -> do
-                    S.unfold chunkReaderFromToWith (b, e - 1, defaultChunkSize, fdd)
-                      & S.fold F.toList
-                )
-              & S.parMapM (S.ordered True . S.maxBuffer 8) (backup_chunk ctr tbq)
-              & S.fold (F.tee hashByteStringFoldIO (F.drainMapM $ BS.hPut fd))
+          Chunker.gearHash Chunker.defaultGearHashConfig (Path.fromRelFile rel_file_name)
+            & S.mapM
+              ( \(Chunker.Chunk b e) -> do
+                  S.unfold chunkReaderFromToWith (b, e - 1, defaultChunkSize, fdd)
+                    & S.fold F.toList
+              )
+            & S.parMapM (S.ordered True . S.maxBuffer 8) (backup_chunk ctr tbq)
+            & S.fold (F.tee hashByteStringFoldIO (F.drainMapM $ BS.hPut fd))
 
       atomically $ writeTBQueue tbq $ UploadFile file_hash file_name' st
       pure file_hash
@@ -299,14 +297,16 @@ backup dir = EU.reallyUnsafeUnliftIO $ \un -> do
                     UploadTree dir_hash file_name' -> do
                       unique_tree_gate dir_hash $
                         do
-                          un (addDir' dir_hash (File.readChunks (Path.fromAbsFile file_name')))
-                          `finally` D.removeFile (Path.fromAbsFile file_name')
+                          added <- un (addDir' dir_hash (File.readChunks (Path.fromAbsFile file_name'))) `finally` D.removeFile (Path.fromAbsFile file_name')
+                          when added $ do
+                            un $ BackupSt.modifyStatistic' BackupSt.newDirCount (+ 1)
                       un $ BackupSt.modifyStatistic' BackupSt.processedDirCount (+ 1)
                     UploadFile file_hash file_name' st -> do
                       unique_file_gate file_hash $
                         do
-                          un (addFile' file_hash (File.readChunks (Path.fromAbsFile file_name')))
-                          `finally` D.removeFile (Path.fromAbsFile file_name')
+                          added <- un (addFile' file_hash (File.readChunks (Path.fromAbsFile file_name'))) `finally` D.removeFile (Path.fromAbsFile file_name')
+                          when added $ do
+                            un $ BackupSt.modifyStatistic' BackupSt.newFileCount (+ 1)
                       un $ do
                         BackupSt.modifyStatistic' BackupSt.processedFileCount (+ 1)
                         BackupCacheLevelDB.saveCurrentFileHash st file_hash
@@ -315,8 +315,10 @@ backup dir = EU.reallyUnsafeUnliftIO $ \un -> do
                       BackupCacheLevelDB.saveCurrentFileHash st file_hash
                     UploadChunk chunk_hash chunk_stream -> do
                       unique_chunk_gate chunk_hash $ un $ do
-                        added_bytes <- addBlob' chunk_hash (S.morphInner liftIO chunk_stream)
-                        BackupSt.modifyStatistic' BackupSt.uploadedBytes (+ fromIntegral added_bytes)
+                        !added_bytes <- fromIntegral <$> addBlob' chunk_hash (S.morphInner liftIO chunk_stream)
+                        when (added_bytes > 0) $ do
+                          BackupSt.modifyStatistic' BackupSt.uploadedBytes (+ added_bytes)
+                          BackupSt.modifyStatistic' BackupSt.newChunkCount (+ 1)
                       un $ BackupSt.modifyStatistic' BackupSt.processedChunkCount (+ 1)
                 )
               & S.fold F.drain
