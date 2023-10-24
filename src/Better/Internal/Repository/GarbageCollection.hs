@@ -6,8 +6,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 module Better.Internal.Repository.GarbageCollection (
   garbageCollection,
@@ -45,16 +45,18 @@ import Better.Internal.Repository.LowLevel (
   folder_tree,
   listFolderFiles,
   listVersions,
-  s2d, removeFiles,
+  removeFiles,
+  s2d,
  )
 
 import Better.Hash (Digest)
-import Control.Concurrent.STM
+import qualified Better.Repository.Class as E
 import Control.Concurrent.Async (replicateConcurrently_)
+import Control.Concurrent.STM
 import Control.Exception (bracket_)
 import System.IO.Error (tryIOError)
-import qualified Better.Repository.Class as E
 
+{-# NOINLINE garbageCollection #-}
 garbageCollection :: (E.Repository E.:> es) => E.Eff es ()
 garbageCollection = gc_tree >>= gc_file >>= gc_chunk
   where
@@ -62,10 +64,11 @@ garbageCollection = gc_tree >>= gc_file >>= gc_chunk
     gc_tree :: (E.Repository E.:> es) => E.Eff es (Set.Set Digest)
     gc_tree = Debug.Trace.traceMarker "gc_tree" $ E.reallyUnsafeUnliftIO $ \un -> do
       (traversal_queue, live_tree_set) <- do
-        trees <- un $
-          listVersions
-            & fmap ver_root
-            & S.fold F.toSet
+        trees <-
+          un $
+            listVersions
+              & fmap ver_root
+              & S.fold F.toSet
 
         q <- newTQueueIO
         atomically $ for_ trees $ writeTQueue q
@@ -119,18 +122,19 @@ garbageCollection = gc_tree >>= gc_file >>= gc_chunk
             Nothing -> pure ()
 
       -- Now marked_set should be filled with live nodes.
-      n <- Set.size <$> readTVarIO live_tree_set
-      putStrLn $ "size of live tree set: " <> show n
+
+      live_tree_set' <- readTVarIO live_tree_set
+      putStrLn $ "size of live tree set: " <> show (Set.size live_tree_set')
 
       -- TODO compact it
       Debug.Trace.traceMarkerIO "gc_tree/delete/begin"
       listFolderFiles folder_tree
         & S.morphInner un
         & S.parMapM
-          (S.eager True . S.maxBuffer 10)
+          (S.eager True . S.maxBuffer 100)
           ( \rel_tree_file -> tryIOError $ do
               tree_sha' <- s2d $ Path.fromRelFile rel_tree_file
-              exist <- Set.member tree_sha' <$> atomically (readTVar live_tree_set)
+              let exist = Set.member tree_sha' live_tree_set'
               unless exist $ void $ tryIOError $ do
                 putStrLn $ "delete tree: " <> Path.toFilePath rel_tree_file
                 un $ removeFiles [folder_tree </> rel_tree_file]
@@ -138,7 +142,7 @@ garbageCollection = gc_tree >>= gc_file >>= gc_chunk
         & S.fold F.drain
       Debug.Trace.traceMarkerIO "gc_tree/delete/end"
 
-      atomically $ readTVar live_file_set
+      pure live_tree_set'
 
     {-# INLINE [2] gc_file #-}
     gc_file :: (E.Repository E.:> es) => Set.Set Digest -> E.Eff es (Set.Set Digest)
@@ -146,7 +150,7 @@ garbageCollection = gc_tree >>= gc_file >>= gc_chunk
       listFolderFiles folder_file
         & S.morphInner un
         & S.parMapM
-          (S.eager True . S.maxBuffer 10)
+          (S.eager True . S.maxBuffer 100)
           ( \rel_file -> do
               file_sha' <- s2d $ Path.fromRelFile rel_file
               let still_alive = Set.member file_sha' live_file_set
@@ -168,7 +172,7 @@ garbageCollection = gc_tree >>= gc_file >>= gc_chunk
       listFolderFiles folder_chunk
         & S.morphInner un
         & S.parMapM
-          (S.eager True . S.maxBuffer 10)
+          (S.eager True . S.maxBuffer 100)
           ( \rel_chunk -> do
               chunk_sha' <- s2d $ Path.fromRelFile rel_chunk
               let exist = Set.member chunk_sha' live_chunk_set
