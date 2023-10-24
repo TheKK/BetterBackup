@@ -290,7 +290,8 @@ addFile'
   :: (E.Repository E.:> es)
   => Digest
   -> S.Stream (E.Eff es) (Array.Array Word8)
-  -> E.Eff es ()
+  -> E.Eff es Bool
+  -- ^ Dir added.
 addFile' digest chunks = do
   file_name' <- Path.parseRelFile $ show digest
   let f = folder_file </> file_name'
@@ -298,12 +299,14 @@ addFile' digest chunks = do
   unless exist $ do
     putFileFold <- mkPutFileFold
     chunks & S.fold (putFileFold f)
+  pure $! not exist
 
 addDir'
   :: (E.Repository E.:> es)
   => Digest
   -> S.Stream (E.Eff es) (Array.Array Word8)
-  -> E.Eff es ()
+  -> E.Eff es Bool
+  -- ^ Dir added.
 addDir' digest chunks = do
   file_name' <- Path.parseRelFile $ show digest
   let f = folder_tree </> file_name'
@@ -311,6 +314,7 @@ addDir' digest chunks = do
   unless exist $ do
     putFileFold <- mkPutFileFold
     chunks & S.fold (putFileFold f)
+  pure $! not exist
 
 addVersion
   :: (E.Repository E.:> es)
