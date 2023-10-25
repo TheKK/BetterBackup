@@ -97,13 +97,14 @@ library better-core
       Better.Repository.BackupCache.Class
       Better.Repository.BackupCache.LevelDB
       Better.Hash
+      Better.Logging.Effect
       Better.TempDir
       Better.TempDir.Class
       Better.Statistics.Backup
       Better.Statistics.Backup.Class
       Better.Statistics.Backup.Default
     other-modules:
-    build-depends:  vector, random, splitmix, leveldb-haskell, binary, ki, parallel, fusion-plugin-types, hedgehog, blake3, ghc-prim, async, primitive, stm-containers, hashable, temporary, effectful-core, effectful-th
+    build-depends:  vector, random, splitmix, leveldb-haskell, binary, ki, parallel, fusion-plugin-types, hedgehog, blake3, ghc-prim, async, primitive, stm-containers, hashable, temporary, effectful-core, effectful-th, katip
     hs-source-dirs:   src
     default-language: Haskell2010
 
