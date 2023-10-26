@@ -52,7 +52,8 @@ import Better.Internal.Streamly.Array (ArrayBA (ArrayBA))
 
 import Control.Parallel.Strategies (NFData)
 
-import Control.Monad (replicateM)
+import Control.Monad.ST (ST, stToIO)
+import Control.Monad.ST.Unsafe (unsafeIOToST)
 
 import qualified Foreign.Marshal as Alloc
 
@@ -86,67 +87,43 @@ digestFromByteString bs
   | BS.length bs == digestSize = Just $! Digest $ BSS.toShort bs
   | otherwise = Nothing
 
-hashByteStringFold :: Monad m => F.Fold m BS.ByteString Digest
-hashByteStringFold = fmap Digest hash_blake3
+hashByteStringFold :: F.Fold (ST s) BS.ByteString Digest
+hashByteStringFold = fmap Digest hash_blake3_st
 {-# INLINE hashByteStringFold #-}
 
 hashByteStringFoldIO :: F.Fold IO BS.ByteString Digest
-hashByteStringFoldIO = fmap Digest hash_blake3_io
+hashByteStringFoldIO = F.morphInner stToIO hashByteStringFold
 {-# INLINE hashByteStringFoldIO #-}
 
-hashArrayFold :: Monad m => F.Fold m (Array.Array Word8) Digest
-hashArrayFold = F.lmap ArrayBA $ fmap Digest hash_blake3
+hashArrayFold :: F.Fold (ST s) (Array.Array Word8) Digest
+hashArrayFold = F.lmap ArrayBA $ fmap Digest hash_blake3_st
 {-# INLINE hashArrayFold #-}
 
 hashArrayFoldIO :: F.Fold IO (Array.Array Word8) Digest
-hashArrayFoldIO = F.lmap ArrayBA $ fmap Digest hash_blake3_io
+hashArrayFoldIO = F.morphInner stToIO hashArrayFold
 {-# INLINE hashArrayFoldIO #-}
 
--- | IO version of blake3 hash
+-- | ST version of blake3 hash
 --
--- When you're able to do run stuff in IO monad, prefer using this one.
---
--- The benefit of IO version is low overhead of memory allocation.
---
--- The drawback of IO version is that you need to run them in IO, which might not
--- always the case.
-{-# INLINE hash_blake3_io #-}
-hash_blake3_io :: (BA.ByteArrayAccess ba) => F.Fold IO ba BSS.ShortByteString
-hash_blake3_io = F.rmapM extract $ F.foldlM' step s0
+-- The benefit of converting IO to ST is low overhead of memory allocation, comparing to pure version.
+{-# INLINE hash_blake3_st #-}
+hash_blake3_st :: (BA.ByteArrayAccess ba) => F.Fold (ST s) ba BSS.ShortByteString
+hash_blake3_st = F.rmapM extract $ F.foldlM' step s0
   where
-    s0 = BAS.alloc @_ @BLAKE3.Hasher $ flip BIO.init Nothing
+    -- It's safe to unsafeIOToST here since s0 is only visible by 'step' and 'extract'.
+    s0 = unsafeIOToST $ BAS.alloc @_ @BLAKE3.Hasher $ flip BIO.init Nothing
 
+    -- It's safe to unsafeIOToST here since we only do memroy operations in IO.
     {-# INLINE [0] step #-}
-    step (!hasher :: BLAKE3.Hasher) !bs = do
+    step (!hasher :: BLAKE3.Hasher) !bs = unsafeIOToST $ do
       BA.withByteArray hasher $ \hasher_ptr -> BA.withByteArray bs $ \bs_ptr ->
         BIO.c_update hasher_ptr bs_ptr $! fromIntegral (BA.length bs)
       pure $! hasher
 
+    -- It's safe to unsafeIOToST here since we only do memroy operations in IO, and returns ShortByteString
+    -- which doesn't expose state inside ST.
     {-# INLINE [0] extract #-}
-    extract !hasher =
+    extract !hasher = unsafeIOToST $ do
       BA.withByteArray hasher $ \hasher_ptr -> Alloc.allocaBytes digestSize $ \buf_ptr -> do
         BIO.c_finalize hasher_ptr buf_ptr $! fromIntegral digestSize
         BSS.createFromPtr buf_ptr digestSize
-
--- | Pure version of blake3 hash
---
--- The benefit of pure version which is obvious: purity and referential transparency.
---
--- The drawback of pure version is overhead of memory allocation. We have no way to resuse
--- same Hasher during the step process due to pure interface (F.Foldl'). Instead we have to
--- copy them again and again to preserve referential transparency even Hasher never escapes
--- from these function.
---
--- We've tried using unsafe famliy but had no luck. Seems like that compiler treated `s0` as
--- pure value and share it between multiple call site to cause terrible wrong result.
-{-# INLINE hash_blake3 #-}
-hash_blake3 :: (Monad m, BA.ByteArrayAccess ba) => F.Fold m ba BSS.ShortByteString
-hash_blake3 = extract <$> F.foldl' step s0
-  where
-    s0 = BLAKE3.init Nothing
-
-    {-# INLINE [0] step #-}
-    step !hasher !bs = BLAKE3.update hasher [bs]
-
-    {-# INLINE [0] extract #-}
-    extract !hasher = BSS.toShort . BAS.unSizedByteArray @32 . BLAKE3.finalize $ hasher

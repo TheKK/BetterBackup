@@ -53,6 +53,8 @@ import System.IO (IOMode (ReadMode), withFile)
 import qualified System.Random as Rng
 import qualified System.Random.SplitMix as Sp
 
+import Control.Monad.ST (runST)
+
 import Control.Concurrent.STM
 import qualified Data.ByteArray as BA
 import Data.IORef
@@ -208,9 +210,9 @@ main =
     , env (pure input) $ \input' ->
         bgroup
           "hash"
-          [ bench "Blake3-256-pure" $
+          [ bench "Blake3-256-st" $
               nf
-                (\i -> S.fromList i & S.fold Hash.hashByteStringFold & runIdentity)
+                (\i -> runST $ S.fromList i & S.fold Hash.hashByteStringFold)
                 input'
           , bench "Blake3-256-io" $
               nfAppIO
