@@ -14,6 +14,7 @@ module Better.Repository.BackupCache.LevelDB (
 where
 
 import Control.Monad (replicateM)
+import qualified Data.Binary as Bin
 import qualified Data.Binary.Get as Bin
 import qualified Data.Binary.Put as Bin
 import qualified Data.ByteString as BS
@@ -30,6 +31,7 @@ import qualified Effectful.Dispatch.Static as ES
 
 import Better.Hash (Digest, digestFromByteString, digestSize, digestUnpack)
 import Better.Repository.BackupCache.Class (BackupCache)
+import Control.Applicative ((<|>))
 
 data instance ES.StaticRep BackupCache = BackupCacheStat {-# UNPACK #-} !LV.DB {-# UNPACK #-} !LV.DB
 
@@ -50,9 +52,7 @@ save_to :: LV.DB -> P.FileStatus -> Digest -> IO ()
 save_to db st digest = do
   let !k = key_of_st st
   LV.put db LV.defaultWriteOptions k $
-    BC.toStrict $
-      Bin.runPut $ do
-        for_ (digestUnpack digest) Bin.putWord8
+    BC.toStrict $ Bin.encode digest
 
 read_from :: LV.DB -> P.FileStatus -> IO (Maybe Digest)
 read_from db st = do
@@ -61,7 +61,7 @@ read_from db st = do
     >>= (pure $!) . \case
       Just raw_v' -> do
         flip Bin.runGet (BC.fromStrict raw_v') $ do
-          (digestFromByteString . BS.pack) <$> replicateM digestSize Bin.getWord8
+          fmap Just Bin.get <|> pure Nothing
       Nothing -> Nothing
 
 key_of_st :: P.FileStatus -> BS.ByteString
