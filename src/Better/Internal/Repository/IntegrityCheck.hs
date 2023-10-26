@@ -6,8 +6,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 module Better.Internal.Repository.IntegrityCheck (
   checksum,
@@ -33,24 +33,26 @@ import Better.Internal.Repository.LowLevel (
   folder_chunk,
   folder_file,
   folder_tree,
+  folder_version,
   listFolderFiles,
-  s2d, read,
+  read,
+  s2d,
  )
 
 import Better.Hash (hashArrayFoldIO)
 import qualified Better.Repository.Class as E
 
-import Data.Maybe (fromJust, isJust)
-import Data.Word (Word8)
-import qualified Streamly.Data.Array as Array
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import qualified Control.Monad.IO.Unlift as Un
-import qualified Effectful.Dispatch.Static.Unsafe as E
+import Data.Maybe (fromJust, isJust)
+import Data.Word (Word8)
 import qualified Effectful.Dispatch.Static as E
+import qualified Effectful.Dispatch.Static.Unsafe as E
+import qualified Streamly.Data.Array as Array
 
 checksum :: (E.Repository E.:> es) => Int -> E.Eff es ()
 checksum n = E.reallyUnsafeUnliftIO $ \un -> do
-  S.fromList [folder_tree, folder_file]
+  S.fromList [folder_version, folder_tree, folder_file]
     & S.concatMap
       ( \p ->
           listFolderFiles p
@@ -60,9 +62,10 @@ checksum n = E.reallyUnsafeUnliftIO $ \un -> do
     & S.parMapM
       (S.maxBuffer (n + 1) . S.eager True)
       ( \(expected_sha, f) -> do
-          actual_sha <- un $
-            read f
-              & S.fold (F.morphInner E.unsafeEff_ hashArrayFoldIO)
+          actual_sha <-
+            un $
+              read f
+                & S.fold (F.morphInner E.unsafeEff_ hashArrayFoldIO)
           if show actual_sha == expected_sha
             then pure Nothing
             else pure $ Just (f, actual_sha)
