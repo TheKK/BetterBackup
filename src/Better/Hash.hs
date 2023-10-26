@@ -36,6 +36,9 @@ import qualified Data.ByteString.Short.Internal as BSS
 
 import Data.Hashable (Hashable)
 
+import qualified Data.Binary as Bin
+import qualified Data.Binary.Get as Bin
+
 import qualified Streamly.Data.Array as Array
 import qualified Streamly.Data.Fold as F
 
@@ -49,6 +52,8 @@ import Better.Internal.Streamly.Array (ArrayBA (ArrayBA))
 
 import Control.Parallel.Strategies (NFData)
 
+import Control.Monad (replicateM)
+
 import qualified Foreign.Marshal as Alloc
 
 newtype Digest = Digest BSS.ShortByteString
@@ -57,6 +62,12 @@ newtype Digest = Digest BSS.ShortByteString
 instance Show Digest where
   {-# INLINE show #-}
   show = BSC.unpack . digestToBase16ByteString
+
+instance Bin.Binary Digest where
+  {-# INLINE put #-}
+  put d = mapM_ Bin.put $ digestUnpack d
+  {-# INLINE get #-}
+  get = Digest . BSS.toShort <$> Bin.getByteString digestSize
 
 digestSize :: Int
 digestSize = 32

@@ -75,14 +75,17 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base16 as BS16
 import qualified Data.ByteString.Builder as BB
 import qualified Data.ByteString.Char8 as BSC
-
+import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Lazy.Base16 as BL16
-
 import qualified Data.ByteString.Short as BShort
+
+import qualified Data.Binary as Bin
+
+import qualified Data.ByteArray as BA
 
 import Text.Read (readMaybe)
 
-import Control.Monad (unless)
+import Control.Monad (unless, (<=<))
 import Control.Monad.Catch (MonadThrow, handleIf, throwM)
 
 import qualified Streamly.Data.Array as Array
@@ -113,13 +116,13 @@ import qualified Effectful as E
 import qualified Effectful.Dispatch.Static as E
 import qualified Effectful.Dispatch.Static.Unsafe as E
 
-import Better.Hash (Digest, digestFromByteString, digestToBase16ByteString)
+import Better.Hash (Digest, digestFromByteString, digestToBase16ByteString, hashByteStringFoldIO)
 import Better.Internal.Streamly.Array (ArrayBA (ArrayBA, un_array_ba), fastArrayAsPtrUnsafe)
+import qualified Better.Internal.Streamly.Array as BetterArray
 import Better.Internal.Streamly.Crypto.AES (decryptCtr, that_aes)
 import qualified Better.Repository.Class as E
 import Better.Repository.Types (Version (..))
 import qualified Better.Streamly.FileSystem.Dir as Dir
-import qualified Better.Internal.Streamly.Array as BetterArray
 
 data Repository = Repository
   { _repo_putFile :: !(Path Path.Rel Path.File -> F.Fold IO (Array.Array Word8) ())
@@ -160,21 +163,18 @@ listFolderFiles = mkListFolderFiles
 listVersions :: (E.Repository E.:> es) => S.Stream (E.Eff es) Version
 listVersions =
   listFolderFiles folder_version
-    & S.mapM
-      ( \v -> do
-          v' <- E.unsafeEff_ $ readIO $ Path.fromRelFile v
-          catVersion v'
-      )
+    -- TODO Maybr we could skip invalid version files.
+    & S.mapM (catVersion <=< s2d . Path.fromRelFile)
 
-tryCatingVersion :: (E.Repository E.:> es) => Integer -> E.Eff es (Maybe Version)
-tryCatingVersion vid = do
-  path_vid <- Path.parseRelFile $ show vid
+tryCatingVersion :: (E.Repository E.:> es) => Digest -> E.Eff es (Maybe Version)
+tryCatingVersion digest = do
+  path_digest <- Path.parseRelFile $ show digest
   -- TODO using fileExists could cause issue of TOCTOU,
   -- but trying to get "file does not exist" info from catVersion require all Repository throws
   -- specific exception, which is also hard to achieve.
-  exists <- fileExists $ folder_version </> path_vid
+  exists <- fileExists $ folder_version </> path_digest
   if exists
-    then Just <$> catVersion vid
+    then Just <$> catVersion digest
     else pure Nothing
 
 {-# INLINE write_chunk #-}
@@ -318,14 +318,16 @@ addDir' digest chunks = do
 
 addVersion
   :: (E.Repository E.:> es)
-  => Integer
-  -> Digest
+  => Version
   -> E.Eff es ()
-addVersion v_id v_root = do
-  ver_id_file_name <- Path.parseRelFile $ show v_id
-  let f = folder_version </> ver_id_file_name
+addVersion v = do
+  -- It should be safe to store entire version bytes here since Version is relative small (under hundred of bytes)
+  let version_bytes = BS.toStrict $ Bin.encode v
+  version_digest <- E.unsafeEff_ $ S.fromPure version_bytes & S.fold hashByteStringFoldIO
+  version_digest_filename <- Path.parseRelFile $ show version_digest
+  let f = folder_version </> version_digest_filename
   putFileFold <- mkPutFileFold
-  S.fromPure (Array.fromList $ BS.unpack $ TE.encodeUtf8 $ T.pack $ show v_root)
+  S.fromPure (BetterArray.un_array_ba $ BA.convert version_bytes)
     & S.fold (putFileFold f)
 
 nextBackupVersionId :: (E.Repository E.:> es) => E.Eff es Integer
@@ -377,23 +379,19 @@ getChunkSize sha = do
   sha_path <- E.unsafeEff_ $ Path.parseRelFile $ show sha
   fileSize $ folder_chunk </> sha_path
 
-catVersion :: (E.Repository E.:> es) => Integer -> E.Eff es Version
-catVersion vid = do
-  optSha <-
-    cat_stuff_under folder_version vid
+catVersion :: (E.Repository E.:> es) => Digest -> E.Eff es Version
+catVersion digest = do
+  decode_result <-
+    cat_stuff_under folder_version digest
       & fmap (BB.shortByteString . BShort.pack . Array.toList)
       & S.fold F.mconcat
-      & fmap (BL16.decodeBase16Untyped . BB.toLazyByteString)
+      & fmap (Bin.decodeOrFail @Version . BB.toLazyByteString)
 
-  sha <- case optSha of
-    Left err -> throwM $ userError $ "invalid sha of version, " <> T.unpack err
-    Right sha -> pure $ sha
-
-  digest <- case digestFromByteString $ BS.toStrict sha of
-    Nothing -> throwM $ userError "invalid sha of version"
-    Just digest -> pure digest
-
-  pure $ Version vid digest
+  case decode_result of
+    Left (_, _, err_msg) -> throwM $ userError $ "failed to decode version " <> show digest <> ": " <> err_msg
+    Right (remain_bytes, _, v) -> do
+      unless (BL.null remain_bytes) $ throwM $ userError $ "failed to decode version " <> show digest <> ": there're remaining bytes"
+      pure v
 
 catTree :: (E.Repository E.:> es) => Digest -> S.Stream (E.Eff es) (Either Tree FFile)
 catTree tree_sha' = S.concatEffect $ E.reallyUnsafeUnliftIO $ \un -> do

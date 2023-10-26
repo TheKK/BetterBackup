@@ -32,6 +32,8 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString.Short as BSS
 
+import Data.Time (getCurrentTime)
+
 import Text.Read (readMaybe)
 
 import Control.Applicative ((<|>))
@@ -326,9 +328,11 @@ backup dir = EU.reallyUnsafeUnliftIO $ \un -> do
     atomically $ Ki.awaitAll scope
     pure ret
 
-  version_id <- un nextBackupVersionId
-  un $ addVersion version_id root_hash
-  return $! Version version_id root_hash
+  now <- getCurrentTime
+
+  let v = Version now root_hash
+  un $ addVersion v
+  return v
 
 withEmitUnfoldr :: MonadUnliftIO m => Natural -> (TBQueue e -> m a) -> (S.Stream m e -> m b) -> m (a, b)
 withEmitUnfoldr q_size putter go = Un.withRunInIO $ \un -> do
