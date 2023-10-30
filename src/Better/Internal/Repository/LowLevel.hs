@@ -370,7 +370,7 @@ catChunk digest = S.concatEffect $ E.reallyUnsafeUnliftIO $ \un -> do
   pure $!
     cat_stuff_under folder_chunk digest
       & S.morphInner un
-      & (fmap un_array_ba . decryptCtr aes (32 * 1024) . fmap ArrayBA)
+      & decryptCtr aes (32 * 1024)
       & S.morphInner E.unsafeEff_
 {-# INLINE catChunk #-}
 

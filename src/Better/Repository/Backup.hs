@@ -338,9 +338,7 @@ backup_chunk ctr tbq chunk = do
 
       pure $!
         S.fromList chunk
-          & fmap ArrayBA
           & encryptCtr aes iv (1024 * 32)
-          & fmap un_array_ba
 
   atomically $ writeTBQueue tbq $ UploadChunk chunk_hash encrypted_chunk_stream
 
