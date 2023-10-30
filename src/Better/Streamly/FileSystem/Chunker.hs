@@ -82,11 +82,11 @@ data Chunk = Chunk
   deriving (Show, Eq)
 
 data GearHashConfig = GearHashConfig
-  { gearhash_low_mask :: {-# UNPACK #-} !Word64
-  , gearhash_high_mask :: {-# UNPACK #-} !Word64
-  , gearhash_min_size :: {-# UNPACK #-} !Word32
-  , gearhash_avg_size :: {-# UNPACK #-} !Word32
-  , gearhash_max_size :: {-# UNPACK #-} !Word32
+  { gearhash_low_mask :: Word64
+  , gearhash_high_mask :: Word64
+  , gearhash_min_size :: Word32
+  , gearhash_avg_size :: Word32
+  , gearhash_max_size :: Word32
   }
   deriving (Show)
 
@@ -134,7 +134,7 @@ gearHash cfg = S.unfold (Unfold.bracket (`openFile` ReadMode) hClose $ gearHashW
 data Buf = Buf
   { buf_offset :: {-# UNPACK #-} !Int
   , buf_len :: {-# UNPACK #-} !Int
-  , buf_content :: {-# UNPACK #-} !(Prim.MutableByteArray RealWorld)
+  , buf_content :: !(Prim.MutableByteArray RealWorld)
   }
 
 instance Show Buf where

@@ -1,6 +1,5 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE Strict #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
 
@@ -38,15 +37,15 @@ data BackupStatistics :: E.Effect
 
 type instance E.DispatchOf BackupStatistics = 'E.Static 'ES.WithSideEffects
 data instance E.StaticRep BackupStatistics = BackupStatisticsRep
-  { _backup_stat_processedFileCount :: {-# UNPACK #-} !(TVar Word64)
-  , _backup_stat_newFileCount :: {-# UNPACK #-} !(TVar Word64)
-  , _backup_stat_totalFileCount :: {-# UNPACK #-} !(TVar Word64)
-  , _backup_stat_processedDirCount :: {-# UNPACK #-} !(TVar Word64)
-  , _backup_stat_newDirCount :: {-# UNPACK #-} !(TVar Word64)
-  , _backup_stat_totalDirCount :: {-# UNPACK #-} !(TVar Word64)
-  , _backup_stat_processedChunkCount :: {-# UNPACK #-} !(TVar Word64)
-  , _backup_stat_newChunkCount :: {-# UNPACK #-} !(TVar Word64)
-  , _backup_stat_uploadedBytes :: {-# UNPACK #-} !(TVar Word64)
+  { _backup_stat_processedFileCount :: (TVar Word64)
+  , _backup_stat_newFileCount :: (TVar Word64)
+  , _backup_stat_totalFileCount :: (TVar Word64)
+  , _backup_stat_processedDirCount :: (TVar Word64)
+  , _backup_stat_newDirCount :: (TVar Word64)
+  , _backup_stat_totalDirCount :: (TVar Word64)
+  , _backup_stat_processedChunkCount :: (TVar Word64)
+  , _backup_stat_newChunkCount :: (TVar Word64)
+  , _backup_stat_uploadedBytes :: (TVar Word64)
   }
 
 runBackupStatistics :: (E.IOE E.:> es) => E.Eff (BackupStatistics : es) a -> E.Eff es a

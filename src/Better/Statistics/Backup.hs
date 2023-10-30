@@ -1,4 +1,3 @@
-{-# LANGUAGE Strict #-}
 
 module Better.Statistics.Backup (
   -- | General operations

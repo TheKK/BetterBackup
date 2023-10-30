@@ -94,8 +94,8 @@ import qualified Better.TempDir as Tmp
 import Better.TempDir.Class (Tmp)
 
 data Ctr = Ctr
-  { _ctr_aes :: {-# UNPACK #-} !Cipher.AES128
-  , _ctr_iv :: {-# UNPACK #-} !(TVar (Cipher.IV Cipher.AES128))
+  { _ctr_aes :: Cipher.AES128
+  , _ctr_iv :: (TVar (Cipher.IV Cipher.AES128))
   }
 
 init_iv :: IO (Cipher.IV Cipher.AES128)
@@ -212,10 +212,10 @@ data FFile = FFile
   deriving (Show)
 
 data UploadTask
-  = UploadTree {-# UNPACK #-} !Digest !(Path Path.Abs Path.File)
-  | UploadFile {-# UNPACK #-} !Digest !(Path Path.Abs Path.File) !P.FileStatus
-  | UploadChunk {-# UNPACK #-} !Digest !(S.Stream IO (Array.Array Word8))
-  | FindNoChangeFile {-# UNPACK #-} !Digest !P.FileStatus
+  = UploadTree !Digest !(Path Path.Abs Path.File)
+  | UploadFile !Digest !(Path Path.Abs Path.File) !P.FileStatus
+  | UploadChunk !Digest !(S.Stream IO (Array.Array Word8))
+  | FindNoChangeFile !Digest !P.FileStatus
 
 tree_content :: Either (Path Path.Rel Path.File) (Path Path.Rel Path.Dir) -> Digest -> BS.ByteString
 tree_content file_or_dir hash' =
@@ -278,8 +278,8 @@ fork_or_run_directly s = \scope io -> mask $ \restore -> do
 
 data ForkFns
   = ForkFns
-      {-# UNPACK #-} !(IO Digest -> IO (IO Digest))
-      {-# UNPACK #-} !(IO Digest -> IO (IO Digest))
+      (IO Digest -> IO (IO Digest))
+      (IO Digest -> IO (IO Digest))
 
 backup_dir :: (BackupCache E.:> es, Tmp E.:> es, E.IOE E.:> es) => Ctr -> ForkFns -> TBQueue UploadTask -> Path Path.Rel Path.Dir -> E.Eff es Digest
 backup_dir ctr fork_fns@(ForkFns file_fork_or_not dir_fork_or_not) tbq rel_tree_name = Tmp.withEmptyTmpFile $ \file_name' -> EU.reallyUnsafeUnliftIO $ \un -> do

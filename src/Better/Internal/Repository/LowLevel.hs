@@ -125,14 +125,14 @@ import Better.Repository.Types (Version (..))
 import qualified Better.Streamly.FileSystem.Dir as Dir
 
 data Repository = Repository
-  { _repo_putFile :: !(Path Path.Rel Path.File -> F.Fold IO (Array.Array Word8) ())
-  , _repo_removeFiles :: !([Path Path.Rel Path.File] -> IO ())
+  { _repo_putFile :: (Path Path.Rel Path.File -> F.Fold IO (Array.Array Word8) ())
+  , _repo_removeFiles :: ([Path Path.Rel Path.File] -> IO ())
   , -- TODO File mode?
-    _repo_createDirectory :: !(Path Path.Rel Path.Dir -> IO ())
-  , _repo_fileExists :: !(Path Path.Rel Path.File -> IO Bool)
-  , _repo_fileSize :: !(Path Path.Rel Path.File -> IO FileOffset)
-  , _repo_read :: !(Path Path.Rel Path.File -> S.Stream IO (Array.Array Word8))
-  , _repo_listFolderFiles :: !(Path Path.Rel Path.Dir -> S.Stream IO (Path Path.Rel Path.File))
+    _repo_createDirectory :: (Path Path.Rel Path.Dir -> IO ())
+  , _repo_fileExists :: (Path Path.Rel Path.File -> IO Bool)
+  , _repo_fileSize :: (Path Path.Rel Path.File -> IO FileOffset)
+  , _repo_read :: (Path Path.Rel Path.File -> S.Stream IO (Array.Array Word8))
+  , _repo_listFolderFiles :: (Path Path.Rel Path.Dir -> S.Stream IO (Path Path.Rel Path.File))
   }
 
 data Tree = Tree

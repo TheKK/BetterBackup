@@ -1,4 +1,3 @@
-{-# LANGUAGE Strict #-}
 {-# LANGUAGE FlexibleContexts #-}
 
 module Better.Streamly.FileSystem.Dir
