@@ -74,12 +74,14 @@ import System.Environment (lookupEnv)
 import System.IO (IOMode (ReadMode, WriteMode), withBinaryFile)
 
 import qualified Effectful as E
+import qualified Effectful.Dispatch.Static.Unsafe as E
 import qualified Effectful.Dispatch.Static.Unsafe as EU
 
 import Better.Hash (Digest, digestToBase16ShortByteString, hashArrayFoldIO, hashByteStringFoldIO)
-import Better.Internal.Repository.LowLevel (Version (Version), addBlob', addDir', addFile', addVersion, d2b, nextBackupVersionId)
+import Better.Internal.Repository.LowLevel (Version (Version), addBlob', addDir', addFile', addVersion, d2b)
 import Better.Internal.Streamly.Array (ArrayBA (ArrayBA, un_array_ba), chunkReaderFromToWith)
 import Better.Internal.Streamly.Crypto.AES (encryptCtr, that_aes)
+import qualified Better.Logging.Effect as E
 import Better.Repository.BackupCache.Class (BackupCache)
 import qualified Better.Repository.BackupCache.LevelDB as BackupCacheLevelDB
 import qualified Better.Repository.Class as E
@@ -109,6 +111,93 @@ init_ctr = do
 
   iv <- newTVarIO =<< init_iv
   pure $! Ctr aes iv
+
+backup :: (E.Logging E.:> es, E.Repository E.:> es, BackupCache E.:> es, Tmp E.:> es, BackupStatistics E.:> es, E.IOE E.:> es) => T.Text -> E.Eff es Version
+backup dir = do
+  rel_dir <- liftIO $ Path.parseRelDir $ T.unpack dir
+
+  root_digest <- run_backup $ \scope ctr fork_fns tbq -> do
+    stat_async <- E.reallyUnsafeUnliftIO $ \un -> Ki.fork scope (un $ collect_dir_and_file_statistics rel_dir)
+    root_digest <- backup_dir ctr fork_fns tbq rel_dir
+    liftIO $ atomically $ Ki.await stat_async
+    pure root_digest
+
+  -- TODO getCurrentTime inside addVersion for better interface.
+  now <- liftIO getCurrentTime
+  let !v = Version now root_digest
+  addVersion v
+  return v
+
+-- TODO Extract part of this function into a separated effect.
+run_backup
+  :: (E.Logging E.:> es, E.Repository E.:> es, BackupCache E.:> es, Tmp E.:> es, BackupStatistics E.:> es, E.IOE E.:> es)
+  => (Ki.Scope -> Ctr -> ForkFns -> TBQueue UploadTask -> E.Eff es a)
+  -> E.Eff es a
+run_backup m = EU.reallyUnsafeUnliftIO $ \un -> do
+  let
+    mk_uniq_gate = do
+      running_set <- STMSet.newIO @Digest
+      pure $ \ !hash' !m -> do
+        !other_is_running <- atomically $ do
+          !exist <- STMSet.lookup hash' running_set
+          unless exist $ STMSet.insert hash' running_set
+          pure exist
+        unless other_is_running $
+          m `finally` atomically (STMSet.delete hash' running_set)
+
+  unique_chunk_gate <- mk_uniq_gate
+  unique_tree_gate <- mk_uniq_gate
+  unique_file_gate <- mk_uniq_gate
+
+  ctr <- init_ctr
+
+  Ki.scoped $ \scope -> do
+    fork_fns <- do
+      sem_for_dir <- mk_sem_for_dir
+      sem_for_file <- mk_sem_for_file
+      pure $ ForkFns (fork_or_wait sem_for_file scope) (fork_or_run_directly sem_for_dir scope)
+
+    (ret, ()) <-
+      withEmitUnfoldr
+        20
+        (\tbq -> un $ m scope ctr fork_fns tbq)
+        ( \s ->
+            s
+              & S.parMapM
+                (S.maxBuffer 100 . S.eager True)
+                ( \case
+                    UploadTree dir_hash file_name' -> do
+                      unique_tree_gate dir_hash $
+                        do
+                          added <- un (addDir' dir_hash (File.readChunks (Path.fromAbsFile file_name'))) `finally` D.removeFile (Path.fromAbsFile file_name')
+                          when added $ do
+                            un $ BackupSt.modifyStatistic' BackupSt.newDirCount (+ 1)
+                      un $ BackupSt.modifyStatistic' BackupSt.processedDirCount (+ 1)
+                    UploadFile file_hash file_name' st -> do
+                      unique_file_gate file_hash $
+                        do
+                          added <- un (addFile' file_hash (File.readChunks (Path.fromAbsFile file_name'))) `finally` D.removeFile (Path.fromAbsFile file_name')
+                          when added $ do
+                            un $ BackupSt.modifyStatistic' BackupSt.newFileCount (+ 1)
+                      un $ do
+                        BackupSt.modifyStatistic' BackupSt.processedFileCount (+ 1)
+                        BackupCacheLevelDB.saveCurrentFileHash st file_hash
+                    FindNoChangeFile file_hash st -> un $ do
+                      BackupSt.modifyStatistic' BackupSt.processedFileCount (+ 1)
+                      BackupCacheLevelDB.saveCurrentFileHash st file_hash
+                    UploadChunk chunk_hash chunk_stream -> do
+                      unique_chunk_gate chunk_hash $ un $ do
+                        !added_bytes <- fromIntegral <$> addBlob' chunk_hash (S.morphInner liftIO chunk_stream)
+                        when (added_bytes > 0) $ do
+                          BackupSt.modifyStatistic' BackupSt.uploadedBytes (+ added_bytes)
+                          BackupSt.modifyStatistic' BackupSt.newChunkCount (+ 1)
+                      un $ BackupSt.modifyStatistic' BackupSt.processedChunkCount (+ 1)
+                )
+              & S.fold F.drain
+        )
+    -- TODO how should we handle scope at the end of run_backup?
+    atomically $ Ki.awaitAll scope
+    pure ret
 
 data Tree = Tree
   { tree_name :: {-# UNPACK #-} !T.Text
@@ -256,83 +345,6 @@ backup_chunk ctr tbq chunk = do
   atomically $ writeTBQueue tbq $ UploadChunk chunk_hash encrypted_chunk_stream
 
   pure $! BSS.fromShort $ (digestToBase16ShortByteString chunk_hash) `BSS.snoc` 0x0a
-
-backup
-  :: (E.Repository E.:> es, BackupCache E.:> es, Tmp E.:> es, BackupStatistics E.:> es, E.IOE E.:> es)
-  => T.Text
-  -> E.Eff es Version
-backup dir = EU.reallyUnsafeUnliftIO $ \un -> do
-  let
-    mk_uniq_gate = do
-      running_set <- STMSet.newIO @Digest
-      pure $ \ !hash' !m -> do
-        !other_is_running <- atomically $ do
-          !exist <- STMSet.lookup hash' running_set
-          unless exist $ STMSet.insert hash' running_set
-          pure exist
-        unless other_is_running $
-          m `finally` atomically (STMSet.delete hash' running_set)
-
-  unique_chunk_gate <- mk_uniq_gate
-  unique_tree_gate <- mk_uniq_gate
-  unique_file_gate <- mk_uniq_gate
-
-  ctr <- init_ctr
-  rel_dir <- Path.parseRelDir $ T.unpack dir
-
-  (root_hash, _) <- Ki.scoped $ \scope -> do
-    fork_fns <- do
-      sem_for_dir <- mk_sem_for_dir
-      sem_for_file <- mk_sem_for_file
-      pure $ ForkFns (fork_or_wait sem_for_file scope) (fork_or_run_directly sem_for_dir scope)
-
-    _ <- Ki.fork scope (un $ collect_dir_and_file_statistics rel_dir)
-    ret <-
-      withEmitUnfoldr
-        20
-        (\tbq -> un $ backup_dir ctr fork_fns tbq rel_dir)
-        ( \s ->
-            s
-              & S.parMapM
-                (S.maxBuffer 100 . S.eager True)
-                ( \case
-                    UploadTree dir_hash file_name' -> do
-                      unique_tree_gate dir_hash $
-                        do
-                          added <- un (addDir' dir_hash (File.readChunks (Path.fromAbsFile file_name'))) `finally` D.removeFile (Path.fromAbsFile file_name')
-                          when added $ do
-                            un $ BackupSt.modifyStatistic' BackupSt.newDirCount (+ 1)
-                      un $ BackupSt.modifyStatistic' BackupSt.processedDirCount (+ 1)
-                    UploadFile file_hash file_name' st -> do
-                      unique_file_gate file_hash $
-                        do
-                          added <- un (addFile' file_hash (File.readChunks (Path.fromAbsFile file_name'))) `finally` D.removeFile (Path.fromAbsFile file_name')
-                          when added $ do
-                            un $ BackupSt.modifyStatistic' BackupSt.newFileCount (+ 1)
-                      un $ do
-                        BackupSt.modifyStatistic' BackupSt.processedFileCount (+ 1)
-                        BackupCacheLevelDB.saveCurrentFileHash st file_hash
-                    FindNoChangeFile file_hash st -> un $ do
-                      BackupSt.modifyStatistic' BackupSt.processedFileCount (+ 1)
-                      BackupCacheLevelDB.saveCurrentFileHash st file_hash
-                    UploadChunk chunk_hash chunk_stream -> do
-                      unique_chunk_gate chunk_hash $ un $ do
-                        !added_bytes <- fromIntegral <$> addBlob' chunk_hash (S.morphInner liftIO chunk_stream)
-                        when (added_bytes > 0) $ do
-                          BackupSt.modifyStatistic' BackupSt.uploadedBytes (+ added_bytes)
-                          BackupSt.modifyStatistic' BackupSt.newChunkCount (+ 1)
-                      un $ BackupSt.modifyStatistic' BackupSt.processedChunkCount (+ 1)
-                )
-              & S.fold F.drain
-        )
-    atomically $ Ki.awaitAll scope
-    pure ret
-
-  now <- getCurrentTime
-
-  let v = Version now root_hash
-  un $ addVersion v
-  return v
 
 withEmitUnfoldr :: MonadUnliftIO m => Natural -> (TBQueue e -> m a) -> (S.Stream m e -> m b) -> m (a, b)
 withEmitUnfoldr q_size putter go = Un.withRunInIO $ \un -> do
