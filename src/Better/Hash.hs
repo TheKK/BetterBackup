@@ -81,6 +81,7 @@ digestToBase16ByteString = BSS.fromShort . digestToBase16ShortByteString
 
 digestToBase16ShortByteString :: Digest -> BSS.ShortByteString
 digestToBase16ShortByteString (Digest di) = B16.extractBase16 $ BSS16.encodeBase16' di
+{-# INLINE digestToBase16ShortByteString #-}
 
 digestFromByteString :: BS.ByteString -> Maybe Digest
 digestFromByteString bs

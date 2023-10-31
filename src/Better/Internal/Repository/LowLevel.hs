@@ -71,6 +71,8 @@ import qualified Data.Text.Encoding as TE
 
 import Data.Maybe (fromMaybe)
 
+import qualified Data.Base16.Types as Base16
+
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base16 as BS16
 import qualified Data.ByteString.Builder as BB
@@ -78,6 +80,9 @@ import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Lazy.Base16 as BL16
 import qualified Data.ByteString.Short as BShort
+import qualified Data.ByteString.Short.Base16 as BSS16
+
+import qualified Codec.Binary.UTF8.String as UTF8
 
 import qualified Data.Binary as Bin
 
@@ -116,7 +121,7 @@ import qualified Effectful as E
 import qualified Effectful.Dispatch.Static as E
 import qualified Effectful.Dispatch.Static.Unsafe as E
 
-import Better.Hash (Digest, digestFromByteString, digestToBase16ByteString, hashByteStringFoldIO)
+import Better.Hash (Digest, digestFromByteString, digestToBase16ByteString, hashByteStringFoldIO, digestToBase16ShortByteString)
 import Better.Internal.Streamly.Array (ArrayBA (ArrayBA, un_array_ba), fastArrayAsPtrUnsafe)
 import qualified Better.Internal.Streamly.Array as BetterArray
 import Better.Internal.Streamly.Crypto.AES (decryptCtr, that_aes)
@@ -276,7 +281,7 @@ addBlob'
   -> E.Eff es Word32
   -- ^ Bytes written
 addBlob' digest chunks = do
-  file_name' <- Path.parseRelFile $ show digest
+  file_name' <- Path.parseRelFile $ digest_to_base16_filepath digest
   let f = folder_chunk </> file_name'
   exist <- fileExists f
   if exist
@@ -293,7 +298,7 @@ addFile'
   -> E.Eff es Bool
   -- ^ Dir added.
 addFile' digest chunks = do
-  file_name' <- Path.parseRelFile $ show digest
+  file_name' <- Path.parseRelFile $ digest_to_base16_filepath digest
   let f = folder_file </> file_name'
   exist <- fileExists f
   unless exist $ do
@@ -308,7 +313,7 @@ addDir'
   -> E.Eff es Bool
   -- ^ Dir added.
 addDir' digest chunks = do
-  file_name' <- Path.parseRelFile $ show digest
+  file_name' <- Path.parseRelFile $ digest_to_base16_filepath digest
   let f = folder_tree </> file_name'
   exist <- fileExists f
   unless exist $ do
@@ -442,6 +447,9 @@ s2d sha = do
     Just digest -> pure digest
 
   pure digest
+
+digest_to_base16_filepath :: Digest -> FilePath
+digest_to_base16_filepath = map (toEnum . fromIntegral) . BShort.unpack . digestToBase16ShortByteString
 
 d2b :: Digest -> BS.ByteString
 d2b = digestToBase16ByteString
