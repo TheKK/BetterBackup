@@ -135,7 +135,7 @@ data instance E.StaticRep RepositoryWrite = RepositoryWriteRep {-# UNPACK #-} !K
 -- TODO Extract part of this function into a separated effect.
 run_backup
   :: (E.Logging E.:> es, E.Repository E.:> es, BackupCache E.:> es, Tmp E.:> es, BackupStatistics E.:> es, E.IOE E.:> es)
-  => (Ki.Scope -> Ctr -> ForkFns -> TBQueue UploadTask -> E.Eff (RepositoryWrite : es) a)
+  => E.Eff (RepositoryWrite : es) a
   -> E.Eff es a
 run_backup m = EU.reallyUnsafeUnliftIO $ \un -> do
   let
@@ -164,7 +164,7 @@ run_backup m = EU.reallyUnsafeUnliftIO $ \un -> do
     (ret, ()) <-
       withEmitUnfoldr
         20
-        (\tbq -> un $ E.evalStaticRep (RepositoryWriteRep scope fork_fns tbq ctr) $ m scope ctr fork_fns tbq)
+        (\tbq -> un $ E.evalStaticRep (RepositoryWriteRep scope fork_fns tbq ctr) m)
         ( \s ->
             s
               & S.parMapM
