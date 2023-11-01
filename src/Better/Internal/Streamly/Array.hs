@@ -23,8 +23,6 @@ import Control.Monad ()
 import qualified Streamly.Data.Fold as F
 import qualified Streamly.Internal.Data.Fold as F
 
-import Better.Repository.Class ()
-
 import Data.ByteArray (ByteArrayAccess (..))
 import qualified Data.ByteArray as BA
 

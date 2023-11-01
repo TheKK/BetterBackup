@@ -7,8 +7,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
-{-# LANGUAGE UndecidableInstances #-}
 
 module Better.Repository.Backup (
   backup,
@@ -74,6 +74,7 @@ import System.Environment (lookupEnv)
 import System.IO (IOMode (ReadMode, WriteMode), withBinaryFile)
 
 import qualified Effectful as E
+import qualified Effectful.Dispatch.Static as E
 import qualified Effectful.Dispatch.Static.Unsafe as E
 import qualified Effectful.Dispatch.Static.Unsafe as EU
 
@@ -84,6 +85,7 @@ import Better.Internal.Streamly.Crypto.AES (encryptCtr, that_aes)
 import qualified Better.Logging.Effect as E
 import Better.Repository.BackupCache.Class (BackupCache)
 import qualified Better.Repository.BackupCache.LevelDB as BackupCacheLevelDB
+import Better.Repository.Class (RepositoryWrite)
 import qualified Better.Repository.Class as E
 import qualified Better.Statistics.Backup as BackupSt
 import Better.Statistics.Backup.Class (BackupStatistics)
@@ -128,10 +130,12 @@ backup dir = do
   addVersion v
   return v
 
+data instance E.StaticRep RepositoryWrite = RepositoryWriteRep {-# UNPACK #-} !Ki.Scope {-# UNPACK #-} !ForkFns {-# UNPACK #-} !(TBQueue UploadTask) {-# UNPACK #-} !Ctr
+
 -- TODO Extract part of this function into a separated effect.
 run_backup
   :: (E.Logging E.:> es, E.Repository E.:> es, BackupCache E.:> es, Tmp E.:> es, BackupStatistics E.:> es, E.IOE E.:> es)
-  => (Ki.Scope -> Ctr -> ForkFns -> TBQueue UploadTask -> E.Eff es a)
+  => (Ki.Scope -> Ctr -> ForkFns -> TBQueue UploadTask -> E.Eff (RepositoryWrite : es) a)
   -> E.Eff es a
 run_backup m = EU.reallyUnsafeUnliftIO $ \un -> do
   let
@@ -160,7 +164,7 @@ run_backup m = EU.reallyUnsafeUnliftIO $ \un -> do
     (ret, ()) <-
       withEmitUnfoldr
         20
-        (\tbq -> un $ m scope ctr fork_fns tbq)
+        (\tbq -> un $ E.evalStaticRep (RepositoryWriteRep scope fork_fns tbq ctr) $ m scope ctr fork_fns tbq)
         ( \s ->
             s
               & S.parMapM
@@ -281,15 +285,16 @@ data ForkFns
       (IO Digest -> IO (IO Digest))
       (IO Digest -> IO (IO Digest))
 
-backup_dir :: (BackupCache E.:> es, Tmp E.:> es, E.IOE E.:> es) => Ctr -> ForkFns -> TBQueue UploadTask -> Path Path.Rel Path.Dir -> E.Eff es Digest
-backup_dir ctr fork_fns@(ForkFns file_fork_or_not dir_fork_or_not) tbq rel_tree_name = Tmp.withEmptyTmpFile $ \file_name' -> EU.reallyUnsafeUnliftIO $ \un -> do
+backup_dir :: (RepositoryWrite E.:> es, BackupCache E.:> es, Tmp E.:> es, E.IOE E.:> es) => Path Path.Rel Path.Dir -> E.Eff es Digest
+backup_dir rel_tree_name = Tmp.withEmptyTmpFile $ \file_name' -> EU.reallyUnsafeUnliftIO $ \un -> do
+  RepositoryWriteRep _ (ForkFns file_fork_or_not dir_fork_or_not) tbq _ <- un $ E.getStaticRep @RepositoryWrite
   (!dir_hash, ()) <- liftIO $ withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
     Dir.readEither rel_tree_name
       & S.mapM
         ( \fod ->
             fmap (tree_content fod) <$> case fod of
-              Left f -> file_fork_or_not $ un $ backup_file ctr tbq $ rel_tree_name </> f
-              Right d -> dir_fork_or_not $ un $ backup_dir ctr fork_fns tbq $ rel_tree_name </> d
+              Left f -> file_fork_or_not $ un $ backup_file $ rel_tree_name </> f
+              Right d -> dir_fork_or_not $ un $ backup_dir $ rel_tree_name </> d
         )
       & S.parSequence (S.ordered True)
       & S.fold (F.tee hashByteStringFoldIO (F.drainMapM $ BC.hPut fd))
@@ -298,15 +303,17 @@ backup_dir ctr fork_fns@(ForkFns file_fork_or_not dir_fork_or_not) tbq rel_tree_
 
   pure dir_hash
 
-backup_file :: (BackupCache E.:> es, Tmp E.:> es, E.IOE E.:> es) => Ctr -> TBQueue UploadTask -> Path Path.Rel Path.File -> E.Eff es Digest
-backup_file ctr tbq rel_file_name = do
+backup_file :: (RepositoryWrite E.:> es, BackupCache E.:> es, Tmp E.:> es, E.IOE E.:> es) => Path Path.Rel Path.File -> E.Eff es Digest
+backup_file rel_file_name = do
+  RepositoryWriteRep _ _ tbq _ <- E.getStaticRep @RepositoryWrite
+
   st <- liftIO $ P.getFileStatus $ Path.fromRelFile rel_file_name
   to_scan <- BackupCacheLevelDB.tryReadingCacheHash st
   case to_scan of
     Just cached_digest -> do
       liftIO $ atomically $ writeTBQueue tbq $ FindNoChangeFile cached_digest st
       pure $! cached_digest
-    Nothing -> Tmp.withEmptyTmpFile $ \file_name' -> liftIO $ do
+    Nothing -> Tmp.withEmptyTmpFile $ \file_name' -> E.reallyUnsafeUnliftIO $ \un -> do
       (!file_hash, _) <- withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd ->
         withBinaryFile (Path.fromRelFile rel_file_name) ReadMode $ \fdd ->
           Chunker.gearHash Chunker.defaultGearHashConfig (Path.fromRelFile rel_file_name)
@@ -315,14 +322,16 @@ backup_file ctr tbq rel_file_name = do
                   S.unfold chunkReaderFromToWith (b, e - 1, defaultChunkSize, fdd)
                     & S.fold F.toList
               )
-            & S.parMapM (S.ordered True . S.maxBuffer 8) (backup_chunk ctr tbq)
+            & S.parMapM (S.ordered True . S.maxBuffer 8) (un . backup_chunk)
             & S.fold (F.tee hashByteStringFoldIO (F.drainMapM $ BS.hPut fd))
 
       atomically $ writeTBQueue tbq $ UploadFile file_hash file_name' st
       pure file_hash
 
-backup_chunk :: Ctr -> TBQueue UploadTask -> [Array.Array Word8] -> IO BS.ByteString
-backup_chunk ctr tbq chunk = do
+backup_chunk :: (RepositoryWrite E.:> es, E.IOE E.:> es) => [Array.Array Word8] -> E.Eff es BS.ByteString
+backup_chunk chunk = E.reallyUnsafeUnliftIO $ \un -> do
+  RepositoryWriteRep _ _ tbq ctr <- un $ E.getStaticRep @RepositoryWrite
+
   (!chunk_hash, !chunk_length) <-
     S.fromList chunk
       & S.fold (F.tee hashArrayFoldIO (F.lmap Array.byteLength F.sum))
