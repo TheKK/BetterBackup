@@ -124,6 +124,7 @@ executable better
       Cli.GarbageCollection
       Cli.IntegrityCheck
       Cli.RestoreTree
+      Cli.VersionFind
       Cli.Ref
       Cli.Ref.Cat
       Config

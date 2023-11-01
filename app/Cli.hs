@@ -58,6 +58,7 @@ import Cli.Backup (parser_info)
 import Cli.GarbageCollection (parser_info)
 import Cli.IntegrityCheck (parser_info)
 import Cli.RestoreTree (parser_info)
+import Cli.VersionFind (parser_info)
 
 import qualified LocalCache
 import Monad (run_readonly_repo_t_from_cwd)
@@ -77,6 +78,7 @@ cmds = info (helper <*> parser) infoMod
         fold
           [ command "init" parser_info_init
           , command "versions" parser_info_versions
+          , command "version" parser_info_version
           , command "backup" Cli.Backup.parser_info
           , command "gc" Cli.GarbageCollection.parser_info
           , command "integrity-check" Cli.IntegrityCheck.parser_info
@@ -100,6 +102,20 @@ parser_info_init = info (helper <*> parser) infoMod
       subparser $
         fold
           [ command "local" parser_info_init_local
+          ]
+
+parser_info_version :: ParserInfo (IO ())
+parser_info_version = info (helper <*> parser) infoMod
+  where
+    infoMod =
+      fold
+        [ progDesc "Version related operations"
+        ]
+
+    parser =
+      subparser $
+        fold
+          [ command "find" Cli.VersionFind.parser_info
           ]
 
 parser_info_init_local :: ParserInfo (IO ())
