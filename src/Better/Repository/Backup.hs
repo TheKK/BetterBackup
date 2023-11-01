@@ -12,6 +12,10 @@
 
 module Better.Repository.Backup (
   backup,
+
+  -- * Backup related functions
+  DirEntry (..),
+  backup_dir_from_list,
 ) where
 
 import Prelude hiding (read)
@@ -118,9 +122,11 @@ backup :: (E.Logging E.:> es, E.Repository E.:> es, BackupCache E.:> es, Tmp E.:
 backup dir = do
   rel_dir <- liftIO $ Path.parseRelDir $ T.unpack dir
 
-  root_digest <- run_backup $ \scope ctr fork_fns tbq -> do
+  root_digest <- run_backup $ do
+    RepositoryWriteRep scope _ _ _ <- E.getStaticRep @RepositoryWrite
+
     stat_async <- E.reallyUnsafeUnliftIO $ \un -> Ki.fork scope (un $ collect_dir_and_file_statistics rel_dir)
-    root_digest <- backup_dir ctr fork_fns tbq rel_dir
+    root_digest <- backup_dir rel_dir
     liftIO $ atomically $ Ki.await stat_async
     pure root_digest
 
@@ -221,6 +227,21 @@ data UploadTask
   | UploadChunk !Digest !(S.Stream IO (Array.Array Word8))
   | FindNoChangeFile !Digest !P.FileStatus
 
+tree_content_from_dir_entry :: DirEntry -> BS.ByteString
+tree_content_from_dir_entry file_or_dir =
+  let
+    !name = case file_or_dir of
+      DirEntryFile _ n -> n
+      DirEntryDir _ n -> n
+    !t = case file_or_dir of
+      DirEntryFile _ _ -> "file"
+      DirEntryDir _ _ -> "dir"
+    !byteshash = d2b $ case file_or_dir of
+      DirEntryFile digest _ -> digest
+      DirEntryDir digest _ -> digest
+  in
+    BS.concat [t, BS.singleton 0x20, name, BS.singleton 0x20, byteshash, BS.singleton 0x0a]
+
 tree_content :: Either (Path Path.Rel Path.File) (Path Path.Rel Path.Dir) -> Digest -> BS.ByteString
 tree_content file_or_dir hash' =
   let
@@ -297,6 +318,21 @@ backup_dir rel_tree_name = Tmp.withEmptyTmpFile $ \file_name' -> EU.reallyUnsafe
               Right d -> dir_fork_or_not $ un $ backup_dir $ rel_tree_name </> d
         )
       & S.parSequence (S.ordered True)
+      & S.fold (F.tee hashByteStringFoldIO (F.drainMapM $ BC.hPut fd))
+
+  liftIO $ atomically $ writeTBQueue tbq $ UploadTree dir_hash file_name'
+
+  pure dir_hash
+
+data DirEntry = DirEntryFile Digest BS.ByteString | DirEntryDir Digest BS.ByteString
+
+backup_dir_from_list :: (RepositoryWrite E.:> es, Tmp E.:> es, E.IOE E.:> es) => [DirEntry] -> E.Eff es Digest
+backup_dir_from_list inputs = Tmp.withEmptyTmpFile $ \file_name' -> do
+  RepositoryWriteRep _ _ tbq _ <- E.getStaticRep @RepositoryWrite
+
+  (!dir_hash, ()) <- liftIO $ withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
+    S.fromList inputs
+      & fmap tree_content_from_dir_entry
       & S.fold (F.tee hashByteStringFoldIO (F.drainMapM $ BC.hPut fd))
 
   liftIO $ atomically $ writeTBQueue tbq $ UploadTree dir_hash file_name'
