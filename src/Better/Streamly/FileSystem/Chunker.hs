@@ -41,8 +41,8 @@ import Data.Foldable (for_)
 import Data.Function (fix, (&))
 import Data.Functor.Identity (runIdentity)
 import Data.List (foldl')
-import Data.Word (Word32, Word64, Word8)
 import qualified Data.Primitive.ByteArray as Prim
+import Data.Word (Word32, Word64, Word8)
 
 import qualified Data.Vector.Unboxed as UV
 
@@ -52,12 +52,12 @@ import qualified Streamly.Internal.Data.Stream as S
 import qualified Streamly.Internal.Data.Unfold.Exception as Unfold
 import Streamly.Internal.Data.Unfold.Type (Unfold (Unfold))
 import Streamly.Internal.System.IO (defaultChunkSize)
+import System.Posix.Temp (mkstemp)
 import qualified System.Random as Rng
 import qualified System.Random.SplitMix as Rng
-import System.Posix.Temp (mkstemp)
 
-import Control.Monad (forM_, unless)
 import Control.Exception (bracket)
+import Control.Monad (forM_, unless)
 
 import System.IO (Handle, IOMode (ReadMode), SeekMode (AbsoluteSeek, RelativeSeek), hClose, hFileSize, hGetBufSome, hIsEOF, hSeek, openFile, withFile)
 
@@ -66,8 +66,8 @@ import qualified Hedgehog.Gen as Gen
 import qualified Hedgehog.Range as Range
 
 import Control.Monad.IO.Class (liftIO)
+import Control.Monad.Primitive (RealWorld)
 import System.Directory (removeFile)
-import Control.Monad.Primitive ( RealWorld )
 
 import Better.Internal.Primitive (withMutableByteArrayContents)
 import System.IO.Temp (withSystemTempFile)
@@ -124,7 +124,7 @@ data SMaybe a = SJust !a | SNothing
 {-# ANN type GearState Fuse #-}
 data GearState s
   = GearFinding !BS.ByteString !Word64 !Int !Int s
-  | GearSeeking !Int Word64 !Int !Int s
+  | GearSeeking !Int !Word64 !Int !Int s
   | GearEnd
 
 {-# INLINE gearHash #-}
@@ -184,20 +184,21 @@ buf_split_at !n buf = (buf_take n buf, buf_drop n buf)
 {-# ANN type GearStateFd Fuse #-}
 data GearStateFd
   = GearFindingFd !Word64 !Int !Int !Handle !Buf
-  | GearSeekingFd !Int Word64 !Int !Int !Handle !Buf
+  | GearSeekingFd !Int !Word64 !Int !Int !Handle !Buf
   | GearEndFd
 
--- TODO Decide to use this or not
+-- NOTE Keep cfg a thunk here make GHC possible to inline step function.
+-- Othersise the expression `(gearHashWithFileUnfold some_cfg)` might be floated out to a global binding.
 {-# INLINE gearHashWithFileUnfold #-}
 gearHashWithFileUnfold :: GearHashConfig -> Unfold IO Handle Chunk
-gearHashWithFileUnfold cfg@(GearHashConfig lomask himask _ avg_chunk_size _) = Unfold step inject
+gearHashWithFileUnfold cfg = Unfold step inject
   where
     min_chunk_size = gearHashConfigMinChunkSize cfg
 
     inject h = do
       buf <- buf_new_pinned defaultChunkSize
       hSeek h AbsoluteSeek 0
-      pure $! GearSeekingFd (fromIntegral $ gearHashConfigMinChunkSize cfg) 0 0 0 h buf
+      pure $ GearSeekingFd (fromIntegral $ gearHashConfigMinChunkSize cfg) 0 0 0 h buf
 
     {-# INLINE [0] step #-}
     step (GearFindingFd last_hash chunk_begin' read_bytes h buf) = do
@@ -219,7 +220,7 @@ gearHashWithFileUnfold cfg@(GearHashConfig lomask himask _ avg_chunk_size _) = U
           let
             bytes_until_max_chunk_size = fromIntegral (gearHashConfigMaxChunkSize cfg) - read_bytes
             (buf_before_max_limit, buf_after_max_limit) = buf_split_at bytes_until_max_chunk_size entire_buf
-          search_break_point_for_muarray read_bytes (fromIntegral avg_chunk_size) last_hash buf_before_max_limit (lomask, himask) >>= \case
+          search_break_point_for_muarray read_bytes (fromIntegral $ gearhash_avg_size cfg) last_hash buf_before_max_limit (gearhash_low_mask cfg, gearhash_high_mask cfg) >>= \case
             -- No breakpoing was found in entire buf, try next block
             (SNothing, !new_gear) ->
               if buf_length buf_after_max_limit == 0
@@ -240,7 +241,7 @@ gearHashWithFileUnfold cfg@(GearHashConfig lomask himask _ avg_chunk_size _) = U
                     remaining_buf = buf_after_max_limit
                     !next_state = next_state_from_remaining_buf new_gear chunk_end' h remaining_buf
 
-                  pure $! S.Yield new_chunk $! next_state
+                  pure $! S.Yield new_chunk next_state
 
             -- Breakpoint was found after reading n bytes from buf, try next block
             (SJust read_bytes_of_arr, !new_gear) -> do
@@ -250,7 +251,7 @@ gearHashWithFileUnfold cfg@(GearHashConfig lomask himask _ avg_chunk_size _) = U
                 remaining_buf = buf_drop read_bytes_of_arr entire_buf
                 !next_state = next_state_from_remaining_buf new_gear chunk_end' h remaining_buf
 
-              pure $! S.Yield new_chunk $! next_state
+              pure $! S.Yield new_chunk next_state
         SNothing ->
           if read_bytes /= 0
             then -- The last chunk to yield
@@ -286,14 +287,16 @@ gearHashWithFileUnfold cfg@(GearHashConfig lomask himask _ avg_chunk_size _) = U
             LT -> GearFindingFd new_gear chunk_end' (fromIntegral min_chunk_size) h (buf_drop (fromIntegral min_chunk_size) buf)
             EQ -> GearFindingFd new_gear chunk_end' (fromIntegral min_chunk_size) h (buf_reset buf)
 
+-- NOTE Keep cfg a thunk here make GHC possible to inline step function.
+-- Othersise the expression `(gearHashPure cfg)` might be floated out to a global binding.
 {-# INLINE gearHashPure #-}
 gearHashPure :: (BA.ByteArrayAccess ba, Monad m) => GearHashConfig -> S.Stream m ba -> S.Stream m Chunk
-gearHashPure (GearHashConfig lomask himask min_chunk_size avg_chunk_size max_chunk_size) (S.Stream !inner_step inner_s0) = S.Stream step $! GearSeeking (fromIntegral min_chunk_size) 0 0 0 inner_s0
+gearHashPure cfg (S.Stream inner_step inner_s0) = S.Stream step $ GearSeeking (fromIntegral $ gearhash_min_size cfg) 0 0 0 inner_s0
   where
     empty_view = BS.empty
 
     maximum_chunk_size_limit :: Int
-    maximum_chunk_size_limit = fromIntegral max_chunk_size * 2
+    maximum_chunk_size_limit = fromIntegral (gearhash_max_size cfg) * 2
 
     {-# INLINE [0] step #-}
     step st (GearFinding buf' last_hash chunk_begin' read_bytes inner_s) = do
@@ -305,7 +308,7 @@ gearHashPure (GearHashConfig lomask himask min_chunk_size avg_chunk_size max_chu
       case ret of
         S.Yield !entire_buf next_inner_s -> do
           let (buf_before_max_limit, buf_after_max_limit) = BS.splitAt (maximum_chunk_size_limit - read_bytes) entire_buf
-          case search_break_point read_bytes (fromIntegral avg_chunk_size) last_hash buf_before_max_limit (lomask, himask) of
+          case search_break_point read_bytes (fromIntegral $ gearhash_avg_size cfg) last_hash buf_before_max_limit (gearhash_low_mask cfg, gearhash_high_mask cfg) of
             -- No breakpoing was found in entire buf, try next block
             (SNothing, !new_gear) ->
               if BS.null buf_after_max_limit
@@ -372,11 +375,14 @@ gearHashPure (GearHashConfig lomask himask min_chunk_size avg_chunk_size max_chu
     {-# INLINE next_state_from_remaining_buf #-}
     next_state_from_remaining_buf :: BS.ByteString -> Word64 -> Int -> s -> GearState s
     next_state_from_remaining_buf !remaining_buf !new_gear !chunk_end' next_inner_s =
-      let remaining_buf_length = BS.length remaining_buf
-      in  case fromIntegral min_chunk_size `compare` remaining_buf_length of
-            GT -> GearSeeking (fromIntegral min_chunk_size - remaining_buf_length) new_gear chunk_end' remaining_buf_length next_inner_s
-            LT -> GearFinding (BS.drop (fromIntegral min_chunk_size) remaining_buf) new_gear chunk_end' (fromIntegral min_chunk_size) next_inner_s
-            EQ -> GearFinding empty_view new_gear chunk_end' (fromIntegral min_chunk_size) next_inner_s
+      let
+        remaining_buf_length = BS.length remaining_buf
+        min_chunk_size = gearhash_min_size cfg
+      in
+        case fromIntegral (gearhash_min_size cfg) `compare` remaining_buf_length of
+          GT -> GearSeeking (fromIntegral min_chunk_size - remaining_buf_length) new_gear chunk_end' remaining_buf_length next_inner_s
+          LT -> GearFinding (BS.drop (fromIntegral min_chunk_size) remaining_buf) new_gear chunk_end' (fromIntegral min_chunk_size) next_inner_s
+          EQ -> GearFinding empty_view new_gear chunk_end' (fromIntegral min_chunk_size) next_inner_s
 
 {-# INLINE search_break_point #-}
 search_break_point :: Int -> Int -> Word64 -> BS.ByteString -> (Word64, Word64) -> (SMaybe Int, Word64)
