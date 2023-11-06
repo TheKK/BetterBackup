@@ -36,6 +36,8 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC
 import qualified Data.ByteString.Short as BSS
 
+import Data.Foldable (for_)
+
 import Data.Time (getCurrentTime)
 
 import Text.Read (readMaybe)
@@ -309,7 +311,7 @@ data ForkFns
 backup_dir :: (RepositoryWrite E.:> es, BackupCache E.:> es, Tmp E.:> es, E.IOE E.:> es) => Path Path.Rel Path.Dir -> E.Eff es Digest
 backup_dir rel_tree_name = Tmp.withEmptyTmpFile $ \file_name' -> EU.reallyUnsafeUnliftIO $ \un -> do
   RepositoryWriteRep _ (ForkFns file_fork_or_not dir_fork_or_not) tbq _ <- un $ E.getStaticRep @RepositoryWrite
-  (!dir_hash, ()) <- liftIO $ withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
+  !dir_hash <- liftIO $ withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
     Dir.readEither rel_tree_name
       & S.mapM
         ( \fod ->
@@ -318,7 +320,8 @@ backup_dir rel_tree_name = Tmp.withEmptyTmpFile $ \file_name' -> EU.reallyUnsafe
               Right d -> dir_fork_or_not $ un $ backup_dir $ rel_tree_name </> d
         )
       & S.parSequence (S.ordered True)
-      & S.fold (F.tee hashByteStringFoldIO (F.drainMapM $ BC.hPut fd))
+      & S.trace (BC.hPut fd)
+      & S.fold hashByteStringFoldIO
 
   liftIO $ atomically $ writeTBQueue tbq $ UploadTree dir_hash file_name'
 
@@ -326,14 +329,17 @@ backup_dir rel_tree_name = Tmp.withEmptyTmpFile $ \file_name' -> EU.reallyUnsafe
 
 data DirEntry = DirEntryFile Digest BS.ByteString | DirEntryDir Digest BS.ByteString
 
-backup_dir_from_list :: (RepositoryWrite E.:> es, Tmp E.:> es, E.IOE E.:> es) => [DirEntry] -> E.Eff es Digest
+backup_dir_from_list :: (RepositoryWrite E.:> es, BackupStatistics E.:> es, Tmp E.:> es, E.IOE E.:> es) => [DirEntry] -> E.Eff es Digest
 backup_dir_from_list inputs = Tmp.withEmptyTmpFile $ \file_name' -> do
   RepositoryWriteRep _ _ tbq _ <- E.getStaticRep @RepositoryWrite
 
-  (!dir_hash, ()) <- liftIO $ withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
+  BackupSt.modifyStatistic' BackupSt.totalDirCount (+ 1)
+
+  !dir_hash <- liftIO $ withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
     S.fromList inputs
       & fmap tree_content_from_dir_entry
-      & S.fold (F.tee hashByteStringFoldIO (F.drainMapM $ BC.hPut fd))
+      & S.trace (BC.hPut fd)
+      & S.fold hashByteStringFoldIO
 
   liftIO $ atomically $ writeTBQueue tbq $ UploadTree dir_hash file_name'
 
@@ -350,7 +356,7 @@ backup_file rel_file_name = do
       liftIO $ atomically $ writeTBQueue tbq $ FindNoChangeFile cached_digest st
       pure $! cached_digest
     Nothing -> Tmp.withEmptyTmpFile $ \file_name' -> E.reallyUnsafeUnliftIO $ \un -> do
-      (!file_hash, _) <- withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd ->
+      !file_hash <- withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd ->
         withBinaryFile (Path.fromRelFile rel_file_name) ReadMode $ \fdd ->
           Chunker.gearHash Chunker.defaultGearHashConfig (Path.fromRelFile rel_file_name)
             & S.mapM
@@ -359,7 +365,8 @@ backup_file rel_file_name = do
                     & S.fold F.toList
               )
             & S.parMapM (S.ordered True . S.maxBuffer 8) (un . backup_chunk)
-            & S.fold (F.tee hashByteStringFoldIO (F.drainMapM $ BS.hPut fd))
+            & S.trace (BS.hPut fd)
+            & S.fold hashByteStringFoldIO
 
       atomically $ writeTBQueue tbq $ UploadFile file_hash file_name' st
       pure file_hash
