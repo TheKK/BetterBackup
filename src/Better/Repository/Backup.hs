@@ -89,11 +89,12 @@ import qualified Effectful.Dispatch.Static as E
 import qualified Effectful.Dispatch.Static.Unsafe as E
 import qualified Effectful.Dispatch.Static.Unsafe as EU
 
-import Better.Hash (Digest, digestToBase16ShortByteString, hashArrayFoldIO, hashByteStringFoldIO)
+import Better.Hash (Digest, digestToBase16ShortByteString, finalize, hashArrayFoldIO, hashByteArrayAccessToHasherST, hashByteArrayAccessToHasherWithInitHasherST, hashByteStringFoldIO)
 import Better.Internal.Repository.LowLevel (Version (Version), addBlob', addDir', addFile', addVersion, d2b)
 import Better.Internal.Streamly.Array (chunkReaderFromToWith)
 import Better.Internal.Streamly.Crypto.AES (encryptCtr, that_aes)
 import qualified Better.Logging.Effect as E
+import qualified Better.Repository as Repo
 import Better.Repository.BackupCache.Class (BackupCache)
 import qualified Better.Repository.BackupCache.LevelDB as BackupCacheLevelDB
 import Better.Repository.Class (RepositoryWrite)
@@ -105,6 +106,8 @@ import qualified Better.Streamly.FileSystem.Chunker as Chunker
 import qualified Better.Streamly.FileSystem.Dir as Dir
 import qualified Better.TempDir as Tmp
 import Better.TempDir.Class (Tmp)
+import Control.Monad.ST.Strict (stToIO)
+import qualified System.Posix as P
 
 data Ctr = Ctr
   { _ctr_aes :: Cipher.AES128
@@ -215,18 +218,6 @@ run_backup m = EU.reallyUnsafeUnliftIO $ \un -> do
     -- TODO how should we handle scope at the end of run_backup?
     atomically $ Ki.awaitAll scope
     pure ret
-
-data Tree = Tree
-  { tree_name :: {-# UNPACK #-} !T.Text
-  , tree_sha :: {-# UNPACK #-} !Digest
-  }
-  deriving (Show)
-
-data FFile = FFile
-  { file_name :: {-# UNPACK #-} !T.Text
-  , file_sha :: {-# UNPACK #-} !Digest
-  }
-  deriving (Show)
 
 data UploadTask
   = UploadTree !Digest !(Path Path.Abs Path.File)
@@ -448,3 +439,103 @@ withEmitUnfoldr q_size putter go = Un.withRunInIO $ \un -> do
     ret_solver <- atomically $ Ki.await thread_solver
 
     pure (ret_putter, ret_solver)
+
+data FileSystemChanges
+
+data TreeWhatNow
+  = TreeIsIntact
+  | TreeIsRemoved
+  | TreeShouldBeBackedUpAgain (FilePath)
+  | TreeShouldBeRescanned [(BS.ByteString, FilePath)]
+
+what_to_do_with_this_tree :: FileSystemChanges -> Digest -> E.Eff es TreeWhatNow
+what_to_do_with_this_tree fsc digest = undefined
+
+backup_dir_magic
+  :: ( E.Logging E.:> es
+     , E.Repository E.:> es
+     , RepositoryWrite E.:> es
+     , BackupCache E.:> es
+     , Tmp E.:> es
+     , BackupStatistics E.:> es
+     , E.IOE E.:> es
+     )
+  => FileSystemChanges
+  -> Digest
+  -> E.Eff es (Maybe Digest)
+backup_dir_magic fsc digest = do
+  what_now <- what_to_do_with_this_tree fsc digest
+  case what_now of
+    TreeIsIntact -> pure $ Just digest
+    TreeIsRemoved -> pure Nothing
+    TreeShouldBeBackedUpAgain abs_path -> do
+      pwd <- Path.parseAbsDir =<< liftIO P.getWorkingDirectory
+      abs_dir <- Path.parseAbsDir abs_path
+      abs_file <- Path.parseAbsFile abs_path
+      rel_dir_path <- Path.stripProperPrefix pwd abs_dir
+      rel_file_path <- Path.stripProperPrefix pwd abs_file
+      is_dir <- liftIO $ P.isDirectory <$> P.getFileStatus (Path.toFilePath rel_file_path)
+      Just
+        <$> if is_dir
+          then backup_dir rel_dir_path
+          else backup_file rel_file_path
+    TreeShouldBeRescanned possible_new_entries -> do
+      RepositoryWriteRep _ _ tbq _ <- E.getStaticRep @RepositoryWrite
+
+      fmap Just $ Tmp.withEmptyTmpFile $ \file_name' -> EU.reallyUnsafeUnliftIO $ \un -> do
+        !dir_hash <- liftIO $ withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
+          !mid_hasher <-
+            Repo.catTree digest
+              & S.morphInner un
+              & S.mapM
+                ( \case
+                    Left d -> fmap (\digest' -> DirEntryDir digest' (BC.pack $ T.unpack $ Repo.tree_name d)) <$> un (backup_dir_magic fsc (Repo.tree_sha d))
+                    Right f -> fmap (\digest' -> DirEntryFile digest' (BC.pack $ T.unpack $ Repo.file_name f)) <$> un (backup_file_magic fsc (Repo.file_sha f))
+                )
+              & fmap (maybe BS.empty tree_content_from_dir_entry)
+              & S.filter (not . BS.null)
+              & S.trace (BC.hPut fd)
+              & S.fold (F.morphInner stToIO hashByteArrayAccessToHasherST)
+
+          S.fromList possible_new_entries
+            & S.mapM
+              ( \(entry_name, entry_abs_path) -> do
+                  exist <- P.fileExist entry_abs_path
+                  if not exist
+                    then pure Nothing
+                    else do
+                      pwd <- Path.parseAbsDir =<< liftIO P.getWorkingDirectory
+                      is_dir <- P.isDirectory <$> P.getFileStatus entry_abs_path
+                      if is_dir
+                        then do
+                          abs_dir <- Path.parseAbsDir entry_abs_path
+                          rel_dir_path <- Path.stripProperPrefix pwd abs_dir
+                          (\d -> Just $! DirEntryDir d entry_name) <$> un (backup_dir rel_dir_path)
+                        else do
+                          abs_file <- Path.parseAbsFile entry_abs_path
+                          rel_file_path <- Path.stripProperPrefix pwd abs_file
+                          (\d -> Just $! DirEntryFile d entry_name) <$> un (backup_file rel_file_path)
+              )
+            & fmap (maybe BS.empty tree_content_from_dir_entry)
+            & S.filter (not . BS.null)
+            & S.trace (BC.hPut fd)
+            & S.fold (F.morphInner stToIO $ F.rmapM finalize $ hashByteArrayAccessToHasherWithInitHasherST mid_hasher)
+
+        liftIO $ atomically $ writeTBQueue tbq $ UploadTree dir_hash file_name'
+
+        pure dir_hash
+
+backup_file_magic
+  :: ( E.Logging E.:> es
+     , E.Repository E.:> es
+     , RepositoryWrite E.:> es
+     , BackupCache E.:> es
+     , Tmp E.:> es
+     , BackupStatistics E.:> es
+     , E.IOE E.:> es
+     )
+  => FileSystemChanges
+  -> Digest
+  -> E.Eff es (Maybe Digest)
+backup_file_magic fsc digest = do
+  undefined

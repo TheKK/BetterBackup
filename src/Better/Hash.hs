@@ -15,6 +15,12 @@ module Better.Hash (
   digestToBase16ShortByteString,
   digestFromByteString,
 
+  -- * Lowlevel Digest
+  BLAKE3.Hasher,
+  finalize,
+  hashByteArrayAccessToHasherST,
+  hashByteArrayAccessToHasherWithInitHasherST,
+
   -- * Pure versions
   hashByteStringFold,
   hashArrayFold,
@@ -89,7 +95,7 @@ digestFromByteString bs
   | otherwise = Nothing
 
 hashByteStringFold :: F.Fold (ST s) BS.ByteString Digest
-hashByteStringFold = fmap Digest hash_blake3_st
+hashByteStringFold = F.rmapM finalize hashByteArrayAccessToHasherST
 {-# INLINE hashByteStringFold #-}
 
 hashByteStringFoldIO :: F.Fold IO BS.ByteString Digest
@@ -97,19 +103,28 @@ hashByteStringFoldIO = F.morphInner stToIO hashByteStringFold
 {-# INLINE hashByteStringFoldIO #-}
 
 hashArrayFold :: F.Fold (ST s) (Array.Array Word8) Digest
-hashArrayFold = F.lmap ArrayBA $ fmap Digest hash_blake3_st
+hashArrayFold = F.lmap ArrayBA $ F.rmapM finalize hashByteArrayAccessToHasherST
 {-# INLINE hashArrayFold #-}
 
 hashArrayFoldIO :: F.Fold IO (Array.Array Word8) Digest
 hashArrayFoldIO = F.morphInner stToIO hashArrayFold
 {-# INLINE hashArrayFoldIO #-}
 
+-- It's safe to unsafeIOToST here since we only do memroy operations in IO, and returns ShortByteString
+-- which doesn't expose state inside ST.
+{-# INLINE finalize #-}
+finalize :: BIO.Hasher -> ST s Digest
+finalize hasher = unsafeIOToST $ do
+  BA.withByteArray hasher $ \hasher_ptr -> Alloc.allocaBytes digestSize $ \buf_ptr -> do
+    BIO.c_finalize hasher_ptr buf_ptr $! fromIntegral digestSize
+    Digest <$> BSS.createFromPtr buf_ptr digestSize
+
 -- | ST version of blake3 hash
 --
 -- The benefit of converting IO to ST is low overhead of memory allocation, comparing to pure version.
-{-# INLINE hash_blake3_st #-}
-hash_blake3_st :: (BA.ByteArrayAccess ba) => F.Fold (ST s) ba BSS.ShortByteString
-hash_blake3_st = F.rmapM extract $ F.foldlM' step s0
+{-# INLINE hashByteArrayAccessToHasherST #-}
+hashByteArrayAccessToHasherST :: (BA.ByteArrayAccess ba) => F.Fold (ST s) ba BIO.Hasher
+hashByteArrayAccessToHasherST = F.foldlM' step s0
   where
     -- It's safe to unsafeIOToST here since s0 is only visible by 'step' and 'extract'.
     s0 = unsafeIOToST $ BAS.alloc @_ @BLAKE3.Hasher $ flip BIO.init Nothing
@@ -121,10 +136,13 @@ hash_blake3_st = F.rmapM extract $ F.foldlM' step s0
         BIO.c_update hasher_ptr bs_ptr $! fromIntegral (BA.length bs)
       pure $! hasher
 
-    -- It's safe to unsafeIOToST here since we only do memroy operations in IO, and returns ShortByteString
-    -- which doesn't expose state inside ST.
-    {-# INLINE [0] extract #-}
-    extract !hasher = unsafeIOToST $ do
-      BA.withByteArray hasher $ \hasher_ptr -> Alloc.allocaBytes digestSize $ \buf_ptr -> do
-        BIO.c_finalize hasher_ptr buf_ptr $! fromIntegral digestSize
-        BSS.createFromPtr buf_ptr digestSize
+{-# INLINE hashByteArrayAccessToHasherWithInitHasherST #-}
+hashByteArrayAccessToHasherWithInitHasherST :: (BA.ByteArrayAccess ba) => BIO.Hasher -> F.Fold (ST s) ba BIO.Hasher
+hashByteArrayAccessToHasherWithInitHasherST s0 = F.foldlM' step (pure $! BLAKE3.update @BS.ByteString s0 [])
+  where
+    -- It's safe to unsafeIOToST here since we only do memroy operations in IO.
+    {-# INLINE [0] step #-}
+    step (!hasher :: BIO.Hasher) !bs = unsafeIOToST $ do
+      BA.withByteArray hasher $ \hasher_ptr -> BA.withByteArray bs $ \bs_ptr ->
+        BIO.c_update hasher_ptr bs_ptr $! fromIntegral (BA.length bs)
+      pure $! hasher
