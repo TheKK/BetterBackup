@@ -16,6 +16,7 @@ module Better.Repository.Backup (
   -- * Backup related functions
   DirEntry (..),
   backup_dir_from_list,
+  backup_file_from_builder,
 ) where
 
 import Prelude hiding (read)
@@ -33,7 +34,10 @@ import qualified Ki
 import qualified Data.Text as T
 
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Builder as BB
+import qualified Data.ByteString.Builder.Extra as BB
 import qualified Data.ByteString.Char8 as BC
+import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Short as BSS
 
 import Data.Foldable (for_)
@@ -49,9 +53,10 @@ import Control.Monad.IO.Class (liftIO)
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import qualified Control.Monad.IO.Unlift as Un
 
-import Control.Concurrent.STM (TBQueue, TVar, atomically, modifyTVar', newTBQueueIO, newTVarIO, readTBQueue, readTVar, writeTBQueue)
+import Control.Concurrent.STM (TBQueue, TVar, atomically, modifyTVar', newTBQueueIO, newTVarIO, readTBQueue, readTVar, readTVarIO, writeTBQueue)
 
 import qualified Streamly.Data.Array as Array
+import Streamly.External.ByteString (toArray)
 import qualified Streamly.Internal.Data.Array.Type as Array (byteLength)
 
 import Streamly.Internal.System.IO (defaultChunkSize)
@@ -86,7 +91,7 @@ import qualified Effectful.Dispatch.Static.Unsafe as EU
 
 import Better.Hash (Digest, digestToBase16ShortByteString, hashArrayFoldIO, hashByteStringFoldIO)
 import Better.Internal.Repository.LowLevel (Version (Version), addBlob', addDir', addFile', addVersion, d2b)
-import Better.Internal.Streamly.Array (ArrayBA (ArrayBA, un_array_ba), chunkReaderFromToWith)
+import Better.Internal.Streamly.Array (chunkReaderFromToWith)
 import Better.Internal.Streamly.Crypto.AES (encryptCtr, that_aes)
 import qualified Better.Logging.Effect as E
 import Better.Repository.BackupCache.Class (BackupCache)
@@ -370,6 +375,33 @@ backup_file rel_file_name = do
 
       atomically $ writeTBQueue tbq $ UploadFile file_hash file_name' (Just st)
       pure file_hash
+
+backup_file_from_builder :: (RepositoryWrite E.:> es, BackupStatistics E.:> es, Tmp E.:> es, E.IOE E.:> es) => BB.Builder -> E.Eff es Digest
+backup_file_from_builder builder = do
+  RepositoryWriteRep _ _ tbq _ <- E.getStaticRep @RepositoryWrite
+
+  BackupSt.modifyStatistic' BackupSt.totalFileCount (+ 1)
+
+  let lbs = BB.toLazyByteStringWith (BB.untrimmedStrategy BB.defaultChunkSize BB.defaultChunkSize) BL.empty builder
+  lbs_tvar <- E.unsafeEff_ $ newTVarIO lbs
+
+  Tmp.withEmptyTmpFile $ \file_name' -> E.reallyUnsafeUnliftIO $ \un -> do
+    !file_hash <- withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd ->
+      S.fromList (BL.toChunks lbs)
+        & Chunker.gearHashPure Chunker.defaultGearHashConfig
+        & S.mapM
+          ( \(Chunker.Chunk b e) -> atomically $ do
+              chunk <- fmap toArray . BL.toChunks . BL.take (fromIntegral $ e - b) <$> readTVar lbs_tvar
+              modifyTVar' lbs_tvar (BL.drop (fromIntegral $ e - b))
+              -- Keep the thunk (chunk) and let parMapM evalutes them parallelly.
+              pure chunk
+          )
+        & S.parMapM (S.ordered True . S.maxBuffer 16) (un . backup_chunk)
+        & S.trace (BS.hPut fd)
+        & S.fold hashByteStringFoldIO
+
+    atomically $ writeTBQueue tbq $ UploadFile file_hash file_name' Nothing
+    pure file_hash
 
 backup_chunk :: (RepositoryWrite E.:> es, E.IOE E.:> es) => [Array.Array Word8] -> E.Eff es BS.ByteString
 backup_chunk chunk = E.reallyUnsafeUnliftIO $ \un -> do
