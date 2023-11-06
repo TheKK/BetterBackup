@@ -104,7 +104,7 @@ library better-core
       Better.Statistics.Backup.Class
       Better.Statistics.Backup.Default
     other-modules:
-    build-depends:  vector, random, splitmix, leveldb-haskell, binary, ki, parallel, fusion-plugin-types, hedgehog, blake3, ghc-prim, async, primitive, stm-containers, hashable, temporary, effectful-core, effectful-th, katip
+    build-depends:  vector, random, splitmix, leveldb-haskell, binary, ki, parallel, fusion-plugin-types, hedgehog, blake3, ghc-prim, async, primitive, stm-containers, hashable, temporary, effectful-core, effectful-th, katip, streamly-bytestring
     hs-source-dirs:   src
     default-language: Haskell2010
 
