@@ -142,7 +142,7 @@ garbageCollection = gc_tree >>= gc_file >>= gc_chunk
         & S.fold F.drain
       Debug.Trace.traceMarkerIO "gc_tree/delete/end"
 
-      pure live_tree_set'
+      readTVarIO live_file_set
 
     {-# INLINE [2] gc_file #-}
     gc_file :: (E.Repository E.:> es) => Set.Set Digest -> E.Eff es (Set.Set Digest)
