@@ -185,7 +185,7 @@ run_backup m = EU.reallyUnsafeUnliftIO $ \un -> do
                           when added $ do
                             un $ BackupSt.modifyStatistic' BackupSt.newDirCount (+ 1)
                       un $ BackupSt.modifyStatistic' BackupSt.processedDirCount (+ 1)
-                    UploadFile file_hash file_name' st -> do
+                    UploadFile file_hash file_name' opt_st -> do
                       unique_file_gate file_hash $
                         do
                           added <- un (addFile' file_hash (File.readChunks (Path.fromAbsFile file_name'))) `finally` D.removeFile (Path.fromAbsFile file_name')
@@ -193,7 +193,7 @@ run_backup m = EU.reallyUnsafeUnliftIO $ \un -> do
                             un $ BackupSt.modifyStatistic' BackupSt.newFileCount (+ 1)
                       un $ do
                         BackupSt.modifyStatistic' BackupSt.processedFileCount (+ 1)
-                        BackupCacheLevelDB.saveCurrentFileHash st file_hash
+                        for_ opt_st $ \st -> BackupCacheLevelDB.saveCurrentFileHash st file_hash
                     FindNoChangeFile file_hash st -> un $ do
                       BackupSt.modifyStatistic' BackupSt.processedFileCount (+ 1)
                       BackupCacheLevelDB.saveCurrentFileHash st file_hash
@@ -225,7 +225,7 @@ data FFile = FFile
 
 data UploadTask
   = UploadTree !Digest !(Path Path.Abs Path.File)
-  | UploadFile !Digest !(Path Path.Abs Path.File) !P.FileStatus
+  | UploadFile !Digest !(Path Path.Abs Path.File) !(Maybe P.FileStatus)
   | UploadChunk !Digest !(S.Stream IO (Array.Array Word8))
   | FindNoChangeFile !Digest !P.FileStatus
 
@@ -368,7 +368,7 @@ backup_file rel_file_name = do
             & S.trace (BS.hPut fd)
             & S.fold hashByteStringFoldIO
 
-      atomically $ writeTBQueue tbq $ UploadFile file_hash file_name' st
+      atomically $ writeTBQueue tbq $ UploadFile file_hash file_name' (Just st)
       pure file_hash
 
 backup_chunk :: (RepositoryWrite E.:> es, E.IOE E.:> es) => [Array.Array Word8] -> E.Eff es BS.ByteString
