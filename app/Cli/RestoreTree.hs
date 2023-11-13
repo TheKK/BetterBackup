@@ -21,8 +21,11 @@ import Options.Applicative (
   progDesc,
  )
 
+import Control.Exception (Exception (displayException), throwIO)
+import Control.Monad (unless)
 import Control.Monad.IO.Class (MonadIO (liftIO))
 
+import Data.Bifunctor (Bifunctor (first))
 import Data.Foldable (Foldable (fold))
 import Data.Function ((&))
 import Data.String (fromString)
@@ -42,6 +45,8 @@ import qualified System.Directory as D
 import System.IO (IOMode (WriteMode), withBinaryFile)
 import qualified System.Posix as P
 
+import qualified Path
+
 import Monad (run_readonly_repo_t_from_cwd)
 
 import Better.Hash (Digest, digestFromByteString)
@@ -53,7 +58,7 @@ parser_info = info (helper <*> parser) infoMod
   where
     infoMod =
       fold
-        [ progDesc "Restore tree"
+        [ progDesc "Restore tree to selected empty directory"
         ]
 
     parser =
@@ -65,10 +70,31 @@ parser_info = info (helper <*> parser) infoMod
               , help "SHA of tree"
               ]
           )
+        <*> argument
+          some_base_dir_read
+          ( fold
+              [ metavar "PATH"
+              , help "restore destination, must exist and be empty"
+              ]
+          )
 
     {-# NOINLINE go #-}
-    go :: Digest -> IO ()
-    go sha = run_readonly_repo_t_from_cwd $ restore_tree $! Repo.Tree "out" sha
+    go :: Digest -> Path.SomeBase Path.Dir -> IO ()
+    go sha some_dir = do
+      abs_out_path <- case some_dir of
+        Path.Abs abs_dir -> pure abs_dir
+        Path.Rel rel_dir -> do
+          abs_cwd <- Path.parseAbsDir =<< D.getCurrentDirectory
+          pure $ abs_cwd Path.</> rel_dir
+
+      out_path_exists <- D.doesDirectoryExist (Path.fromAbsDir abs_out_path)
+      unless out_path_exists $ throwIO $ userError $ "given path is not a directory: " <> Path.fromAbsDir abs_out_path
+
+      out_path_is_empty <- null <$> D.listDirectory (Path.fromAbsDir abs_out_path)
+      unless out_path_is_empty $ throwIO $ userError $ "given directory is not empty: " <> Path.fromAbsDir abs_out_path
+
+      -- XXX Well, using name of Repo.Tree here is not very ideal since it breaks the meaning of name.
+      run_readonly_repo_t_from_cwd $ restore_tree $! Repo.Tree (T.pack $ Path.fromAbsDir abs_out_path) sha
 
     -- TODO Copy from cat-file, should have only one copy.
     {-# NOINLINE restore_file #-}
@@ -89,7 +115,7 @@ parser_info = info (helper <*> parser) infoMod
     restore_tree t = do
       let tree_path = T.unpack $ Repo.tree_name t
       -- TODO Permission should be backed up as well.
-      liftIO $ P.createDirectory tree_path 750
+      liftIO $ D.createDirectoryIfMissing False tree_path
       E.reallyUnsafeUnliftIO $ \un ->
         D.withCurrentDirectory tree_path $
           un $
@@ -106,3 +132,6 @@ digest_read = eitherReader $ \raw_sha -> do
   case digestFromByteString sha_decoded of
     Nothing -> Left $ "invalid sha256: " <> raw_sha <> ", incorrect length"
     Just digest -> pure digest
+
+some_base_dir_read :: ReadM (Path.SomeBase Path.Dir)
+some_base_dir_read = eitherReader $ first displayException . Path.parseSomeDir
