@@ -1,5 +1,4 @@
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeOperators #-}
 
@@ -43,7 +42,6 @@ import qualified Effectful.Dispatch.Static.Unsafe as E
 
 import qualified System.Directory as D
 import System.IO (IOMode (WriteMode), withBinaryFile)
-import qualified System.Posix as P
 
 import qualified Path
 
