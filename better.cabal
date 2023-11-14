@@ -140,7 +140,7 @@ test-suite test
     main-is:          Main.hs
     hs-source-dirs:   test
     default-language: Haskell2010
-    build-depends:  base >=4.16 && < 5, better-core, hedgehog, crypton, bytestring, streamly-core, fusion-plugin, tasty, tasty-hedgehog
+    build-depends:  base >=4.16 && < 5, better-core, hedgehog, crypton, bytestring, streamly-core, streamly-bytestring, fusion-plugin, tasty, tasty-hedgehog
 
 benchmark cdc
     import:           warnings

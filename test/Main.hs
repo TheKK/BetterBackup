@@ -24,6 +24,7 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 
 import qualified Streamly.Data.Stream as S
+import Streamly.External.ByteString
 
 import Better.Internal.Streamly.Crypto.AES (compact, decryptCtr, encryptCtr, that_aes)
 import Better.Streamly.FileSystem.Chunker (props_distribute, props_fast_cdc)
@@ -64,11 +65,12 @@ prop_ctr_enc_dec = property $ do
   plain_text_chunks' <-
     liftIO $
       S.fromList plain_text_chunks
+        & fmap toArray
         & encryptCtr aes iv batch_size
         & decryptCtr aes batch_size
         & S.toList
 
-  BL.fromChunks plain_text_chunks === BL.fromChunks plain_text_chunks'
+  BL.fromChunks plain_text_chunks === BL.fromChunks (fmap fromArray plain_text_chunks')
 
 -- TODO Move this property to its own module.
 prop_compact :: Property
@@ -90,14 +92,14 @@ prop_compact = property $ do
   cover 10 "chunk_size < total_length" $ chunk_size < total_length
   cover 1 "chunk_size >= total_length" $ chunk_size >= total_length
 
-  compacted_chunks <- liftIO $ S.fromList plain_text_chunks & compact chunk_size & S.toList
+  compacted_chunks <- liftIO $ S.fromList plain_text_chunks & fmap toArray & compact chunk_size & S.toList
   annotateShow compacted_chunks
 
-  mconcat plain_text_chunks === mconcat compacted_chunks
+  mconcat plain_text_chunks === mconcat (fmap fromArray $ compacted_chunks)
 
   when (length compacted_chunks >= 2) $ do
-    for_ (init compacted_chunks) ((chunk_size ===) . BS.length)
+    for_ (init compacted_chunks) ((chunk_size ===) . BS.length . fromArray)
 
     let last_chunk = last compacted_chunks
     annotateShow last_chunk
-    diff (BS.length last_chunk) (<=) chunk_size
+    diff (BS.length $ fromArray last_chunk) (<=) chunk_size
