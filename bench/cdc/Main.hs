@@ -506,13 +506,13 @@ bench_base16 =
         bgroup
           "encode bytestring"
           [ bench "ByteArrayAccess" $ nf (BA.convertToBase @_ @BS.ByteString BA.Base16) bs
-          , bench "base16-bytestring" $ nf (Base16.extractBase16 . BS16.encodeBase16) bs
+          , bench "base16-bytestring" $ nf (Base16.extractBase16 . BS16.encodeBase16') bs
           ]
     , env (pure ("asdfkj; lweqruasd fjkl;asdfjk as" :: BSS.ShortByteString)) $ \bs ->
         bgroup
           "encode shortbytestring"
           [ bench "ByteArrayAccess" $ nf (BA.convertToBase @_ @BS.ByteString BA.Base16 . BSS.fromShort) bs
-          , bench "base16-bytestring" $ nf (Base16.extractBase16 . BSS16.encodeBase16) bs
+          , bench "base16-bytestring" $ nf (Base16.extractBase16 . BSS16.encodeBase16') bs
           ]
     ]
 
