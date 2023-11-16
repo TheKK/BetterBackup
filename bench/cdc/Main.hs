@@ -17,6 +17,7 @@ import Data.Word (Word64, Word8)
 
 import qualified Streamly.Data.Fold as F
 import qualified Streamly.Data.Stream.Prelude as S
+import Streamly.External.ByteString (toArray)
 
 import Crypto.Hash (
   Blake2b_256,
@@ -55,18 +56,18 @@ import qualified System.Random.SplitMix as Sp
 
 import Control.Monad.ST (runST)
 
+import Better.Internal.Streamly.Array (fastArrayAsPtrUnsafe, fastMutArrayAsPtrUnsafe)
 import Control.Concurrent.STM
+import qualified Data.Base16.Types as Base16
 import qualified Data.ByteArray as BA
+import qualified Data.ByteArray.Encoding as BA
+import qualified Data.ByteString.Short as BSS
+import qualified Data.ByteString.Short.Base16 as BSS16
 import Data.IORef
 import qualified Streamly.Data.Array as Array
 import qualified Streamly.Internal.Data.Array as Array
-import qualified Streamly.Internal.Data.Array.Type as Array
 import qualified Streamly.Internal.Data.Array.Mut.Type as MutArray
-import qualified Data.ByteArray.Encoding as BA
-import qualified Data.Base16.Types as Base16
-import qualified Data.ByteString.Short as BSS
-import qualified Data.ByteString.Short.Base16 as BSS16
-import Better.Internal.Streamly.Array (fastMutArrayAsPtrUnsafe, fastArrayAsPtrUnsafe)
+import qualified Streamly.Internal.Data.Array.Type as Array
 
 newtype ArrayBA = ArrayBA {un_array_ba :: Array.Array Word8}
   deriving (Eq, Ord)
@@ -83,9 +84,19 @@ input :: [BS.ByteString]
 input = replicate 1600 $ BS.concat $ replicate 1024 ("asdfjkla;sdfk;sdjl;asdjfl;aklsd;" :: BS.ByteString)
 
 -- 50 MiB = 1600 * 32KiB
+{-# NOINLINE input_array #-}
+input_array :: [Array.Array Word8]
+input_array = replicate 1600 $ toArray $ BS.concat $ replicate 1024 ("asdfjkla;sdfk;sdjl;asdjfl;aklsd;" :: BS.ByteString)
+
+-- 50 MiB = 1600 * 32KiB
 {-# NOINLINE input_30KiB #-}
 input_30KiB :: [BS.ByteString]
 input_30KiB = replicate 1707 $ BS.concat $ replicate 1024 ("asdfjkla;sdfk;sdjl;asdjfl;akl;" :: BS.ByteString)
+
+-- 50 MiB = 1600 * 32KiB
+{-# NOINLINE input_array_30KiB #-}
+input_array_30KiB :: [Array.Array Word8]
+input_array_30KiB = replicate 1707 $ toArray $ BS.concat $ replicate 1024 ("asdfjkla;sdfk;sdjl;asdjfl;akl;" :: BS.ByteString)
 
 main :: IO ()
 main =
@@ -272,136 +283,138 @@ main =
             ]
     , env that_aes $ \aes ->
         env (pure input) $ \input' ->
-          bgroup
-            "enc-ctr"
-            [ bench "single-ctrCombine" $
-                let iv = Cipher.nullIV
-                in  nf
-                      (Cipher.ctrCombine aes iv)
-                      (head input')
-            , bench "ctrCombine-with-streamly" $
-                let iv = Cipher.nullIV
-                in  nfAppIO
+          let input_array' = map toArray input'
+          in  bgroup
+                "enc-ctr"
+                [ bench "single-ctrCombine" $
+                    let iv = Cipher.nullIV
+                    in  nf
+                          (Cipher.ctrCombine aes iv)
+                          (head input')
+                , bench "ctrCombine-with-streamly" $
+                    let iv = Cipher.nullIV
+                    in  nfAppIO
+                          ( \inputs ->
+                              inputs
+                                & fmap (Cipher.ctrCombine aes iv)
+                                & S.mapM (\(!a) -> pure a)
+                                & S.fold F.drain
+                          )
+                          (S.fromList input')
+                , bench "ctrCombine-with-fmap" $
+                    let iv = Cipher.nullIV
+                    in  nfAppIO
+                          ( \inputs -> for_ inputs $ \i -> do
+                              let !ret = (\(!a) -> a) $ Cipher.ctrCombine aes iv i
+                              pure ret
+                          )
+                          input'
+                , bench "unsafeEncryptCtr" $
+                    nfAppIO
                       ( \inputs ->
                           inputs
-                            & fmap (Cipher.ctrCombine aes iv)
+                            & unsafeEncryptCtr aes Cipher.nullIV 1024
                             & S.mapM (\(!a) -> pure a)
                             & S.fold F.drain
                       )
-                      (S.fromList input')
-            , bench "ctrCombine-with-fmap" $
-                let iv = Cipher.nullIV
-                in  nfAppIO
-                      ( \inputs -> for_ inputs $ \i -> do
-                          let !ret = (\(!a) -> a) $ Cipher.ctrCombine aes iv i
-                          pure ret
+                      (S.fromList input_array')
+                , bench "encryptCtr-compact-32b" $
+                    nfAppIO
+                      ( \inputs ->
+                          inputs
+                            & encryptCtr aes Cipher.nullIV 32
+                            & S.mapM (\(!a) -> pure a)
+                            & S.fold F.drain
                       )
-                      input'
-            , bench "unsafeEncryptCtr" $
-                nfAppIO
-                  ( \inputs ->
-                      inputs
-                        & unsafeEncryptCtr aes Cipher.nullIV 1024
-                        & S.mapM (\(!a) -> pure a)
-                        & S.fold F.drain
-                  )
-                  (S.fromList input')
-            , bench "encryptCtr-compact-32b" $
-                nfAppIO
-                  ( \inputs ->
-                      inputs
-                        & encryptCtr aes Cipher.nullIV 32
-                        & S.mapM (\(!a) -> pure a)
-                        & S.fold F.drain
-                  )
-                  (S.fromList input')
-            , bench "encryptCtr-compact-4k" $
-                nfAppIO
-                  ( \inputs ->
-                      inputs
-                        & encryptCtr aes Cipher.nullIV (1024 * 4)
-                        & S.mapM (\(!a) -> pure a)
-                        & S.fold F.drain
-                  )
-                  (S.fromList input')
-            , bench "encryptCtr-compact-32k" $
-                nfAppIO
-                  ( \inputs ->
-                      inputs
-                        & encryptCtr aes Cipher.nullIV (1024 * 32)
-                        & S.mapM (\(!a) -> pure a)
-                        & S.fold F.drain
-                  )
-                  (S.fromList input')
-            , bench "encryptCtr-compact-64k" $
-                nfAppIO
-                  ( \inputs ->
-                      inputs
-                        & encryptCtr aes Cipher.nullIV (1024 * 64)
-                        & S.mapM (\(!a) -> pure a)
-                        & S.fold F.drain
-                  )
-                  (S.fromList input')
-            , bench "encryptCtr-compact-128k" $
-                nfAppIO
-                  ( \inputs ->
-                      inputs
-                        & encryptCtr aes Cipher.nullIV (1024 * 128)
-                        & S.mapM (\(!a) -> pure a)
-                        & S.fold F.drain
-                  )
-                  (S.fromList input')
-            , bench "encryptCtr-then-decryptCtr-compact-32k" $
-                nfAppIO
-                  ( \inputs ->
-                      inputs
-                        & encryptCtr aes Cipher.nullIV (1024 * 32)
-                        & S.mapM (\(!a) -> pure a)
-                        & decryptCtr aes (1024 * 32)
-                        & S.mapM (\(!a) -> pure a)
-                        & S.fold F.drain
-                  )
-                  (S.fromList input')
-            ]
+                      (S.fromList input_array')
+                , bench "encryptCtr-compact-4k" $
+                    nfAppIO
+                      ( \inputs ->
+                          inputs
+                            & encryptCtr aes Cipher.nullIV (1024 * 4)
+                            & S.mapM (\(!a) -> pure a)
+                            & S.fold F.drain
+                      )
+                      (S.fromList input_array')
+                , bench "encryptCtr-compact-32k" $
+                    nfAppIO
+                      ( \inputs ->
+                          inputs
+                            & encryptCtr aes Cipher.nullIV (1024 * 32)
+                            & S.mapM (\(!a) -> pure a)
+                            & S.fold F.drain
+                      )
+                      (S.fromList input_array')
+                , bench "encryptCtr-compact-64k" $
+                    nfAppIO
+                      ( \inputs ->
+                          inputs
+                            & encryptCtr aes Cipher.nullIV (1024 * 64)
+                            & S.mapM (\(!a) -> pure a)
+                            & S.fold F.drain
+                      )
+                      (S.fromList input_array')
+                , bench "encryptCtr-compact-128k" $
+                    nfAppIO
+                      ( \inputs ->
+                          inputs
+                            & encryptCtr aes Cipher.nullIV (1024 * 128)
+                            & S.mapM (\(!a) -> pure a)
+                            & S.fold F.drain
+                      )
+                      (S.fromList input_array')
+                , bench "encryptCtr-then-decryptCtr-compact-32k" $
+                    nfAppIO
+                      ( \inputs ->
+                          inputs
+                            & encryptCtr aes Cipher.nullIV (1024 * 32)
+                            & S.mapM (\(!a) -> pure a)
+                            & decryptCtr aes (1024 * 32)
+                            & S.mapM (\(!a) -> pure a)
+                            & S.fold F.drain
+                      )
+                      (S.fromList input_array')
+                ]
     , env (pure input) $ \input' ->
-        bgroup
-          "compact"
-          [ bench "16k" $
-              nfAppIO
-                ( \inputs ->
-                    inputs
-                      & compact (1024 * 16)
-                      & S.mapM (\(!a) -> pure a)
-                      & S.fold F.drain
-                )
-                (S.fromList input')
-          , bench "32k" $
-              nfAppIO
-                ( \inputs ->
-                    inputs
-                      & compact (1024 * 32)
-                      & S.mapM (\(!a) -> pure a)
-                      & S.fold F.drain
-                )
-                (S.fromList input')
-          , bench "32k-non-aligned" $
-              nfAppIO
-                ( \inputs ->
-                    inputs
-                      & compact (1024 * 32)
-                      & S.mapM (\(!a) -> pure a)
-                      & S.fold F.drain
-                )
-                (S.fromList input_30KiB)
-          , bench "ref-noopt" $
-              nfAppIO
-                ( \inputs ->
-                    inputs
-                      & S.mapM (\(!a) -> pure a)
-                      & S.fold F.drain
-                )
-                (S.fromList input')
-          ]
+        let input_array' = map toArray input'
+        in  bgroup
+              "compact"
+              [ bench "16k" $
+                  nfAppIO
+                    ( \inputs ->
+                        inputs
+                          & compact (1024 * 16)
+                          & S.mapM (\(!a) -> pure a)
+                          & S.fold F.drain
+                    )
+                    (S.fromList input_array')
+              , bench "32k" $
+                  nfAppIO
+                    ( \inputs ->
+                        inputs
+                          & compact (1024 * 32)
+                          & S.mapM (\(!a) -> pure a)
+                          & S.fold F.drain
+                    )
+                    (S.fromList input_array)
+              , bench "32k-non-aligned" $
+                  nfAppIO
+                    ( \inputs ->
+                        inputs
+                          & compact (1024 * 32)
+                          & S.mapM (\(!a) -> pure a)
+                          & S.fold F.drain
+                    )
+                    (S.fromList input_array_30KiB)
+              , bench "ref-noopt" $
+                  nfAppIO
+                    ( \inputs ->
+                        inputs
+                          & S.mapM (\(!a) -> pure a)
+                          & S.fold F.drain
+                    )
+                    (S.fromList input')
+              ]
     , bench_concurrent
     , bench_as_ptr
     , bench_base16
