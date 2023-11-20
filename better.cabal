@@ -104,7 +104,7 @@ library better-core
       Better.Statistics.Backup.Class
       Better.Statistics.Backup.Default
     other-modules:
-    build-depends:  vector, random, splitmix, leveldb-haskell, binary, ki, parallel, fusion-plugin-types, hedgehog, blake3, ghc-prim, async, primitive, stm-containers, hashable, temporary, effectful-core, effectful-th, katip, streamly-bytestring
+    build-depends:  vector, random, splitmix, leveldb-haskell, binary, ki, parallel, fusion-plugin-types, hedgehog, blake3, ghc-prim, async, primitive, stm-containers, hashable, temporary, effectful-core, effectful-th, katip, streamly-bytestring, bytestring-trie, transformers, filepath, deepseq
     hs-source-dirs:   src
     default-language: Haskell2010
 
@@ -132,7 +132,7 @@ executable better
       Monad
     hs-source-dirs:   app
     default-language: Haskell2010
-    build-depends:  better-core, optparse-applicative, tomland, leveldb-haskell, ki, parallel, temporary, effectful-core, katip
+    build-depends:  better-core, optparse-applicative, tomland, leveldb-haskell, ki, parallel, temporary, effectful-core, katip, time, filepath, megaparsec, parser-combinators, streamly-bytestring, deepseq
 
 test-suite test
     import:           warnings
@@ -148,4 +148,4 @@ benchmark cdc
     main-is:          Main.hs
     hs-source-dirs:   bench/cdc
     default-language: Haskell2010
-    build-depends:  base >=4.16 && < 5, better-core, streamly, streamly-core, streamly-bytestring, criterion, fusion-plugin, crypton, bytestring, path, stm, random, splitmix, containers, unordered-containers, memory, blake3, base16 ^>= 1.0
+    build-depends:  base >=4.16 && < 5, better-core, streamly, streamly-core, streamly-bytestring, criterion, fusion-plugin, crypton, bytestring, path, stm, random, splitmix, containers, unordered-containers, memory, blake3, base16 ^>= 1.0, megaparsec, parser-combinators
