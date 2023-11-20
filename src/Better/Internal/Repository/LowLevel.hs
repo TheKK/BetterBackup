@@ -35,6 +35,10 @@ module Better.Internal.Repository.LowLevel (
   getChunkSize,
   listFolderFiles,
   listVersions,
+  doesVersionExists,
+  doesTreeExists,
+  doesFileExists,
+  doesChunkExists,
 
   -- * Repositories
   localRepo,
@@ -170,6 +174,24 @@ listVersions =
   listFolderFiles folder_version
     -- TODO Maybr we could skip invalid version files.
     & S.mapM (catVersion <=< s2d . Path.fromRelFile)
+
+does_that_exist :: (E.Repository E.:> es) => Path Path.Rel Path.Dir -> Digest -> E.Eff es Bool
+does_that_exist that_folder digest = do
+  path_digest <- Path.parseRelFile $ show digest
+  exists <- fileExists $ that_folder </> path_digest
+  pure $! exists
+
+doesVersionExists :: (E.Repository E.:> es) => Digest -> E.Eff es Bool
+doesVersionExists = does_that_exist folder_version
+
+doesTreeExists :: (E.Repository E.:> es) => Digest -> E.Eff es Bool
+doesTreeExists = does_that_exist folder_tree
+
+doesFileExists :: (E.Repository E.:> es) => Digest -> E.Eff es Bool
+doesFileExists = does_that_exist folder_file
+
+doesChunkExists :: (E.Repository E.:> es) => Digest -> E.Eff es Bool
+doesChunkExists = does_that_exist folder_chunk
 
 tryCatingVersion :: (E.Repository E.:> es) => Digest -> E.Eff es (Maybe Version)
 tryCatingVersion digest = do
