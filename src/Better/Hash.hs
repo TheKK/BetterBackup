@@ -50,6 +50,7 @@ import qualified Streamly.Data.Array as Array
 import qualified Streamly.Data.Fold as F
 
 import qualified Data.ByteArray as BA
+import qualified Data.ByteArray.Sized as BAS
 
 import qualified BLAKE3
 import qualified BLAKE3.IO as BIO
@@ -128,10 +129,10 @@ hashByteArrayAccess = F.rmapM finalize . hashByteArrayAccess'
 -- | hashByteArrayAccess but returns Hasher instead of Digest.
 {-# INLINE hashByteArrayAccess' #-}
 hashByteArrayAccess' :: (BA.ByteArrayAccess ba) => BIO.Hasher -> F.Fold (ST s) ba BIO.Hasher
-hashByteArrayAccess' hasher0 = F.foldlM' step (pure $! cloned_hasher0)
+hashByteArrayAccess' hasher0 = F.foldlM' step clone_hash0
   where
     -- For referential transparency, we shouldn't modify the input hasher.
-    cloned_hasher0 = BLAKE3.update @BS.ByteString hasher0 []
+    clone_hash0 = unsafeIOToST $ BAS.copy hasher0 $ \ptr -> BIO.update @BS.ByteString ptr []
 
     -- It's safe to unsafeIOToST here since we only do memroy operations in IO.
     {-# INLINE [0] step #-}
