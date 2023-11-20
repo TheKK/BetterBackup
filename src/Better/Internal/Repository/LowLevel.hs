@@ -125,7 +125,7 @@ import qualified Effectful as E
 import qualified Effectful.Dispatch.Static as E
 import qualified Effectful.Dispatch.Static.Unsafe as E
 
-import Better.Hash (Digest, digestFromByteString, digestToBase16ByteString, hashByteStringFoldIO, digestToBase16ShortByteString)
+import Better.Hash (Digest, digestFromByteString, digestToBase16ByteString, digestToBase16ShortByteString, hashByteStringFoldIO)
 import Better.Internal.Streamly.Array (ArrayBA (ArrayBA, un_array_ba), fastArrayAsPtrUnsafe)
 import qualified Better.Internal.Streamly.Array as BetterArray
 import Better.Internal.Streamly.Crypto.AES (decryptCtr, that_aes)
