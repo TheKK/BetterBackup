@@ -237,18 +237,6 @@ run_backup m = EU.reallyUnsafeUnliftIO $ \un -> do
     atomically $ Ki.awaitAll scope
     pure ret
 
-data Tree = Tree
-  { tree_name :: {-# UNPACK #-} !T.Text
-  , tree_sha :: {-# UNPACK #-} !Digest
-  }
-  deriving (Show)
-
-data FFile = FFile
-  { file_name :: {-# UNPACK #-} !T.Text
-  , file_sha :: {-# UNPACK #-} !Digest
-  }
-  deriving (Show)
-
 data UploadTask
   = UploadTree !Digest !(Path Path.Abs Path.File)
   | UploadFile !Digest !(Path Path.Abs Path.File) !(Maybe P.FileStatus)
