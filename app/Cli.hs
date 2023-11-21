@@ -59,6 +59,7 @@ import Cli.GarbageCollection (parser_info)
 import Cli.IntegrityCheck (parser_info)
 import Cli.RestoreTree (parser_info)
 import Cli.VersionFind (parser_info)
+import Cli.PatchBackup (parser_info)
 
 import qualified LocalCache
 import Monad (run_readonly_repo_t_from_cwd)
@@ -80,6 +81,7 @@ cmds = info (helper <*> parser) infoMod
           , command "versions" parser_info_versions
           , command "version" parser_info_version
           , command "backup" Cli.Backup.parser_info
+          , command "patch-backup" Cli.PatchBackup.parser_info
           , command "gc" Cli.GarbageCollection.parser_info
           , command "integrity-check" Cli.IntegrityCheck.parser_info
           , command "cat-chunk" parser_info_cat_chunk

@@ -122,6 +122,7 @@ executable better
     other-modules:
       Cli
       Cli.Backup
+      Cli.PatchBackup
       Cli.GarbageCollection
       Cli.IntegrityCheck
       Cli.RestoreTree
