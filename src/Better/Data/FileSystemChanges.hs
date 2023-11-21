@@ -19,6 +19,7 @@ module Better.Data.FileSystemChanges (
   empty,
   insert',
   submap,
+  hasDescendants,
   lookupDir,
   lookupFile,
   toList,
@@ -57,7 +58,7 @@ import qualified Hedgehog.Gen as Gen
 import qualified Hedgehog.Range as Range
 
 -- | Information about what changes after last backup.
-newtype FileSystemChanges = FileSystemChanges (Trie FileSystemChange)
+newtype FileSystemChanges = FileSystemChanges {un_filesystem_changes :: Trie FileSystemChange}
   deriving (Show, Eq)
 
 -- | What happends to these file/directory.
@@ -108,6 +109,9 @@ submap p = FileSystemChanges . Trie.submap path_bs . coerce
   where
     path_bs = convert_path_to_key p
 
+hasDescendants :: Path Path.Rel Path.Dir -> FileSystemChanges -> Bool
+hasDescendants p = not . Trie.null . un_filesystem_changes . submap p
+
 toList :: FileSystemChanges -> [(BC.ByteString, FileSystemChange)]
 toList = Trie.toList . coerce
 
@@ -122,7 +126,8 @@ props_filesystem_change =
     [ ("prop_existed_parent_should_mask_all_child_changes", prop_existed_parent_should_filter_out_all_child_changes)
     , ("prop_insert_parent_should_remove_all_child_changes", prop_insert_parent_should_remove_all_child_changes)
     , ("prop_lookup_after_lookup", prop_lookup_def)
-    , ("prop_x", prop_submap_def)
+    , ("prop_submap_def", prop_submap_def)
+    , ("prop_hasDescendants_def", prop_hasDescendants_def)
     ]
   where
     prop_existed_parent_should_filter_out_all_child_changes :: H.Property
@@ -226,6 +231,32 @@ props_filesystem_change =
       H.annotate "All children in parent/child should exist in submap of parent"
       for_ children_rel_dir_set $ \rel_dir -> do
         lookupDir rel_dir (submap parent_rel_dir fsc) H.=== Just change
+
+    prop_hasDescendants_def :: H.Property
+    prop_hasDescendants_def = H.property $ do
+      parent_path_segments <-
+        H.forAll $
+          Gen.frequency
+            [ (10, path_segments_gen $ Range.linear 1 10)
+            , (1, pure [])
+            ]
+
+      H.cover 1 "./" $ null parent_path_segments
+
+      parent_rel_dir <- H.evalIO $ Path.parseRelDir $ intercalate "/" ("." : parent_path_segments)
+      H.annotateShow parent_rel_dir
+
+      child_path_segments <- H.forAll $ path_segments_gen $ Range.constant 1 10
+      child_rel_dir <- H.evalIO $ Path.parseRelDir $ intercalate "/" ("." : child_path_segments)
+      H.annotateShow child_rel_dir
+
+      change <- H.forAll filesystem_change_gen
+
+      let fsc = insert' (parent_rel_dir </> child_rel_dir) change empty
+      H.annotateShow fsc
+
+      H.annotate "Children should be descendants of parent"
+      hasDescendants parent_rel_dir fsc H.=== True
 
     path_segments_gen :: H.Range Int -> H.Gen [String]
     path_segments_gen length_range = Gen.list length_range $ replicateM 2 Gen.alphaNum
