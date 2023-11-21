@@ -148,13 +148,18 @@ init_ctr = do
 
 backup :: (E.Logging E.:> es, E.Repository E.:> es, BackupCache E.:> es, Tmp E.:> es, BackupStatistics E.:> es, E.IOE E.:> es) => T.Text -> E.Eff es Version
 backup dir = do
-  rel_dir <- liftIO $ Path.parseRelDir $ T.unpack dir
+  abs_pwd <- liftIO $ Path.parseAbsDir =<< P.getWorkingDirectory
+  abs_dir <-
+    liftIO $
+      (Path.parseSomeDir $ T.unpack dir) >>= \case
+        Path.Abs abs_dir -> pure abs_dir
+        Path.Rel rel_dir -> pure $ abs_pwd Path.</> rel_dir
 
   root_digest <- run_backup $ do
     RepositoryWriteRep scope _ _ _ <- E.getStaticRep @RepositoryWrite
 
-    stat_async <- E.reallyUnsafeUnliftIO $ \un -> Ki.fork scope (un $ collect_dir_and_file_statistics rel_dir)
-    root_digest <- backup_dir rel_dir
+    stat_async <- E.reallyUnsafeUnliftIO $ \un -> Ki.fork scope (un $ collect_dir_and_file_statistics abs_dir)
+    root_digest <- backup_dir abs_dir
     liftIO $ atomically $ Ki.await stat_async
     pure root_digest
 
@@ -275,7 +280,7 @@ tree_content file_or_dir hash' =
 
 collect_dir_and_file_statistics
   :: (E.Repository E.:> es, BackupStatistics E.:> es, E.IOE E.:> es)
-  => Path Path.Rel Path.Dir
+  => Path Path.Abs Path.Dir
   -> E.Eff es ()
 collect_dir_and_file_statistics rel_tree_name = do
   Dir.readEither rel_tree_name
@@ -322,7 +327,7 @@ data ForkFns
       (IO Digest -> IO (IO Digest))
       (IO Digest -> IO (IO Digest))
 
-backup_dir :: (RepositoryWrite E.:> es, BackupCache E.:> es, Tmp E.:> es, E.IOE E.:> es) => Path Path.Rel Path.Dir -> E.Eff es Digest
+backup_dir :: (RepositoryWrite E.:> es, BackupCache E.:> es, Tmp E.:> es, E.IOE E.:> es) => Path Path.Abs Path.Dir -> E.Eff es Digest
 backup_dir rel_tree_name = Tmp.withEmptyTmpFile $ \file_name' -> EU.reallyUnsafeUnliftIO $ \un -> do
   RepositoryWriteRep _ (ForkFns file_fork_or_not dir_fork_or_not) tbq _ <- un $ E.getStaticRep @RepositoryWrite
   !dir_hash <- liftIO $ withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
@@ -361,11 +366,11 @@ backup_dir_from_list inputs = Tmp.withEmptyTmpFile $ \file_name' -> do
 
   pure dir_hash
 
-backup_file :: (RepositoryWrite E.:> es, BackupCache E.:> es, Tmp E.:> es, E.IOE E.:> es) => Path Path.Rel Path.File -> E.Eff es Digest
+backup_file :: (RepositoryWrite E.:> es, BackupCache E.:> es, Tmp E.:> es, E.IOE E.:> es) => Path Path.Abs Path.File -> E.Eff es Digest
 backup_file rel_file_name = do
   RepositoryWriteRep _ _ tbq _ <- E.getStaticRep @RepositoryWrite
 
-  st <- liftIO $ P.getFileStatus $ Path.fromRelFile rel_file_name
+  st <- liftIO $ P.getFileStatus $ Path.fromAbsFile rel_file_name
   to_scan <- BackupCacheLevelDB.tryReadingCacheHash st
   case to_scan of
     Just cached_digest -> do
@@ -373,8 +378,8 @@ backup_file rel_file_name = do
       pure $! cached_digest
     Nothing -> Tmp.withEmptyTmpFile $ \file_name' -> E.reallyUnsafeUnliftIO $ \un -> do
       !file_hash <- withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd ->
-        withBinaryFile (Path.fromRelFile rel_file_name) ReadMode $ \fdd ->
-          Chunker.gearHash Chunker.defaultGearHashConfig (Path.fromRelFile rel_file_name)
+        withBinaryFile (Path.fromAbsFile rel_file_name) ReadMode $ \fdd ->
+          Chunker.gearHash Chunker.defaultGearHashConfig (Path.fromAbsFile rel_file_name)
             & S.mapM
               ( \(Chunker.Chunk b e) -> do
                   S.unfold chunkReaderFromToWith (b, e - 1, defaultChunkSize, fdd)
