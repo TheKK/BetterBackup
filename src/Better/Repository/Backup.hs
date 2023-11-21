@@ -341,7 +341,9 @@ backup_dir rel_tree_name = Tmp.withEmptyTmpFile $ \file_name' -> EU.reallyUnsafe
 
   pure dir_hash
 
-data DirEntry = DirEntryFile Digest BS.ByteString | DirEntryDir Digest BS.ByteString
+data DirEntry
+  = DirEntryFile {-# UNPACK #-} !Digest {-# UNPACK #-} !BS.ByteString
+  | DirEntryDir {-# UNPACK #-} !Digest {-# UNPACK #-} !BS.ByteString
 
 backup_dir_from_list :: (RepositoryWrite E.:> es, BackupStatistics E.:> es, Tmp E.:> es, E.IOE E.:> es) => [DirEntry] -> E.Eff es Digest
 backup_dir_from_list inputs = Tmp.withEmptyTmpFile $ \file_name' -> do
