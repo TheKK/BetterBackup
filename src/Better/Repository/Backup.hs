@@ -1,10 +1,13 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -12,18 +15,27 @@
 
 module Better.Repository.Backup (
   backup,
+  run_backup,
 
   -- * Backup related functions
   DirEntry (..),
   backup_dir_from_list,
   backup_file_from_builder,
+
+  -- * Backup from existed tree
+  backup_dir_from_existed_tree,
+
+  -- * Tests
+  props_what_to_do_with_file_and_dir,
 ) where
 
 import Prelude hiding (read)
 
 import Numeric.Natural (Natural)
 
+import Data.Either (fromRight)
 import Data.Function ((&))
+import Data.List (inits, intercalate)
 import Data.Maybe (fromMaybe)
 import Data.Word (Word8)
 
@@ -47,13 +59,13 @@ import Data.Time (getCurrentTime)
 import Text.Read (readMaybe)
 
 import Control.Applicative ((<|>))
-import Control.Monad (unless, when)
+import Control.Monad (guard, replicateM, unless, when)
+import Control.Monad.Catch (throwM)
 import Control.Monad.IO.Class (liftIO)
-
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import qualified Control.Monad.IO.Unlift as Un
 
-import Control.Concurrent.STM (TBQueue, TVar, atomically, modifyTVar', newTBQueueIO, newTVarIO, readTBQueue, readTVar, readTVarIO, writeTBQueue)
+import Control.Concurrent.STM (TBQueue, TVar, atomically, modifyTVar', newTBQueueIO, newTVarIO, readTBQueue, readTVar, writeTBQueue)
 
 import qualified Streamly.Data.Array as Array
 import Streamly.External.ByteString (toArray)
@@ -64,7 +76,10 @@ import Streamly.Internal.System.IO (defaultChunkSize)
 import qualified Streamly.FileSystem.File as File
 
 import qualified System.Directory as D
-import qualified System.Posix.Files as P
+import System.Environment (lookupEnv)
+import qualified System.FilePath as FP
+import System.IO (IOMode (ReadMode, WriteMode), withBinaryFile)
+import qualified System.Posix as P
 
 import Path (Path, (</>))
 import qualified Path
@@ -80,20 +95,26 @@ import qualified Streamly.Data.Stream.Prelude as S
 import Control.Concurrent.QSem (QSem, newQSem, signalQSem, waitQSem)
 import Control.Concurrent.STM.TSem (TSem, newTSem, signalTSem, waitTSem)
 import Control.Exception (finally, mask, onException)
-
-import System.Environment (lookupEnv)
-import System.IO (IOMode (ReadMode, WriteMode), withBinaryFile)
+import Control.Monad.ST.Strict (stToIO)
+import Control.Monad.Trans.Maybe (MaybeT (MaybeT, runMaybeT))
 
 import qualified Effectful as E
 import qualified Effectful.Dispatch.Static as E
 import qualified Effectful.Dispatch.Static.Unsafe as E
 import qualified Effectful.Dispatch.Static.Unsafe as EU
 
-import Better.Hash (Digest, digestToBase16ShortByteString, hashArrayFoldIO, hashByteStringFoldIO)
-import Better.Internal.Repository.LowLevel (Version (Version), addBlob', addDir', addFile', addVersion, d2b)
+import qualified Hedgehog as H
+import qualified Hedgehog.Gen as Gen
+import qualified Hedgehog.Range as Range
+
+import qualified Better.Data.FileSystemChanges as FSC
+import Better.Hash (Digest, digestToBase16ShortByteString, finalize, hashArrayFoldIO, hashByteArrayAccess', hashByteStringFoldIO)
+import qualified Better.Hash as Hash
+import Better.Internal.Repository.LowLevel (Version (Version), addBlob', addDir', addFile', addVersion, d2b, doesTreeExists)
 import Better.Internal.Streamly.Array (chunkReaderFromToWith)
 import Better.Internal.Streamly.Crypto.AES (encryptCtr, that_aes)
 import qualified Better.Logging.Effect as E
+import qualified Better.Repository as Repo
 import Better.Repository.BackupCache.Class (BackupCache)
 import qualified Better.Repository.BackupCache.LevelDB as BackupCacheLevelDB
 import Better.Repository.Class (RepositoryWrite)
@@ -448,3 +469,324 @@ withEmitUnfoldr q_size putter go = Un.withRunInIO $ \un -> do
     ret_solver <- atomically $ Ki.await thread_solver
 
     pure (ret_putter, ret_solver)
+
+data TreeWhatNow
+  = TreeIsIntact
+  | TreeIsRemoved
+  | -- | This tree is lost and we have no idea how to patch it, so just backup it again.
+    -- Note that it might not exist nor be a directory now.
+    TreeShouldBeBackedUpAgain (Path Path.Abs Path.File)
+  | -- | There're changes in this tree so keep traversing and you'll find out.
+    -- Also there might be new element in this tree which are stored in the list.
+    TreeShouldKeepTraversing [(Path Path.Rel Path.File, Path Path.Abs Path.File)] -- TODO Use Path Abs File
+  deriving (Eq, Show)
+
+data FileWhatNow
+  = FileIsIntact
+  | FileIsRemoved
+  | -- | This file is lost and we have no idea how to patch it, so just backup it again.
+    -- Note that it might not exist nor be a file now.
+    FileShouldBeBackedUpAgain (Path Path.Abs Path.File)
+  deriving (Eq, Show)
+
+what_to_do_with_this_tree :: FSC.FileSystemChanges -> Path Path.Rel Path.Dir -> E.Eff es TreeWhatNow
+what_to_do_with_this_tree fsc p = do
+  case FSC.lookupDir p fsc of
+    Just FSC.IsRemoved -> pure TreeIsRemoved
+    Just (FSC.IsNew abs_path) -> pure $ TreeShouldBeBackedUpAgain abs_path -- Not possible case actually
+    Just (FSC.NeedFreshBackup abs_path) -> pure $ TreeShouldBeBackedUpAgain abs_path
+    Nothing ->
+      if FSC.hasDescendants p fsc
+        then pure $ TreeShouldKeepTraversing new_entries
+        else pure TreeIsIntact
+  where
+    new_entries = do
+      (raw_rel_path, FSC.IsNew local_abs_path) <- FSC.toList $ FSC.submap p fsc
+      rel_file <- Path.parseRelFile $ BC.unpack raw_rel_path
+      guard $ Path.parent rel_file == p
+      stripped_rel_file_path <- Path.stripProperPrefix p rel_file
+      pure (stripped_rel_file_path, local_abs_path)
+
+-- Keep it returning Eff in case that we use IO operation to implement it in the future.
+what_to_do_with_this_file :: FSC.FileSystemChanges -> Path Path.Rel Path.File -> E.Eff es FileWhatNow
+what_to_do_with_this_file fsc p = do
+  case FSC.lookupFile p fsc of
+    Just FSC.IsRemoved -> pure FileIsRemoved
+    Just (FSC.IsNew abs_path) -> pure $! FileShouldBeBackedUpAgain abs_path
+    Just (FSC.NeedFreshBackup abs_path) -> pure $! FileShouldBeBackedUpAgain abs_path
+    Nothing -> pure FileIsIntact
+
+-- TODO Currently we doesn't update total file/dir count.
+backup_dir_from_existed_tree
+  :: ( E.Logging E.:> es
+     , E.Repository E.:> es
+     , RepositoryWrite E.:> es
+     , BackupCache E.:> es
+     , Tmp E.:> es
+     , BackupStatistics E.:> es
+     , E.IOE E.:> es
+     )
+  => FSC.FileSystemChanges
+  -> Digest
+  -> Path Path.Rel Path.Dir
+  -> E.Eff es (Maybe DirEntry)
+backup_dir_from_existed_tree fsc digest rel_dir_path_in_tree = do
+  tree_exists <- doesTreeExists digest
+  unless tree_exists $ do
+    throwM $ userError $ show digest <> ": tree does not exist in backup"
+
+  what_now <- what_to_do_with_this_tree fsc rel_dir_path_in_tree
+  case what_now of
+    TreeIsIntact -> pure $! Just $! DirEntryDir digest direntry_name
+    TreeIsRemoved -> pure Nothing
+    TreeShouldBeBackedUpAgain abs_fs_path -> try_backing_up_file_or_dir rel_dir_path_in_tree abs_fs_path
+    TreeShouldKeepTraversing possible_new_entries ->
+      fmap (`DirEntryDir` direntry_name) <$> keep_traversing_existed_tree fsc digest rel_dir_path_in_tree possible_new_entries
+  where
+    direntry_name = rel_path_to_direntry_name rel_dir_path_in_tree
+
+backup_file_from_existed_tree
+  :: ( E.Logging E.:> es
+     , E.Repository E.:> es
+     , RepositoryWrite E.:> es
+     , BackupCache E.:> es
+     , Tmp E.:> es
+     , BackupStatistics E.:> es
+     , E.IOE E.:> es
+     )
+  => FSC.FileSystemChanges
+  -> Digest
+  -> Path Path.Rel Path.File
+  -> E.Eff es (Maybe DirEntry)
+backup_file_from_existed_tree fsc digest rel_file_path_in_tree = do
+  what_now <- what_to_do_with_this_file fsc rel_file_path_in_tree
+  case what_now of
+    FileIsIntact -> pure $! Just $! DirEntryFile digest direntry_name
+    FileIsRemoved -> pure Nothing
+    FileShouldBeBackedUpAgain abs_fs_path -> try_backing_up_file_or_dir rel_file_path_in_tree abs_fs_path
+  where
+    direntry_name = rel_path_to_direntry_name rel_file_path_in_tree
+
+keep_traversing_existed_tree
+  :: ( E.Logging E.:> es
+     , E.Repository E.:> es
+     , RepositoryWrite E.:> es
+     , BackupCache E.:> es
+     , Tmp E.:> es
+     , BackupStatistics E.:> es
+     , E.IOE E.:> es
+     )
+  => FSC.FileSystemChanges
+  -> Digest
+  -> Path Path.Rel Path.Dir
+  -> [(Path Path.Rel Path.File, Path Path.Abs Path.File)]
+  -> E.Eff es (Maybe Digest)
+keep_traversing_existed_tree fsc digest_of_existed_tree rel_dir_path_in_tree possible_new_entries = do
+  RepositoryWriteRep _ _ tbq _ <- E.getStaticRep @RepositoryWrite
+
+  let
+    -- It's fine to use origin fsc, but using submap should makes lookup faster to traverse down.
+    -- The assumptions are:
+    --   - time to run submap is identical to single lookup
+    --   - submap use very few memory
+    sub_fsc = FSC.submap rel_dir_path_in_tree fsc
+
+  liftIO $ print (rel_dir_path_in_tree, sub_fsc)
+
+  fmap Just $ Tmp.withEmptyTmpFile $ \file_name' -> EU.reallyUnsafeUnliftIO $ \un -> do
+    !dir_hash <- liftIO $ withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
+      !mid_hasher <-
+        -- Traverse existed part.
+        Repo.catTree digest_of_existed_tree
+          & S.morphInner un
+          & S.mapM
+            ( \case
+                Left d -> do
+                  rel_dir <- Path.parseRelDir $ T.unpack $ Repo.tree_name d
+                  un $ backup_dir_from_existed_tree sub_fsc (Repo.tree_sha d) (rel_dir_path_in_tree </> rel_dir)
+                Right f -> do
+                  rel_file <- Path.parseRelFile $ T.unpack $ Repo.file_name f
+                  un $ backup_file_from_existed_tree sub_fsc (Repo.file_sha f) (rel_dir_path_in_tree </> rel_file)
+            )
+          & S.catMaybes
+          & fmap tree_content_from_dir_entry
+          & S.trace (BC.hPut fd)
+          & S.fold (F.morphInner stToIO $ hashByteArrayAccess' $ Hash.init Nothing)
+
+      -- Traverse added part.
+      S.fromList possible_new_entries
+        & S.mapM
+          ( \(entry_rel_path_in_tree, entry_abs_path_on_filesystem) -> do
+              un $ try_backing_up_file_or_dir entry_rel_path_in_tree entry_abs_path_on_filesystem
+          )
+        & S.catMaybes
+        & fmap tree_content_from_dir_entry
+        & S.trace (BC.hPut fd)
+        & S.fold (F.morphInner stToIO $ F.rmapM finalize $ hashByteArrayAccess' mid_hasher)
+
+    liftIO $ atomically $ writeTBQueue tbq $ UploadTree dir_hash file_name'
+
+    pure dir_hash
+
+try_backing_up_file_or_dir
+  :: ( E.Logging E.:> es
+     , E.Repository E.:> es
+     , RepositoryWrite E.:> es
+     , BackupCache E.:> es
+     , Tmp E.:> es
+     , BackupStatistics E.:> es
+     , E.IOE E.:> es
+     )
+  => Path Path.Rel t
+  -> Path Path.Abs Path.File
+  -> E.Eff es (Maybe DirEntry)
+try_backing_up_file_or_dir rel_tree_path abs_filesystem_path = runMaybeT $ do
+  path_exists <- liftIO $ D.doesPathExist raw_abs_filesystem_path
+  guard path_exists
+
+  is_dir <- liftIO $ P.isDirectory <$> P.getFileStatus raw_abs_filesystem_path
+  MaybeT $!
+    if is_dir
+      then do
+        abs_dir <- Path.parseAbsDir raw_abs_filesystem_path
+        Just . (`DirEntryDir` direntry_name) <$> backup_dir abs_dir
+      else do
+        Just . (`DirEntryFile` direntry_name) <$> backup_file abs_filesystem_path
+  where
+    direntry_name = rel_path_to_direntry_name rel_tree_path
+    raw_abs_filesystem_path = Path.fromAbsFile abs_filesystem_path
+
+-- | Run dirname or file name.
+--
+-- examples:
+--   extract_dirname_or_filename [reldir|a/b/c|] == "c/"
+--   extract_dirname_or_filename [reldir|a/b|] == "b/"
+--   extract_dirname_or_filename [reldir|a|] == "a/"
+--   extract_dirname_or_filename [reldir|.|] == "./"
+
+--   extract_dirname_or_filename [relfile|a/b/c|] == "c"
+--   extract_dirname_or_filename [relfile|a/b|] == "b"
+--   extract_dirname_or_filename [relfile|a|] == "a"
+dirname_or_filename :: Path Path.Rel t -> Path Path.Rel t
+dirname_or_filename p = fromRight p $ Path.stripProperPrefix (Path.parent p) p
+
+rel_path_to_direntry_name :: Path Path.Rel t -> BS.ByteString
+rel_path_to_direntry_name = BC.pack . FP.dropTrailingPathSeparator . Path.toFilePath . dirname_or_filename
+
+props_what_to_do_with_file_and_dir :: H.Group
+props_what_to_do_with_file_and_dir =
+  H.Group
+    "FileSystemChanges"
+    [ ("prop_semantics_between_filesystem_change_and_what_to_do_with_file", prop_def_what_to_do_with_this_file)
+    , ("prop_semantics_between_filesystem_change_and_what_to_do_with_dir", prop_def_what_to_do_with_this_tree)
+    , ("prop_insersion_should_be_observable", prop_insersion_should_be_observable)
+    , ("prop_keep_traversing", prop_keep_traversing_from_root_to_leaf)
+    ]
+  where
+    prop_insersion_should_be_observable :: H.Property
+    prop_insersion_should_be_observable = H.property $ do
+      pathes <- H.forAll $ path_segments_gen $ Range.linear 1 10
+
+      rel_dir <- H.evalIO $ Path.parseRelDir $ intercalate "/" pathes
+      rel_file <- H.evalIO $ Path.parseRelFile $ intercalate "/" pathes
+      H.annotateShow (rel_dir, rel_file)
+
+      change <- H.forAll filesystem_change_gen
+
+      let fsc = FSC.empty & FSC.insert' rel_dir change
+      H.annotateShow fsc
+
+      let what_now = E.runPureEff $ what_to_do_with_this_tree fsc rel_dir
+      what_now H.=== case change of
+        FSC.IsNew abs_file_path -> TreeShouldBeBackedUpAgain abs_file_path
+        FSC.IsRemoved -> TreeIsRemoved
+        FSC.NeedFreshBackup abs_file_path -> TreeShouldBeBackedUpAgain abs_file_path
+
+      let parent_what_now = E.runPureEff $ what_to_do_with_this_tree fsc $ Path.parent rel_dir
+      parent_what_now H.=== case change of
+        FSC.IsNew abs_file_path ->
+          let stripped_rel_file = either (error . show) id $ Path.stripProperPrefix (Path.parent rel_dir) rel_file
+          in  TreeShouldKeepTraversing [(stripped_rel_file, abs_file_path)]
+        FSC.IsRemoved -> TreeShouldKeepTraversing []
+        FSC.NeedFreshBackup _ -> TreeShouldKeepTraversing []
+
+    prop_def_what_to_do_with_this_file :: H.Property
+    prop_def_what_to_do_with_this_file = H.property $ do
+      pathes <- H.forAll $ path_segments_gen $ Range.linear 1 10
+
+      rel_dir <- H.evalIO $ Path.parseRelDir $ intercalate "/" pathes
+      rel_file <- H.evalIO $ Path.parseRelFile $ intercalate "/" pathes
+      H.annotateShow (rel_dir, rel_file)
+
+      change <- H.forAll filesystem_change_gen
+
+      let fsc = FSC.empty & FSC.insert' rel_dir change
+      H.annotateShow fsc
+
+      H.annotate "when filesystem change is empty, everything should be intact"
+      let empty_what_now = E.runPureEff (what_to_do_with_this_file FSC.empty rel_file)
+      empty_what_now H.=== FileIsIntact
+
+      H.annotate "when filesystem has change, it should report expected answer"
+      let what_now = E.runPureEff (what_to_do_with_this_file fsc rel_file)
+      what_now H.=== case change of
+        FSC.IsNew abs_fs_path -> FileShouldBeBackedUpAgain abs_fs_path
+        FSC.NeedFreshBackup abs_fs_path -> FileShouldBeBackedUpAgain abs_fs_path
+        FSC.IsRemoved -> FileIsRemoved
+
+    prop_def_what_to_do_with_this_tree :: H.Property
+    prop_def_what_to_do_with_this_tree = H.property $ do
+      pathes <- H.forAll $ path_segments_gen $ Range.linear 1 10
+
+      rel_dir <- H.evalIO $ Path.parseRelDir $ intercalate "/" pathes
+      H.annotateShow rel_dir
+
+      change <- H.forAll filesystem_change_gen
+
+      fsc <- H.eval $ FSC.empty & FSC.insert' rel_dir change
+      H.annotateShow fsc
+
+      H.annotate "when filesystem change is empty, everything should be intact"
+      let empty_what_now = E.runPureEff (what_to_do_with_this_tree FSC.empty rel_dir)
+      empty_what_now H.=== TreeIsIntact
+
+      H.annotate "when filesystem has change, it should report correct answer"
+      let what_now = E.runPureEff (what_to_do_with_this_tree fsc rel_dir)
+      what_now H.=== case change of
+        FSC.IsNew abs_fs_path -> TreeShouldBeBackedUpAgain abs_fs_path
+        FSC.NeedFreshBackup abs_fs_path -> TreeShouldBeBackedUpAgain abs_fs_path
+        FSC.IsRemoved -> TreeIsRemoved
+
+    prop_keep_traversing_from_root_to_leaf :: H.Property
+    prop_keep_traversing_from_root_to_leaf = H.property $ do
+      pathes <- H.forAll $ path_segments_gen $ Range.linear 1 10
+
+      rel_dir <- H.evalIO $ Path.parseRelDir $ intercalate "/" pathes
+      rel_file <- H.evalIO $ Path.parseRelFile $ intercalate "/" pathes
+      H.annotateShow (rel_dir, rel_file)
+
+      change <- H.forAll filesystem_change_gen
+
+      let fsc = FSC.empty & FSC.insert' rel_dir change
+      H.annotateShow fsc
+
+      H.annotate "All prefixes should tell you to keep traversing"
+      for_ (["."] : init (tail $ inits pathes)) $ \prefix_segs -> do
+        prefix_dir <- H.evalIO $ Path.parseRelDir $ intercalate "/" prefix_segs
+        H.annotateShow prefix_dir
+
+        let what_now = E.runPureEff $ what_to_do_with_this_tree fsc prefix_dir
+        what_now H.=== case change of
+          FSC.IsNew abs_fs_path
+            | Path.parent rel_dir == prefix_dir ->
+                let stripped_rel_file = either (error . show) id $ Path.stripProperPrefix (Path.parent rel_dir) rel_file
+                in  TreeShouldKeepTraversing [(stripped_rel_file, abs_fs_path)]
+          _ -> TreeShouldKeepTraversing []
+
+    path_segments_gen :: H.Range Int -> H.Gen [String]
+    path_segments_gen length_range = Gen.list length_range $ replicateM 2 Gen.alphaNum
+
+    filesystem_change_gen :: H.Gen FSC.FileSystemChange
+    filesystem_change_gen = Gen.element [FSC.IsNew random_abs_path, FSC.NeedFreshBackup random_abs_path, FSC.IsRemoved]
+      where
+        random_abs_path = [Path.absfile|/aabb|]
