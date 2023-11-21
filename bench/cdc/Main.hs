@@ -69,6 +69,8 @@ import qualified Streamly.Internal.Data.Array as Array
 import qualified Streamly.Internal.Data.Array.Mut.Type as MutArray
 import qualified Streamly.Internal.Data.Array.Type as Array
 
+import qualified Parser
+
 newtype ArrayBA = ArrayBA {un_array_ba :: Array.Array Word8}
   deriving (Eq, Ord)
 
@@ -418,6 +420,7 @@ main =
     , bench_concurrent
     , bench_as_ptr
     , bench_base16
+    , Parser.benchGroup
     ]
   where
     file = "data2"
