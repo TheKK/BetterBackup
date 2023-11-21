@@ -67,7 +67,7 @@ garbageCollection = gc_tree >>= gc_file >>= gc_chunk
         trees <-
           un $
             listVersions
-              & fmap ver_root
+              & fmap (ver_root . snd)
               & S.fold F.toSet
 
         q <- newTQueueIO

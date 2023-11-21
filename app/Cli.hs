@@ -28,7 +28,7 @@ import Control.Monad.IO.Class (MonadIO (liftIO))
 import Data.Bifunctor (first)
 import Data.Foldable (Foldable (fold))
 import Data.Function ((&))
-import Data.List (sort)
+import Data.List (sortOn)
 import Data.String (fromString)
 
 import qualified Data.Text as T
@@ -152,8 +152,8 @@ parser_info_versions = info (helper <*> parser) infoMod
     {-# NOINLINE go #-}
     go =
       run_readonly_repo_t_from_cwd $ do
-        vs <- Repo.listVersions & S.toList
-        liftIO $ mapM_ print $ sort vs
+        digests_and_vs <- Repo.listVersions & S.toList
+        liftIO $ mapM_ print $ sortOn snd digests_and_vs
 
 parser_info_cat_chunk :: ParserInfo (IO ())
 parser_info_cat_chunk = info (helper <*> parser) infoMod

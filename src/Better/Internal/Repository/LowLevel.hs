@@ -169,11 +169,16 @@ listFolderFiles
 listFolderFiles = mkListFolderFiles
 
 {-# INLINE listVersions #-}
-listVersions :: (E.Repository E.:> es) => S.Stream (E.Eff es) Version
+listVersions :: (E.Repository E.:> es) => S.Stream (E.Eff es) (Digest, Version)
 listVersions =
   listFolderFiles folder_version
-    -- TODO Maybr we could skip invalid version files.
-    & S.mapM (catVersion <=< s2d . Path.fromRelFile)
+    -- TODO Maybe we could skip invalid version files.
+    & S.mapM
+      ( \version_file_path -> do
+          !version_digest <- s2d $ Path.fromRelFile version_file_path
+          !version <- catVersion version_digest
+          pure (version_digest, version)
+      )
 
 does_that_exist :: (E.Repository E.:> es) => Path Path.Rel Path.Dir -> Digest -> E.Eff es Bool
 does_that_exist that_folder digest = do
