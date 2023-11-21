@@ -28,12 +28,14 @@ import Streamly.External.ByteString
 
 import Better.Internal.Streamly.Crypto.AES (compact, decryptCtr, encryptCtr, that_aes)
 import Better.Streamly.FileSystem.Chunker (props_distribute, props_fast_cdc)
+import Better.Data.FileSystemChanges (props_filesystem_change)
 
 main :: IO ()
 main =
   defaultMain . testGroup "tests" $
     [ fromGroup props_distribute
     , fromGroup props_fast_cdc
+    , fromGroup props_filesystem_change
     , testProperty "ctr enc & dec" prop_ctr_enc_dec
     , testProperty "compact" prop_compact
     ]

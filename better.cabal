@@ -90,6 +90,7 @@ library better-core
       Better.Internal.Streamly.Array
       Better.Streamly.FileSystem.Dir
       Better.Streamly.FileSystem.Chunker
+      Better.Data.FileSystemChanges
       Better.Repository
       Better.Repository.Types
       Better.Repository.Backup
