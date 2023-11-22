@@ -17,30 +17,21 @@ import Options.Applicative (
   help,
   helper,
   info,
-  long,
   metavar,
   progDesc,
-  short,
   subparser,
-  switch,
  )
 
 import Control.Exception (Exception (displayException))
 import Control.Monad.IO.Class (MonadIO (liftIO))
 
 import Data.Bifunctor (first)
-import Data.Foldable (Foldable (fold), for_)
+import Data.Foldable (Foldable (fold))
 import Data.Function ((&))
-import Data.List (sortOn)
 import Data.String (fromString)
-
-import qualified Data.Aeson as A
 
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
-
-import Data.Time (UTCTime, defaultTimeLocale, formatTime, utc, utcToZonedTime)
-import Data.Time.LocalTime (getCurrentTimeZone)
 
 import qualified Data.ByteString.Base16 as BSBase16
 
@@ -67,8 +58,8 @@ import Cli.PatchBackup (parser_info)
 import qualified Cli.Ref as Ref
 import Cli.RestoreTree (parser_info)
 import Cli.VersionFind (parser_info)
+import Cli.Versions (parser_info)
 
-import qualified Data.ByteString.Lazy.Char8 as BL
 import qualified LocalCache
 import Monad (run_readonly_repo_t_from_cwd)
 
@@ -86,7 +77,7 @@ cmds = info (helper <*> parser) infoMod
       subparser $
         fold
           [ command "init" parser_info_init
-          , command "versions" parser_info_versions
+          , command "versions" Cli.Versions.parser_info
           , command "version" parser_info_version
           , command "backup" Cli.Backup.parser_info
           , command "patch-backup" Cli.PatchBackup.parser_info
@@ -146,66 +137,6 @@ parser_info_init_local = info (helper <*> parser) infoMod
               ]
           )
         <*> (Config <$> p_local_repo_config)
-
-parser_info_versions :: ParserInfo (IO ())
-parser_info_versions = info (helper <*> parser) infoMod
-  where
-    infoMod =
-      fold
-        [ progDesc "List backuped versions"
-        ]
-
-    parser =
-      go
-        <$> switch
-          ( fold
-              [ long "utc"
-              , help "display timestamp with timezone in UTC instead of CST"
-              ]
-          )
-        <*> switch
-          ( fold
-              [ long "json"
-              , short 'j'
-              , help "display in JSON format"
-              ]
-          )
-
-    {-# NOINLINE go #-}
-    go use_utc is_json = do
-      tz <- if use_utc then pure utc else getCurrentTimeZone
-      let
-        display_time = formatTime defaultTimeLocale "%c" . utcToZonedTime tz
-        render =
-          if is_json
-            then render_json display_time
-            else render_normally display_time
-
-      digests_and_vs <- run_readonly_repo_t_from_cwd $ do
-        Repo.listVersions & S.toList
-
-      -- Sort on list should be acceptible in the context of "backup version".
-      -- Currently I believe the number would be under 100,000 and causes no problem here.
-      for_ (sortOn (Repo.ver_timestamp . snd) digests_and_vs) $ \(v_digest, v) -> do
-        render v_digest v
-
-    render_normally display_time v_digest v =
-      putStrLn $
-        display_time (Repo.ver_timestamp v)
-          <> " - version digest ["
-          <> show v_digest
-          <> "] - tree root digest ["
-          <> show (Repo.ver_root v)
-          <> "]"
-
-    render_json :: (UTCTime -> String) -> Digest -> Repo.Version -> IO ()
-    render_json display_time v_digest v =
-      BL.putStrLn . A.encode $
-        A.object
-          [ ("digest", A.String (T.pack $ show v_digest))
-          , ("timestamp", A.String (T.pack $ display_time (Repo.ver_timestamp v)))
-          , ("tree_root", A.String (T.pack $ show (Repo.ver_root v)))
-          ]
 
 parser_info_cat_chunk :: ParserInfo (IO ())
 parser_info_cat_chunk = info (helper <*> parser) infoMod
