@@ -14,8 +14,11 @@ import Options.Applicative (
   help,
   helper,
   info,
+  long,
   metavar,
   progDesc,
+  short,
+  switch,
  )
 
 import Control.Monad.IO.Class (MonadIO (liftIO))
@@ -47,28 +50,39 @@ parser_info = info (helper <*> parser) infoMod
 
     parser =
       go
-        <$> argument
+        <$> switch
+          ( fold
+              [ help "display digest"
+              , long "show-digest"
+              , short 'd'
+              ]
+          )
+        <*> argument
           digest_read
           ( fold
-              [ metavar "SHA"
-              , help "SHA of tree"
+              [ help "SHA of tree"
+              , metavar "SHA"
               ]
           )
 
-    go :: Digest -> IO ()
-    go version_digest = run_readonly_repo_t_from_cwd $ do
+    go :: Bool -> Digest -> IO ()
+    go show_digest version_digest = run_readonly_repo_t_from_cwd $ do
       root <- Repo.ver_root <$> Repo.catVersion version_digest
       echo_tree "/" root
       where
         {-# NOINLINE echo_tree #-}
         echo_tree parent digest = do
-          liftIO $ T.putStrLn parent
+          let opt_tree_digest = if show_digest then T.pack ("[" <> show digest <> "][d] ") else ""
+          liftIO $ T.putStrLn $ opt_tree_digest <> parent
+
           Repo.catTree digest
             & S.mapM
               ( \case
                   Left tree -> do
                     echo_tree (parent <> Repo.tree_name tree <> "/") (Repo.tree_sha tree)
-                  Right file -> liftIO $ T.putStrLn $ parent <> Repo.file_name file
+                  Right file -> do
+                    let opt_file_digest = if show_digest then T.pack ("[" <> show (Repo.file_sha file) <> "][f] ") else ""
+                    liftIO $ T.putStrLn $ opt_file_digest <> parent <> Repo.file_name file
               )
             & S.fold F.drain
 
