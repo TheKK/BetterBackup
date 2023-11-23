@@ -1,6 +1,9 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE QuasiQuotes #-}
+{-# LANGUAGE TypeOperators #-}
 
 module Cli.VersionFind (
   parser_info,
@@ -16,11 +19,13 @@ import Options.Applicative (
   info,
   long,
   metavar,
+  optional,
   progDesc,
   short,
   switch,
  )
 
+import Control.Exception (Exception (displayException))
 import Control.Monad.IO.Class (MonadIO (liftIO))
 
 import qualified Streamly.Data.Fold as F
@@ -28,15 +33,25 @@ import qualified Streamly.Data.Stream as S
 
 import qualified Data.ByteString.Base16 as BSBase16
 
-import Data.Foldable (Foldable (fold))
+import qualified System.FilePath as FP
+
+import Data.Bifunctor (Bifunctor (first))
+import Data.Foldable (Foldable (fold), foldlM)
 import Data.Function ((&))
+import Data.Maybe (fromMaybe)
 import Data.String (fromString)
 
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 
+import Path (Path)
+import qualified Path
+
+import qualified Effectful as E
+
 import Better.Hash (Digest, digestFromByteString)
 import qualified Better.Repository as Repo
+import Better.Repository.Class (Repository)
 
 import Monad (run_readonly_repo_t_from_cwd)
 
@@ -64,13 +79,28 @@ parser_info = info (helper <*> parser) infoMod
               , metavar "SHA"
               ]
           )
+        <*> optional
+          ( argument
+              some_base_dir_read
+              ( fold
+                  [ help "starting path to traversing, default to root"
+                  , metavar "ROOT"
+                  ]
+              )
+          )
 
-    go :: Bool -> Digest -> IO ()
-    go show_digest version_digest = run_readonly_repo_t_from_cwd $ do
-      root <- Repo.ver_root <$> Repo.catVersion version_digest
-      echo_tree "/" root
+    go :: Bool -> Digest -> Maybe (Path.SomeBase Path.Dir) -> IO ()
+    go show_digest version_digest opt_somebase_dir = run_readonly_repo_t_from_cwd $ do
+      tree_root <- Repo.ver_root <$> Repo.catVersion version_digest
+
+      tree_root' <- case opt_somebase_dir of
+        Just somebase_dir -> search_dir_in_tree tree_root somebase_dir
+        Nothing -> pure tree_root
+
+      echo_tree "/" tree_root'
       where
         {-# NOINLINE echo_tree #-}
+        echo_tree :: (Repository E.:> es, E.IOE E.:> es) => T.Text -> Digest -> E.Eff es ()
         echo_tree parent digest = do
           let opt_tree_digest = if show_digest then T.pack ("[" <> show digest <> "][d] ") else ""
           liftIO $ T.putStrLn $ opt_tree_digest <> parent
@@ -86,6 +116,39 @@ parser_info = info (helper <*> parser) infoMod
               )
             & S.fold F.drain
 
+search_dir_in_tree :: (Repository E.:> es) => Digest -> Path.SomeBase Path.Dir -> E.Eff es Digest
+search_dir_in_tree root_digest somebase = do
+  -- Make everything abs dir, then split them into ["/", "a", "b"] and drop the "/" part.
+  let dir_segments = tail $ FP.splitDirectories $ Path.fromAbsDir abs_dir_path
+  go root_digest dir_segments
+  where
+    abs_dir_path :: Path Path.Abs Path.Dir
+    abs_dir_path = case somebase of
+      Path.Abs abs_dir -> abs_dir
+      Path.Rel rel_dir -> [Path.absdir|/|] Path.</> rel_dir
+
+    go :: (Repository E.:> es) => Digest -> [FilePath] -> E.Eff es Digest
+    go digest path_segments = snd <$> foldlM step (["/"], digest) path_segments
+
+    step :: (Repository E.:> es) => ([FilePath], Digest) -> FilePath -> E.Eff es ([FilePath], Digest)
+    step (traversed_pathes, !digest) path = do
+      !next_digest <-
+        Repo.catTree digest
+          & S.mapMaybe
+            ( \case
+                Left tree ->
+                  if Repo.tree_name tree == T.pack path
+                    then Just $! Repo.tree_sha tree
+                    else Nothing
+                Right _file -> Nothing
+            )
+          & S.fold F.one
+          & fmap
+            ( fromMaybe . error $
+                "unable to find directory '" <> path <> "' under '" <> FP.joinPath traversed_pathes <> "' [" <> show digest <> "] in backup tree"
+            )
+      pure (traversed_pathes <> [path], next_digest)
+
 -- TODO This is a copy-paste snippt.
 digest_read :: ReadM Digest
 digest_read = eitherReader $ \raw_sha -> do
@@ -96,3 +159,7 @@ digest_read = eitherReader $ \raw_sha -> do
   case digestFromByteString sha_decoded of
     Nothing -> Left $ "invalid sha256: " <> raw_sha <> ", incorrect length"
     Just digest -> pure digest
+
+-- TODO This is a copy-paste snippt.
+some_base_dir_read :: ReadM (Path.SomeBase Path.Dir)
+some_base_dir_read = eitherReader $ first displayException . Path.parseSomeDir
