@@ -10,9 +10,7 @@ module Cli.PatchBackup (
 
 import Options.Applicative (
   ParserInfo,
-  ReadM,
   argument,
-  eitherReader,
   help,
   helper,
   info,
@@ -31,11 +29,8 @@ import Control.Monad.IO.Class (MonadIO (liftIO))
 import Data.Char (chr, isPrint, isSpace)
 import Data.Foldable (Foldable (fold))
 import Data.Function ((&))
-import Data.String (fromString)
 import Data.Time (getCurrentTime)
 import Data.Void (Void)
-
-import qualified Data.Text as T
 
 import qualified Streamly.Console.Stdio as Stdio
 import qualified Streamly.Data.Fold as F
@@ -49,14 +44,12 @@ import qualified Text.Megaparsec.Byte as Byte
 import qualified Text.Megaparsec.Byte.Lexer as Lex
 
 import qualified Data.ByteString as BS
-import qualified Data.ByteString.Base16 as BSBase16
 import qualified Data.ByteString.Char8 as BC
 
 import qualified Effectful as E
 import qualified Effectful.Dispatch.Static.Unsafe as EU
 
 import qualified Better.Data.FileSystemChanges as FSC
-import Better.Hash (Digest, digestFromByteString)
 import qualified Better.Internal.Repository.LowLevel as Repo
 import qualified Better.Repository.Backup as Repo
 import qualified Better.Statistics.Backup as BackupSt
@@ -76,6 +69,7 @@ import Better.Statistics.Backup.Class (
 import Monad (run_backup_repo_t_from_cwd)
 import Streamly.External.ByteString (fromArray)
 import qualified Streamly.Internal.Data.Stream.Chunked as Chunked
+import Util.Options (digestRead)
 
 parser_info :: ParserInfo (IO ())
 parser_info = info (helper <*> parser) infoMod
@@ -88,7 +82,7 @@ parser_info = info (helper <*> parser) infoMod
     parser =
       go
         <$> argument
-          digest_read
+          digestRead
           ( fold
               [ metavar "TREE_DIGEST"
               , help "the tree you'd like to patch with"
@@ -165,16 +159,6 @@ report_backup_stat = do
         ]
 
 type MegaParser a = Mega.Parsec Void BS.ByteString a
-
-digest_read :: ReadM Digest
-digest_read = eitherReader $ \raw_sha -> do
-  sha_decoded <- case BSBase16.decodeBase16Untyped $ fromString raw_sha of
-    Left err -> Left $ "invalid sha256: " <> raw_sha <> ", " <> T.unpack err
-    Right sha' -> pure sha'
-
-  case digestFromByteString sha_decoded of
-    Nothing -> Left $ "invalid sha256: " <> raw_sha <> ", incorrect length"
-    Just digest -> pure digest
 
 {-# INLINE the_fold #-}
 the_fold :: Monad m => F.Fold m (Path Path.Rel Path.Dir, FSC.FileSystemChange) FSC.FileSystemChanges

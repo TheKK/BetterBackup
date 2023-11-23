@@ -11,9 +11,7 @@ module Cli.VersionFind (
 
 import Options.Applicative (
   ParserInfo,
-  ReadM,
   argument,
-  eitherReader,
   help,
   helper,
   info,
@@ -25,21 +23,16 @@ import Options.Applicative (
   switch,
  )
 
-import Control.Exception (Exception (displayException))
 import Control.Monad.IO.Class (MonadIO (liftIO))
 
 import qualified Streamly.Data.Fold as F
 import qualified Streamly.Data.Stream as S
 
-import qualified Data.ByteString.Base16 as BSBase16
-
 import qualified System.FilePath as FP
 
-import Data.Bifunctor (Bifunctor (first))
 import Data.Foldable (Foldable (fold), foldlM)
 import Data.Function ((&))
 import Data.Maybe (fromMaybe)
-import Data.String (fromString)
 
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
@@ -49,11 +42,12 @@ import qualified Path
 
 import qualified Effectful as E
 
-import Better.Hash (Digest, digestFromByteString)
+import Better.Hash (Digest)
 import qualified Better.Repository as Repo
 import Better.Repository.Class (Repository)
 
 import Monad (run_readonly_repo_t_from_cwd)
+import Util.Options (digestRead, someBaseDirRead)
 
 parser_info :: ParserInfo (IO ())
 parser_info = info (helper <*> parser) infoMod
@@ -73,7 +67,7 @@ parser_info = info (helper <*> parser) infoMod
               ]
           )
         <*> argument
-          digest_read
+          digestRead
           ( fold
               [ help "SHA of tree"
               , metavar "SHA"
@@ -81,7 +75,7 @@ parser_info = info (helper <*> parser) infoMod
           )
         <*> optional
           ( argument
-              some_base_dir_read
+              someBaseDirRead
               ( fold
                   [ help "starting path to traversing, default to root"
                   , metavar "ROOT"
@@ -148,18 +142,3 @@ search_dir_in_tree root_digest somebase = do
                 "unable to find directory '" <> path <> "' under '" <> FP.joinPath traversed_pathes <> "' [" <> show digest <> "] in backup tree"
             )
       pure (traversed_pathes <> [path], next_digest)
-
--- TODO This is a copy-paste snippt.
-digest_read :: ReadM Digest
-digest_read = eitherReader $ \raw_sha -> do
-  sha_decoded <- case BSBase16.decodeBase16Untyped $ fromString raw_sha of
-    Left err -> Left $ "invalid sha256: " <> raw_sha <> ", " <> T.unpack err
-    Right sha' -> pure sha'
-
-  case digestFromByteString sha_decoded of
-    Nothing -> Left $ "invalid sha256: " <> raw_sha <> ", incorrect length"
-    Just digest -> pure digest
-
--- TODO This is a copy-paste snippt.
-some_base_dir_read :: ReadM (Path.SomeBase Path.Dir)
-some_base_dir_read = eitherReader $ first displayException . Path.parseSomeDir

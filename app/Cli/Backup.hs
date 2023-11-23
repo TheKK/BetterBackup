@@ -1,6 +1,6 @@
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeOperators #-}
-{-# LANGUAGE FlexibleContexts #-}
 
 module Cli.Backup (
   parser_info,
@@ -8,9 +8,7 @@ module Cli.Backup (
 
 import Options.Applicative (
   ParserInfo,
-  ReadM,
   argument,
-  eitherReader,
   help,
   helper,
   info,
@@ -20,26 +18,25 @@ import Options.Applicative (
 
 import qualified Ki
 
-import Control.Exception (Exception (displayException), mask_)
+import Control.Exception (mask_)
 import Control.Monad (forever)
 import Control.Monad.IO.Class (MonadIO (liftIO))
 
-import Data.Bifunctor (first)
 import Data.Foldable (Foldable (fold))
 
 import qualified Data.Text as T
 
-import Path (Dir)
 import qualified Path
 
 import qualified Better.Repository.Backup as Repo
 
-import Monad (run_backup_repo_t_from_cwd)
 import qualified Better.Statistics.Backup as BackupSt
+import Better.Statistics.Backup.Class (BackupStatistics, newChunkCount, newDirCount, newFileCount, processedChunkCount, processedDirCount, processedFileCount, totalDirCount, totalFileCount, uploadedBytes)
 import Control.Concurrent (threadDelay)
 import qualified Effectful as E
-import Better.Statistics.Backup.Class (BackupStatistics, processedFileCount, totalFileCount, processedDirCount, totalDirCount, processedChunkCount, uploadedBytes, newFileCount, newDirCount, newChunkCount)
 import qualified Effectful.Dispatch.Static.Unsafe as EU
+import Monad (run_backup_repo_t_from_cwd)
+import Util.Options (someBaseDirRead)
 
 parser_info :: ParserInfo (IO ())
 parser_info = info (helper <*> parser) infoMod
@@ -52,7 +49,7 @@ parser_info = info (helper <*> parser) infoMod
     parser =
       go
         <$> argument
-          some_base_dir_read
+          someBaseDirRead
           ( fold
               [ metavar "BACKUP_ROOT"
               , help "directory you'd like to backup"
@@ -71,9 +68,6 @@ parser_info = info (helper <*> parser) infoMod
 
       putStrLn "result:" >> un report_backup_stat
       print v
-
-some_base_dir_read :: ReadM (Path.SomeBase Dir)
-some_base_dir_read = eitherReader $ first displayException . Path.parseSomeDir
 
 report_backup_stat :: (BackupStatistics E.:> es, E.IOE E.:> es) => E.Eff es ()
 report_backup_stat = do

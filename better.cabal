@@ -133,6 +133,7 @@ executable better
       Config
       LocalCache
       Monad
+      Util.Options
     hs-source-dirs:   app
     default-language: Haskell2010
     build-depends:  better-core, optparse-applicative, tomland, leveldb-haskell, ki, parallel, temporary, effectful-core, katip, time, filepath, megaparsec, parser-combinators, streamly-bytestring, deepseq, aeson

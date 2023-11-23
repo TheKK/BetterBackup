@@ -10,10 +10,8 @@ import Control.Parallel (par)
 import Options.Applicative (
   Parser,
   ParserInfo,
-  ReadM,
   argument,
   command,
-  eitherReader,
   help,
   helper,
   info,
@@ -22,33 +20,25 @@ import Options.Applicative (
   subparser,
  )
 
-import Control.Exception (Exception (displayException))
 import Control.Monad.IO.Class (MonadIO (liftIO))
 
-import Data.Bifunctor (first)
 import Data.Foldable (Foldable (fold))
 import Data.Function ((&))
-import Data.String (fromString)
 
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
-
-import qualified Data.ByteString.Base16 as BSBase16
 
 import qualified Streamly.Data.Fold as F
 import qualified Streamly.Data.Stream.Prelude as S
 
 import qualified Streamly.Console.Stdio as Stdio
 
-import Path (Abs, Dir, Path)
-import qualified Path
-
 import qualified Effectful.Dispatch.Static.Unsafe as E
 
 import Config (Config (..))
 import qualified Config
 
-import Better.Hash (Digest, digestFromByteString)
+import Better.Hash (Digest)
 import qualified Better.Repository as Repo
 
 import Cli.Backup (parser_info)
@@ -62,6 +52,7 @@ import Cli.Versions (parser_info)
 
 import qualified LocalCache
 import Monad (run_readonly_repo_t_from_cwd)
+import Util.Options (absDirRead, digestRead, someBaseDirRead)
 
 -- TODO add ability to put trace markers
 -- TODO add ability to collect running statistics
@@ -130,7 +121,7 @@ parser_info_init_local = info (helper <*> parser) infoMod
     parser =
       LocalCache.initialize
         <$> argument
-          some_base_dir_read
+          someBaseDirRead
           ( fold
               [ metavar "CACHE_PATH"
               , help "path to store your local cache"
@@ -149,7 +140,7 @@ parser_info_cat_chunk = info (helper <*> parser) infoMod
     parser =
       go
         <$> argument
-          digest_read
+          digestRead
           ( fold
               [ metavar "SHA"
               , help "SHA of chunk"
@@ -174,7 +165,7 @@ parser_info_cat_file = info (helper <*> parser) infoMod
     parser =
       go
         <$> argument
-          digest_read
+          digestRead
           ( fold
               [ metavar "SHA"
               , help "SHA of file"
@@ -206,7 +197,7 @@ parser_info_cat_file_chunks = info (helper <*> parser) infoMod
     parser =
       go
         <$> argument
-          digest_read
+          digestRead
           ( fold
               [ metavar "SHA"
               , help "SHA of file"
@@ -229,7 +220,7 @@ parser_info_cat_tree = info (helper <*> parser) infoMod
     parser =
       go
         <$> argument
-          digest_read
+          digestRead
           ( fold
               [ metavar "SHA"
               , help "SHA of tree"
@@ -243,20 +234,4 @@ parser_info_cat_tree = info (helper <*> parser) infoMod
 p_local_repo_config :: Parser Config.RepoType
 p_local_repo_config =
   Config.Local . Config.LocalRepoConfig
-    <$> argument abs_dir_read (metavar "REPO_PATH" <> help "path to store your backup")
-
-some_base_dir_read :: ReadM (Path.SomeBase Dir)
-some_base_dir_read = eitherReader $ first displayException . Path.parseSomeDir
-
-abs_dir_read :: ReadM (Path Abs Dir)
-abs_dir_read = eitherReader $ first displayException . Path.parseAbsDir
-
-digest_read :: ReadM Digest
-digest_read = eitherReader $ \raw_sha -> do
-  sha_decoded <- case BSBase16.decodeBase16Untyped $ fromString raw_sha of
-    Left err -> Left $ "invalid sha256: " <> raw_sha <> ", " <> T.unpack err
-    Right sha' -> pure sha'
-
-  case digestFromByteString sha_decoded of
-    Nothing -> Left $ "invalid sha256: " <> raw_sha <> ", incorrect length"
-    Just digest -> pure digest
+    <$> argument absDirRead (metavar "REPO_PATH" <> help "path to store your backup")

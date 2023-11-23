@@ -10,9 +10,7 @@ import Control.Parallel (par)
 
 import Options.Applicative (
   ParserInfo,
-  ReadM,
   argument,
-  eitherReader,
   help,
   helper,
   info,
@@ -20,18 +18,14 @@ import Options.Applicative (
   progDesc,
  )
 
-import Control.Exception (Exception (displayException), throwIO)
+import Control.Exception (throwIO)
 import Control.Monad (unless)
 import Control.Monad.IO.Class (MonadIO (liftIO))
 
-import Data.Bifunctor (Bifunctor (first))
 import Data.Foldable (Foldable (fold))
 import Data.Function ((&))
-import Data.String (fromString)
 
 import qualified Data.Text as T
-
-import qualified Data.ByteString.Base16 as BSBase16
 
 import qualified Streamly.Data.Fold as F
 import qualified Streamly.Data.Stream.Prelude as S
@@ -46,8 +40,9 @@ import System.IO (IOMode (WriteMode), withBinaryFile)
 import qualified Path
 
 import Monad (run_readonly_repo_t_from_cwd)
+import Util.Options (digestRead, someBaseDirRead)
 
-import Better.Hash (Digest, digestFromByteString)
+import Better.Hash (Digest)
 import qualified Better.Repository as Repo
 import Better.Repository.Class (Repository)
 
@@ -62,14 +57,14 @@ parser_info = info (helper <*> parser) infoMod
     parser =
       go
         <$> argument
-          digest_read
+          digestRead
           ( fold
               [ metavar "SHA"
               , help "SHA of tree"
               ]
           )
         <*> argument
-          some_base_dir_read
+          someBaseDirRead
           ( fold
               [ metavar "PATH"
               , help "restore destination, must exist and be empty"
@@ -120,16 +115,3 @@ parser_info = info (helper <*> parser) infoMod
             Repo.catTree (Repo.tree_sha t)
               & S.mapM (either restore_tree restore_file)
               & S.fold F.drain
-
-digest_read :: ReadM Digest
-digest_read = eitherReader $ \raw_sha -> do
-  sha_decoded <- case BSBase16.decodeBase16Untyped $ fromString raw_sha of
-    Left err -> Left $ "invalid sha256: " <> raw_sha <> ", " <> T.unpack err
-    Right sha' -> pure sha'
-
-  case digestFromByteString sha_decoded of
-    Nothing -> Left $ "invalid sha256: " <> raw_sha <> ", incorrect length"
-    Just digest -> pure digest
-
-some_base_dir_read :: ReadM (Path.SomeBase Path.Dir)
-some_base_dir_read = eitherReader $ first displayException . Path.parseSomeDir
