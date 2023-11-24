@@ -17,6 +17,7 @@ import Options.Applicative (
   commandGroup,
   help,
   helper,
+  hidden,
   info,
   metavar,
   progDesc,
@@ -71,41 +72,58 @@ cmds = info (helper <*> parser) infoMod
     parser =
       group_commands
         [
-          [ commandGroup "Sub commands"
-          , metavar "SUB_COMMAND"
+          [ commandGroup "Repository commands"
           , sub_commands
               "init"
               "Initialize repository"
               [ command "local" parser_info_init_local
               ]
+          , command "gc" Cli.GarbageCollection.parser_info
+          , command "integrity-check" Cli.IntegrityCheck.parser_info
+          ]
+        ,
+          [ commandGroup "Inspection commands"
           , sub_commands
               "version"
               "Version related operations"
-              [ command "find" Cli.VersionFind.parser_info
+              [ command "list" Cli.Versions.parser_info
+              , command "find" Cli.VersionFind.parser_info
               ]
           , sub_commands
               "tree"
               "Tree related operations"
               [ command "ls" Cli.TreeList.parser_info
+              , command "cat" parser_info_cat_tree
+              ]
+          , sub_commands
+              "file"
+              "File related operations"
+              [ command "cat" parser_info_cat_file
+              , command "cat-chunk-list" parser_info_cat_file_chunks
+              ]
+          , sub_commands
+              "chunk"
+              "Chunk related operations"
+              [ command "cat" parser_info_cat_chunk
               ]
           , command "ref" Ref.cmds
           ]
         ,
-          [ command "versions" Cli.Versions.parser_info
-          , command "backup" Cli.Backup.parser_info
+          [ commandGroup "Restoring commands"
+          , sub_commands
+              "restore"
+              "Restoring related operations"
+              [ command "tree" Cli.RestoreTree.parser_info
+              ]
+          ]
+        ,
+          [ command "backup" Cli.Backup.parser_info
           , command "patch-backup" Cli.PatchBackup.parser_info
-          , command "gc" Cli.GarbageCollection.parser_info
-          , command "integrity-check" Cli.IntegrityCheck.parser_info
-          , command "cat-chunk" parser_info_cat_chunk
-          , command "cat-file" parser_info_cat_file
-          , command "cat-file-chunks" parser_info_cat_file_chunks
-          , command "cat-tree" parser_info_cat_tree
-          , command "restore-tree" Cli.RestoreTree.parser_info
           ]
         ]
 
 group_commands :: [[Mod CommandFields a]] -> Parser a
-group_commands cmd_groups = asum $ fmap (subparser . fold) cmd_groups
+group_commands cmd_groups = asum $ fmap (subparser . (hidden <>) . fold) cmd_groups
 
 sub_commands :: String -> String -> [Mod CommandFields a] -> Mod CommandFields a
 sub_commands name desc command_list = command name $ info (helper <*> parser) infoMod
