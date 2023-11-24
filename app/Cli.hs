@@ -14,6 +14,7 @@ import Options.Applicative (
   ParserInfo,
   argument,
   command,
+  commandGroup,
   help,
   helper,
   info,
@@ -24,7 +25,7 @@ import Options.Applicative (
 
 import Control.Monad.IO.Class (MonadIO (liftIO))
 
-import Data.Foldable (Foldable (fold))
+import Data.Foldable (Foldable (fold), asum)
 import Data.Function ((&))
 
 import qualified Data.Text as T
@@ -68,9 +69,11 @@ cmds = info (helper <*> parser) infoMod
         ]
 
     parser =
-      subparser $
-        fold
-          [ sub_commands
+      group_commands
+        [
+          [ commandGroup "Sub commands"
+          , metavar "SUB_COMMAND"
+          , sub_commands
               "init"
               "Initialize repository"
               [ command "local" parser_info_init_local
@@ -85,7 +88,10 @@ cmds = info (helper <*> parser) infoMod
               "Tree related operations"
               [ command "ls" Cli.TreeList.parser_info
               ]
-          , command "versions" Cli.Versions.parser_info
+          , command "ref" Ref.cmds
+          ]
+        ,
+          [ command "versions" Cli.Versions.parser_info
           , command "backup" Cli.Backup.parser_info
           , command "patch-backup" Cli.PatchBackup.parser_info
           , command "gc" Cli.GarbageCollection.parser_info
@@ -95,8 +101,11 @@ cmds = info (helper <*> parser) infoMod
           , command "cat-file-chunks" parser_info_cat_file_chunks
           , command "cat-tree" parser_info_cat_tree
           , command "restore-tree" Cli.RestoreTree.parser_info
-          , command "ref" Ref.cmds
           ]
+        ]
+
+group_commands :: [[Mod CommandFields a]] -> Parser a
+group_commands cmd_groups = asum $ fmap (subparser . fold) cmd_groups
 
 sub_commands :: String -> String -> [Mod CommandFields a] -> Mod CommandFields a
 sub_commands name desc command_list = command name $ info (helper <*> parser) infoMod
