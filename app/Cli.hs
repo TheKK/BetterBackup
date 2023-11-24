@@ -8,6 +8,8 @@ module Cli (
 import Control.Parallel (par)
 
 import Options.Applicative (
+  CommandFields,
+  Mod,
   Parser,
   ParserInfo,
   argument,
@@ -68,10 +70,22 @@ cmds = info (helper <*> parser) infoMod
     parser =
       subparser $
         fold
-          [ command "init" parser_info_init
+          [ sub_commands
+              "init"
+              "Initialize repository"
+              [ command "local" parser_info_init_local
+              ]
+          , sub_commands
+              "version"
+              "Version related operations"
+              [ command "find" Cli.VersionFind.parser_info
+              ]
+          , sub_commands
+              "tree"
+              "Tree related operations"
+              [ command "ls" Cli.TreeList.parser_info
+              ]
           , command "versions" Cli.Versions.parser_info
-          , command "version" parser_info_version
-          , command "tree" parser_info_tree
           , command "backup" Cli.Backup.parser_info
           , command "patch-backup" Cli.PatchBackup.parser_info
           , command "gc" Cli.GarbageCollection.parser_info
@@ -84,47 +98,15 @@ cmds = info (helper <*> parser) infoMod
           , command "ref" Ref.cmds
           ]
 
-parser_info_init :: ParserInfo (IO ())
-parser_info_init = info (helper <*> parser) infoMod
+sub_commands :: String -> String -> [Mod CommandFields a] -> Mod CommandFields a
+sub_commands name desc command_list = command name $ info (helper <*> parser) infoMod
   where
     infoMod =
       fold
-        [ progDesc "Initialize repository"
+        [ progDesc desc
         ]
 
-    parser =
-      subparser $
-        fold
-          [ command "local" parser_info_init_local
-          ]
-
-parser_info_version :: ParserInfo (IO ())
-parser_info_version = info (helper <*> parser) infoMod
-  where
-    infoMod =
-      fold
-        [ progDesc "Version related operations"
-        ]
-
-    parser =
-      subparser $
-        fold
-          [ command "find" Cli.VersionFind.parser_info
-          ]
-
-parser_info_tree :: ParserInfo (IO ())
-parser_info_tree = info (helper <*> parser) infoMod
-  where
-    infoMod =
-      fold
-        [ progDesc "Tree related operations"
-        ]
-
-    parser =
-      subparser $
-        fold
-          [ command "ls" Cli.TreeList.parser_info
-          ]
+    parser = subparser $ fold command_list
 
 parser_info_init_local :: ParserInfo (IO ())
 parser_info_init_local = info (helper <*> parser) infoMod
