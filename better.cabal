@@ -130,6 +130,7 @@ executable better
       Cli.Versions
       Cli.Ref
       Cli.Ref.Cat
+      Repository.Find
       Config
       LocalCache
       Monad
