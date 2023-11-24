@@ -47,6 +47,7 @@ import Cli.IntegrityCheck (parser_info)
 import Cli.PatchBackup (parser_info)
 import qualified Cli.Ref as Ref
 import Cli.RestoreTree (parser_info)
+import Cli.TreeList (parser_info)
 import Cli.VersionFind (parser_info)
 import Cli.Versions (parser_info)
 
@@ -70,6 +71,7 @@ cmds = info (helper <*> parser) infoMod
           [ command "init" parser_info_init
           , command "versions" Cli.Versions.parser_info
           , command "version" parser_info_version
+          , command "tree" parser_info_tree
           , command "backup" Cli.Backup.parser_info
           , command "patch-backup" Cli.PatchBackup.parser_info
           , command "gc" Cli.GarbageCollection.parser_info
@@ -108,6 +110,20 @@ parser_info_version = info (helper <*> parser) infoMod
       subparser $
         fold
           [ command "find" Cli.VersionFind.parser_info
+          ]
+
+parser_info_tree :: ParserInfo (IO ())
+parser_info_tree = info (helper <*> parser) infoMod
+  where
+    infoMod =
+      fold
+        [ progDesc "Tree related operations"
+        ]
+
+    parser =
+      subparser $
+        fold
+          [ command "ls" Cli.TreeList.parser_info
           ]
 
 parser_info_init_local :: ParserInfo (IO ())
