@@ -601,6 +601,9 @@ keep_traversing_existed_tree fsc digest_of_existed_tree rel_dir_path_in_tree pos
 
   liftIO $ print (rel_dir_path_in_tree, sub_fsc)
 
+  -- Pair with UploadTree.
+  BackupSt.modifyStatistic' BackupSt.totalDirCount (+ 1)
+
   fmap Just $ Tmp.withEmptyTmpFile $ \file_name' -> EU.reallyUnsafeUnliftIO $ \un -> do
     !dir_hash <- liftIO $ withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
       !mid_hasher <-
@@ -657,8 +660,11 @@ try_backing_up_file_or_dir rel_tree_path abs_filesystem_path = runMaybeT $ do
     if is_dir
       then do
         abs_dir <- Path.parseAbsDir raw_abs_filesystem_path
-        Just . (`DirEntryDir` direntry_name) <$> backupDirWithoutCollectingDirAndFileStatistics abs_dir
+        -- We don't need modifyStatistic' for dir since backup_dir do that for us.
+        Just . (`DirEntryDir` direntry_name) <$> backup_dir abs_dir
       else do
+        BackupSt.modifyStatistic' BackupSt.totalFileCount (+ 1)
+        -- TODO rename backup_file to backup_file_without_collecting_statistic or something.
         Just . (`DirEntryFile` direntry_name) <$> backup_file abs_filesystem_path
   where
     direntry_name = rel_path_to_direntry_name rel_tree_path
