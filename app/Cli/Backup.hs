@@ -73,7 +73,7 @@ parser_info = info (helper <*> parser) infoMod
       v <- Ki.scoped $ \scope -> do
         Ki.fork_ scope process_reporter
         un $ do
-          Repo.run_backup $ do
+          Repo.runBackup $ do
             Repo.backup_dir abs_dir
 
       putStrLn "result:" >> un report_backup_stat

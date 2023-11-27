@@ -15,17 +15,17 @@
 
 module Better.Repository.Backup (
   -- * Provide backup environment
-  run_backup,
+  runBackup,
 
   -- * Backup functions
   backup_dir,
-  backup_dir_without_collecting_dir_and_file_statistics,
+  backupDirWithoutCollectingDirAndFileStatistics,
   DirEntry (..),
-  backup_dir_from_list,
-  backup_file_from_builder,
+  backupDirFromList,
+  backupFileFromBuilder,
 
   -- * Backup from existed tree
-  backup_dir_from_existed_tree,
+  backupDirFromExistedTree,
 
   -- * Tests
   props_what_to_do_with_file_and_dir,
@@ -150,7 +150,7 @@ init_ctr = do
 -- | Backup specified directory.
 --
 -- This function would collect statistics of directories and files concurrently, which is what you want most of the time.
--- if you need more control, consider using 'backup_dir_without_collecting_dir_and_file_statistics'.
+-- if you need more control, consider using 'backupDirWithoutCollectingDirAndFileStatistics'.
 backup_dir
   :: ( E.Logging E.:> es
      , E.Repository E.:> es
@@ -165,19 +165,21 @@ backup_dir
 backup_dir abs_dir = E.reallyUnsafeUnliftIO $ \un -> do
   Ki.scoped $ \scope -> do
     stat_async <- Ki.fork scope (un $ collect_dir_and_file_statistics abs_dir)
-    !root_digest <- un $ backup_dir_without_collecting_dir_and_file_statistics abs_dir
+    !root_digest <- un $ backupDirWithoutCollectingDirAndFileStatistics abs_dir
     atomically $ Ki.await stat_async
     pure root_digest
 
 data instance E.StaticRep RepositoryWrite = RepositoryWriteRep {-# UNPACK #-} !Ki.Scope {-# UNPACK #-} !ForkFns {-# UNPACK #-} !(TBQueue UploadTask) {-# UNPACK #-} !Ctr
 
+-- | Provide env to run functions which needs capability, RepositoryWrite.
+--
 -- TODO Extract part of this function into a separated effect.
 -- TODO We can't force Digest to be "digest of tree" now, this is bad for users of this API and harms correctness.
-run_backup
+runBackup
   :: (E.Logging E.:> es, E.Repository E.:> es, BackupCache E.:> es, Tmp E.:> es, BackupStatistics E.:> es, E.IOE E.:> es)
   => E.Eff (RepositoryWrite : es) Digest
   -> E.Eff es Repo.Version
-run_backup m = EU.reallyUnsafeUnliftIO $ \un -> do
+runBackup m = EU.reallyUnsafeUnliftIO $ \un -> do
   let
     mk_uniq_gate = do
       running_set <- STMSet.newIO @Digest
@@ -338,8 +340,8 @@ data ForkFns
 -- NOTE: Normally you'll only need 'backup_dir' unless you have special needs.
 --
 -- This function WON'T collect statistics of directories and files concurrently, which gives you more control.
-backup_dir_without_collecting_dir_and_file_statistics :: (RepositoryWrite E.:> es, BackupCache E.:> es, Tmp E.:> es, E.IOE E.:> es) => Path Path.Abs Path.Dir -> E.Eff es Digest
-backup_dir_without_collecting_dir_and_file_statistics rel_tree_name = Tmp.withEmptyTmpFile $ \file_name' -> EU.reallyUnsafeUnliftIO $ \un -> do
+backupDirWithoutCollectingDirAndFileStatistics :: (RepositoryWrite E.:> es, BackupCache E.:> es, Tmp E.:> es, E.IOE E.:> es) => Path Path.Abs Path.Dir -> E.Eff es Digest
+backupDirWithoutCollectingDirAndFileStatistics rel_tree_name = Tmp.withEmptyTmpFile $ \file_name' -> EU.reallyUnsafeUnliftIO $ \un -> do
   RepositoryWriteRep _ (ForkFns file_fork_or_not dir_fork_or_not) tbq _ <- un $ E.getStaticRep @RepositoryWrite
   !dir_hash <- liftIO $ withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
     Dir.readEither rel_tree_name
@@ -347,7 +349,7 @@ backup_dir_without_collecting_dir_and_file_statistics rel_tree_name = Tmp.withEm
         ( \fod ->
             fmap (tree_content fod) <$> case fod of
               Left f -> file_fork_or_not $ un $ backup_file $ rel_tree_name </> f
-              Right d -> dir_fork_or_not $ un $ backup_dir_without_collecting_dir_and_file_statistics $ rel_tree_name </> d
+              Right d -> dir_fork_or_not $ un $ backupDirWithoutCollectingDirAndFileStatistics $ rel_tree_name </> d
         )
       & S.parSequence (S.ordered True)
       & S.trace (BC.hPut fd)
@@ -361,8 +363,8 @@ data DirEntry
   = DirEntryFile {-# UNPACK #-} !Digest {-# UNPACK #-} !BS.ByteString
   | DirEntryDir {-# UNPACK #-} !Digest {-# UNPACK #-} !BS.ByteString
 
-backup_dir_from_list :: (RepositoryWrite E.:> es, BackupStatistics E.:> es, Tmp E.:> es, E.IOE E.:> es) => [DirEntry] -> E.Eff es Digest
-backup_dir_from_list inputs = Tmp.withEmptyTmpFile $ \file_name' -> do
+backupDirFromList :: (RepositoryWrite E.:> es, BackupStatistics E.:> es, Tmp E.:> es, E.IOE E.:> es) => [DirEntry] -> E.Eff es Digest
+backupDirFromList inputs = Tmp.withEmptyTmpFile $ \file_name' -> do
   RepositoryWriteRep _ _ tbq _ <- E.getStaticRep @RepositoryWrite
 
   BackupSt.modifyStatistic' BackupSt.totalDirCount (+ 1)
@@ -403,8 +405,8 @@ backup_file rel_file_name = do
       atomically $ writeTBQueue tbq $ UploadFile file_hash file_name' (Just st)
       pure file_hash
 
-backup_file_from_builder :: (RepositoryWrite E.:> es, BackupStatistics E.:> es, Tmp E.:> es, E.IOE E.:> es) => BB.Builder -> E.Eff es Digest
-backup_file_from_builder builder = do
+backupFileFromBuilder :: (RepositoryWrite E.:> es, BackupStatistics E.:> es, Tmp E.:> es, E.IOE E.:> es) => BB.Builder -> E.Eff es Digest
+backupFileFromBuilder builder = do
   RepositoryWriteRep _ _ tbq _ <- E.getStaticRep @RepositoryWrite
 
   BackupSt.modifyStatistic' BackupSt.totalFileCount (+ 1)
@@ -523,7 +525,7 @@ what_to_do_with_this_file fsc p = do
     Nothing -> pure FileIsIntact
 
 -- TODO Currently we doesn't update total file/dir count.
-backup_dir_from_existed_tree
+backupDirFromExistedTree
   :: ( E.Logging E.:> es
      , E.Repository E.:> es
      , RepositoryWrite E.:> es
@@ -536,7 +538,7 @@ backup_dir_from_existed_tree
   -> Digest
   -> Path Path.Rel Path.Dir
   -> E.Eff es (Maybe DirEntry)
-backup_dir_from_existed_tree fsc digest rel_dir_path_in_tree = do
+backupDirFromExistedTree fsc digest rel_dir_path_in_tree = do
   tree_exists <- doesTreeExists digest
   unless tree_exists $ do
     throwM $ userError $ show digest <> ": tree does not exist in backup"
@@ -609,7 +611,7 @@ keep_traversing_existed_tree fsc digest_of_existed_tree rel_dir_path_in_tree pos
             ( \case
                 Left d -> do
                   rel_dir <- Path.parseRelDir $ T.unpack $ Repo.tree_name d
-                  un $ backup_dir_from_existed_tree sub_fsc (Repo.tree_sha d) (rel_dir_path_in_tree </> rel_dir)
+                  un $ backupDirFromExistedTree sub_fsc (Repo.tree_sha d) (rel_dir_path_in_tree </> rel_dir)
                 Right f -> do
                   rel_file <- Path.parseRelFile $ T.unpack $ Repo.file_name f
                   un $ backup_file_from_existed_tree sub_fsc (Repo.file_sha f) (rel_dir_path_in_tree </> rel_file)
@@ -655,7 +657,7 @@ try_backing_up_file_or_dir rel_tree_path abs_filesystem_path = runMaybeT $ do
     if is_dir
       then do
         abs_dir <- Path.parseAbsDir raw_abs_filesystem_path
-        Just . (`DirEntryDir` direntry_name) <$> backup_dir_without_collecting_dir_and_file_statistics abs_dir
+        Just . (`DirEntryDir` direntry_name) <$> backupDirWithoutCollectingDirAndFileStatistics abs_dir
       else do
         Just . (`DirEntryFile` direntry_name) <$> backup_file abs_filesystem_path
   where

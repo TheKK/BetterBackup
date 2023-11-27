@@ -97,14 +97,14 @@ parser_info = info (helper <*> parser) infoMod
         Ki.fork_ scope process_reporter
 
         un $ do
-          Repo.run_backup $ do
+          Repo.runBackup $ do
             fsc <- liftIO read_filesystem_chagnes_from_stdin
             liftIO $ print fsc
-            ret <- Repo.backup_dir_from_existed_tree fsc tree_digest [Path.reldir|.|]
+            ret <- Repo.backupDirFromExistedTree fsc tree_digest [Path.reldir|.|]
             case ret of
               Just (Repo.DirEntryDir new_tree_digest _) -> pure new_tree_digest
               Just (Repo.DirEntryFile _ _) -> error "oh no, the root is now a file and but I only backup directories!"
-              Nothing -> Repo.backup_dir_from_list [] -- Empty dir
+              Nothing -> Repo.backupDirFromList [] -- Empty dir
       putStrLn "result:" >> un report_backup_stat
       print v
 
