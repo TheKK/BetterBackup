@@ -14,10 +14,12 @@
 {-# LANGUAGE TypeOperators #-}
 
 module Better.Repository.Backup (
-  backup,
+  -- * Provide backup environment
   run_backup,
 
-  -- * Backup related functions
+  -- * Backup functions
+  backup_dir,
+  backup_dir_without_collecting_dir_and_file_statistics,
   DirEntry (..),
   backup_dir_from_list,
   backup_file_from_builder,
@@ -53,8 +55,6 @@ import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Short as BSS
 
 import Data.Foldable (for_)
-
-import Data.Time (getCurrentTime)
 
 import Text.Read (readMaybe)
 
@@ -110,7 +110,7 @@ import qualified Hedgehog.Range as Range
 import qualified Better.Data.FileSystemChanges as FSC
 import Better.Hash (Digest, digestToBase16ShortByteString, finalize, hashArrayFoldIO, hashByteArrayAccess', hashByteStringFoldIO)
 import qualified Better.Hash as Hash
-import Better.Internal.Repository.LowLevel (Version (Version), addBlob', addDir', addFile', addVersion, d2b, doesTreeExists)
+import Better.Internal.Repository.LowLevel (addBlob', addDir', addFile', d2b, doesTreeExists)
 import Better.Internal.Streamly.Array (chunkReaderFromToWith)
 import Better.Internal.Streamly.Crypto.AES (encryptCtr, that_aes)
 import qualified Better.Logging.Effect as E
@@ -146,28 +146,27 @@ init_ctr = do
   iv <- newTVarIO =<< init_iv
   pure $! Ctr aes iv
 
-backup :: (E.Logging E.:> es, E.Repository E.:> es, BackupCache E.:> es, Tmp E.:> es, BackupStatistics E.:> es, E.IOE E.:> es) => T.Text -> E.Eff es Version
-backup dir = do
-  abs_pwd <- liftIO $ Path.parseAbsDir =<< P.getWorkingDirectory
-  abs_dir <-
-    liftIO $
-      (Path.parseSomeDir $ T.unpack dir) >>= \case
-        Path.Abs abs_dir -> pure abs_dir
-        Path.Rel rel_dir -> pure $ abs_pwd Path.</> rel_dir
-
-  root_digest <- run_backup $ do
-    RepositoryWriteRep scope _ _ _ <- E.getStaticRep @RepositoryWrite
-
-    stat_async <- E.reallyUnsafeUnliftIO $ \un -> Ki.fork scope (un $ collect_dir_and_file_statistics abs_dir)
-    root_digest <- backup_dir abs_dir
-    liftIO $ atomically $ Ki.await stat_async
+-- | Backup specified directory.
+--
+-- This function would collect statistics of directories and files concurrently, which is what you want most of the time.
+-- if you need more control, consider using 'backup_dir_without_collecting_dir_and_file_statistics'.
+backup_dir
+  :: ( E.Logging E.:> es
+     , E.Repository E.:> es
+     , E.RepositoryWrite E.:> es
+     , BackupCache E.:> es
+     , Tmp E.:> es
+     , BackupStatistics E.:> es
+     , E.IOE E.:> es
+     )
+  => Path Path.Abs Path.Dir
+  -> E.Eff es Digest
+backup_dir abs_dir = E.reallyUnsafeUnliftIO $ \un -> do
+  Ki.scoped $ \scope -> do
+    stat_async <- Ki.fork scope (un $ collect_dir_and_file_statistics abs_dir)
+    !root_digest <- un $ backup_dir_without_collecting_dir_and_file_statistics abs_dir
+    atomically $ Ki.await stat_async
     pure root_digest
-
-  -- TODO getCurrentTime inside addVersion for better interface.
-  now <- liftIO getCurrentTime
-  let !v = Version now root_digest
-  addVersion v
-  return v
 
 data instance E.StaticRep RepositoryWrite = RepositoryWriteRep {-# UNPACK #-} !Ki.Scope {-# UNPACK #-} !ForkFns {-# UNPACK #-} !(TBQueue UploadTask) {-# UNPACK #-} !Ctr
 
@@ -327,8 +326,13 @@ data ForkFns
       (IO Digest -> IO (IO Digest))
       (IO Digest -> IO (IO Digest))
 
-backup_dir :: (RepositoryWrite E.:> es, BackupCache E.:> es, Tmp E.:> es, E.IOE E.:> es) => Path Path.Abs Path.Dir -> E.Eff es Digest
-backup_dir rel_tree_name = Tmp.withEmptyTmpFile $ \file_name' -> EU.reallyUnsafeUnliftIO $ \un -> do
+-- | Backup specified directory, and only do backup.
+--
+-- NOTE: Normally you'll only need 'backup_dir' unless you have special needs.
+--
+-- This function WON'T collect statistics of directories and files concurrently, which gives you more control.
+backup_dir_without_collecting_dir_and_file_statistics :: (RepositoryWrite E.:> es, BackupCache E.:> es, Tmp E.:> es, E.IOE E.:> es) => Path Path.Abs Path.Dir -> E.Eff es Digest
+backup_dir_without_collecting_dir_and_file_statistics rel_tree_name = Tmp.withEmptyTmpFile $ \file_name' -> EU.reallyUnsafeUnliftIO $ \un -> do
   RepositoryWriteRep _ (ForkFns file_fork_or_not dir_fork_or_not) tbq _ <- un $ E.getStaticRep @RepositoryWrite
   !dir_hash <- liftIO $ withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
     Dir.readEither rel_tree_name
@@ -336,7 +340,7 @@ backup_dir rel_tree_name = Tmp.withEmptyTmpFile $ \file_name' -> EU.reallyUnsafe
         ( \fod ->
             fmap (tree_content fod) <$> case fod of
               Left f -> file_fork_or_not $ un $ backup_file $ rel_tree_name </> f
-              Right d -> dir_fork_or_not $ un $ backup_dir $ rel_tree_name </> d
+              Right d -> dir_fork_or_not $ un $ backup_dir_without_collecting_dir_and_file_statistics $ rel_tree_name </> d
         )
       & S.parSequence (S.ordered True)
       & S.trace (BC.hPut fd)
@@ -644,7 +648,7 @@ try_backing_up_file_or_dir rel_tree_path abs_filesystem_path = runMaybeT $ do
     if is_dir
       then do
         abs_dir <- Path.parseAbsDir raw_abs_filesystem_path
-        Just . (`DirEntryDir` direntry_name) <$> backup_dir abs_dir
+        Just . (`DirEntryDir` direntry_name) <$> backup_dir_without_collecting_dir_and_file_statistics abs_dir
       else do
         Just . (`DirEntryFile` direntry_name) <$> backup_file abs_filesystem_path
   where

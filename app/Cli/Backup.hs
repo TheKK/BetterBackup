@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeOperators #-}
@@ -18,23 +19,26 @@ import Options.Applicative (
 
 import qualified Ki
 
+import Control.Concurrent (threadDelay)
 import Control.Exception (mask_)
 import Control.Monad (forever)
 import Control.Monad.IO.Class (MonadIO (liftIO))
 
 import Data.Foldable (Foldable (fold))
+import Data.Time (getCurrentTime)
 
-import qualified Data.Text as T
+import qualified System.Posix as P
 
 import qualified Path
 
-import qualified Better.Repository.Backup as Repo
-
-import qualified Better.Statistics.Backup as BackupSt
-import Better.Statistics.Backup.Class (BackupStatistics, newChunkCount, newDirCount, newFileCount, processedChunkCount, processedDirCount, processedFileCount, totalDirCount, totalFileCount, uploadedBytes)
-import Control.Concurrent (threadDelay)
 import qualified Effectful as E
 import qualified Effectful.Dispatch.Static.Unsafe as EU
+
+import qualified Better.Internal.Repository.LowLevel as Repo
+import qualified Better.Repository.Backup as Repo
+import qualified Better.Statistics.Backup as BackupSt
+import Better.Statistics.Backup.Class (BackupStatistics, newChunkCount, newDirCount, newFileCount, processedChunkCount, processedDirCount, processedFileCount, totalDirCount, totalFileCount, uploadedBytes)
+
 import Monad (run_backup_repo_t_from_cwd)
 import Util.Options (someBaseDirRead)
 
@@ -62,9 +66,23 @@ parser_info = info (helper <*> parser) infoMod
           mask_ $ un report_backup_stat
           threadDelay (1000 * 1000)
 
+      abs_pwd <- liftIO $ Path.parseAbsDir =<< P.getWorkingDirectory
+      let
+        abs_dir = case dir_to_backup of
+          Path.Abs dir -> dir
+          Path.Rel dir -> abs_pwd Path.</> dir
+
       v <- Ki.scoped $ \scope -> do
-        _ <- Ki.fork scope process_reporter
-        un $ Repo.backup $ T.pack $ Path.fromSomeDir dir_to_backup
+        Ki.fork_ scope process_reporter
+        un $ do
+          root_digest <- Repo.run_backup $ do
+            Repo.backup_dir abs_dir
+
+          -- TODO getCurrentTime inside addVersion for better interface.
+          now <- liftIO getCurrentTime
+          let !v = Repo.Version now root_digest
+          Repo.addVersion v
+          pure v
 
       putStrLn "result:" >> un report_backup_stat
       print v
