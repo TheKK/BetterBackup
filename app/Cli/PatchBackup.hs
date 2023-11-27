@@ -87,26 +87,27 @@ parser_info = info (helper <*> parser) infoMod
               ]
           )
 
-    go tree_digest = run_backup_repo_t_from_cwd $ EU.reallyUnsafeUnliftIO $ \un -> do
-      let
-        process_reporter = forever $ do
-          mask_ $ un report_backup_stat
-          threadDelay (1000 * 1000)
+    go tree_digest = do
+      fsc <- read_filesystem_chagnes_from_stdin
 
-      v <- Ki.scoped $ \scope -> do
-        Ki.fork_ scope process_reporter
+      run_backup_repo_t_from_cwd $ EU.reallyUnsafeUnliftIO $ \un -> do
+        let
+          process_reporter = forever $ do
+            mask_ $ un report_backup_stat
+            threadDelay (1000 * 1000)
 
-        un $ do
-          Repo.runBackup $ do
-            fsc <- liftIO read_filesystem_chagnes_from_stdin
-            liftIO $ print fsc
-            ret <- Repo.backupDirFromExistedTree fsc tree_digest [Path.reldir|.|]
-            case ret of
-              Just (Repo.DirEntryDir new_tree_digest _) -> pure new_tree_digest
-              Just (Repo.DirEntryFile _ _) -> error "oh no, the root is now a file and but I only backup directories!"
-              Nothing -> Repo.backupDirFromList [] -- Empty dir
-      putStrLn "result:" >> un report_backup_stat
-      print v
+        v <- Ki.scoped $ \scope -> do
+          Ki.fork_ scope process_reporter
+
+          un $ do
+            Repo.runBackup $ do
+              ret <- Repo.backupDirFromExistedTree fsc tree_digest [Path.reldir|.|]
+              case ret of
+                Just (Repo.DirEntryDir new_tree_digest _) -> pure new_tree_digest
+                Just (Repo.DirEntryFile _ _) -> error "oh no, the root is now a file and but I only backup directories!"
+                Nothing -> Repo.backupDirFromList [] -- Empty dir
+        putStrLn "result:" >> un report_backup_stat
+        print v
 
 {-# NOINLINE read_filesystem_chagnes_from_stdin #-}
 read_filesystem_chagnes_from_stdin :: IO FSC.FileSystemChanges
