@@ -39,6 +39,7 @@ import Data.Either (fromRight)
 import Data.Function ((&))
 import Data.List (inits, intercalate)
 import Data.Maybe (fromMaybe)
+import Data.Time (getCurrentTime)
 import Data.Word (Word8)
 
 import qualified StmContainers.Set as STMSet
@@ -111,10 +112,10 @@ import qualified Better.Data.FileSystemChanges as FSC
 import Better.Hash (Digest, digestToBase16ShortByteString, finalize, hashArrayFoldIO, hashByteArrayAccess', hashByteStringFoldIO)
 import qualified Better.Hash as Hash
 import Better.Internal.Repository.LowLevel (addBlob', addDir', addFile', d2b, doesTreeExists)
+import qualified Better.Internal.Repository.LowLevel as Repo
 import Better.Internal.Streamly.Array (chunkReaderFromToWith)
 import Better.Internal.Streamly.Crypto.AES (encryptCtr, that_aes)
 import qualified Better.Logging.Effect as E
-import qualified Better.Repository as Repo
 import Better.Repository.BackupCache.Class (BackupCache)
 import qualified Better.Repository.BackupCache.LevelDB as BackupCacheLevelDB
 import Better.Repository.Class (RepositoryWrite)
@@ -171,10 +172,11 @@ backup_dir abs_dir = E.reallyUnsafeUnliftIO $ \un -> do
 data instance E.StaticRep RepositoryWrite = RepositoryWriteRep {-# UNPACK #-} !Ki.Scope {-# UNPACK #-} !ForkFns {-# UNPACK #-} !(TBQueue UploadTask) {-# UNPACK #-} !Ctr
 
 -- TODO Extract part of this function into a separated effect.
+-- TODO We can't force Digest to be "digest of tree" now, this is bad for users of this API and harms correctness.
 run_backup
   :: (E.Logging E.:> es, E.Repository E.:> es, BackupCache E.:> es, Tmp E.:> es, BackupStatistics E.:> es, E.IOE E.:> es)
-  => E.Eff (RepositoryWrite : es) a
-  -> E.Eff es a
+  => E.Eff (RepositoryWrite : es) Digest
+  -> E.Eff es Repo.Version
 run_backup m = EU.reallyUnsafeUnliftIO $ \un -> do
   let
     mk_uniq_gate = do
@@ -193,13 +195,13 @@ run_backup m = EU.reallyUnsafeUnliftIO $ \un -> do
 
   ctr <- init_ctr
 
-  Ki.scoped $ \scope -> do
+  root_digest <- Ki.scoped $ \scope -> do
     fork_fns <- do
       sem_for_dir <- mk_sem_for_dir
       sem_for_file <- mk_sem_for_file
       pure $ ForkFns (fork_or_wait sem_for_file scope) (fork_or_run_directly sem_for_dir scope)
 
-    (ret, ()) <-
+    (root_digest, ()) <-
       withEmitUnfoldr
         20
         (\tbq -> un $ E.evalStaticRep (RepositoryWriteRep scope fork_fns tbq ctr) m)
@@ -237,9 +239,14 @@ run_backup m = EU.reallyUnsafeUnliftIO $ \un -> do
                 )
               & S.fold F.drain
         )
-    -- TODO how should we handle scope at the end of run_backup?
     atomically $ Ki.awaitAll scope
-    pure ret
+
+    pure root_digest
+
+  now <- liftIO getCurrentTime
+  let !v = Repo.Version now root_digest
+  un $ Repo.addVersion v
+  pure v
 
 data UploadTask
   = UploadTree !Digest !(Path Path.Abs Path.File)

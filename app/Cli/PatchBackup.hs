@@ -29,7 +29,6 @@ import Control.Monad.IO.Class (MonadIO (liftIO))
 import Data.Char (chr, isPrint, isSpace)
 import Data.Foldable (Foldable (fold))
 import Data.Function ((&))
-import Data.Time (getCurrentTime)
 import Data.Void (Void)
 
 import qualified Streamly.Console.Stdio as Stdio
@@ -50,7 +49,6 @@ import qualified Effectful as E
 import qualified Effectful.Dispatch.Static.Unsafe as EU
 
 import qualified Better.Data.FileSystemChanges as FSC
-import qualified Better.Internal.Repository.LowLevel as Repo
 import qualified Better.Repository.Backup as Repo
 import qualified Better.Statistics.Backup as BackupSt
 import Better.Statistics.Backup.Class (
@@ -97,8 +95,9 @@ parser_info = info (helper <*> parser) infoMod
 
       v <- Ki.scoped $ \scope -> do
         Ki.fork_ scope process_reporter
+
         un $ do
-          digest <- Repo.run_backup $ do
+          Repo.run_backup $ do
             fsc <- liftIO read_filesystem_chagnes_from_stdin
             liftIO $ print fsc
             ret <- Repo.backup_dir_from_existed_tree fsc tree_digest [Path.reldir|.|]
@@ -106,11 +105,6 @@ parser_info = info (helper <*> parser) infoMod
               Just (Repo.DirEntryDir new_tree_digest _) -> pure new_tree_digest
               Just (Repo.DirEntryFile _ _) -> error "oh no, the root is now a file and but I only backup directories!"
               Nothing -> Repo.backup_dir_from_list [] -- Empty dir
-          now <- liftIO getCurrentTime
-          let v = Repo.Version now digest
-          Repo.addVersion v
-          pure v
-
       putStrLn "result:" >> un report_backup_stat
       print v
 

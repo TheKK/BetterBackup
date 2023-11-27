@@ -25,7 +25,6 @@ import Control.Monad (forever)
 import Control.Monad.IO.Class (MonadIO (liftIO))
 
 import Data.Foldable (Foldable (fold))
-import Data.Time (getCurrentTime)
 
 import qualified System.Posix as P
 
@@ -34,7 +33,6 @@ import qualified Path
 import qualified Effectful as E
 import qualified Effectful.Dispatch.Static.Unsafe as EU
 
-import qualified Better.Internal.Repository.LowLevel as Repo
 import qualified Better.Repository.Backup as Repo
 import qualified Better.Statistics.Backup as BackupSt
 import Better.Statistics.Backup.Class (BackupStatistics, newChunkCount, newDirCount, newFileCount, processedChunkCount, processedDirCount, processedFileCount, totalDirCount, totalFileCount, uploadedBytes)
@@ -75,14 +73,8 @@ parser_info = info (helper <*> parser) infoMod
       v <- Ki.scoped $ \scope -> do
         Ki.fork_ scope process_reporter
         un $ do
-          root_digest <- Repo.run_backup $ do
+          Repo.run_backup $ do
             Repo.backup_dir abs_dir
-
-          -- TODO getCurrentTime inside addVersion for better interface.
-          now <- liftIO getCurrentTime
-          let !v = Repo.Version now root_digest
-          Repo.addVersion v
-          pure v
 
       putStrLn "result:" >> un report_backup_stat
       print v
