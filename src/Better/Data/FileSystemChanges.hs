@@ -123,13 +123,32 @@ props_filesystem_change :: H.Group
 props_filesystem_change =
   H.Group
     "FileSystemChanges"
-    [ ("prop_existed_parent_should_mask_all_child_changes", prop_existed_parent_should_filter_out_all_child_changes)
+    [ ("prop_order_of_insertion_between_child_and_parent_does_not_matter", prop_order_of_insertion_between_child_and_parent_does_not_matter)
+    , ("prop_existed_parent_should_mask_all_child_changes", prop_existed_parent_should_filter_out_all_child_changes)
     , ("prop_insert_parent_should_remove_all_child_changes", prop_insert_parent_should_remove_all_child_changes)
     , ("prop_lookup_after_lookup", prop_lookup_def)
     , ("prop_submap_def", prop_submap_def)
     , ("prop_hasDescendants_def", prop_hasDescendants_def)
     ]
   where
+    prop_order_of_insertion_between_child_and_parent_does_not_matter :: H.Property
+    prop_order_of_insertion_between_child_and_parent_does_not_matter = H.property $ do
+      parent_pathes <- H.forAll $ path_segments_gen $ Range.linear 0 10
+      parent_rel_dir <- H.evalIO $ Path.parseRelDir $ intercalate "/" ("." : parent_pathes)
+      parent_change <- H.forAll filesystem_change_gen
+      H.annotateShow (parent_rel_dir, parent_change)
+
+      child_pathes <- H.forAll $ path_segments_gen $ Range.linear 1 10
+      child_rel_dir <- H.evalIO $ fmap (parent_rel_dir Path.</>) $ Path.parseRelDir $ intercalate "/" child_pathes
+      child_change <- H.forAll filesystem_change_gen
+      H.annotateShow (child_rel_dir, child_change)
+
+      H.cover 60 "change are not identical" $ parent_change /= child_change
+
+      H.annotate "order of insersion between child and parent won't affect the result"
+      insert' child_rel_dir child_change (insert' parent_rel_dir parent_change empty)
+        H.=== insert' parent_rel_dir parent_change (insert' child_rel_dir child_change empty)
+
     prop_existed_parent_should_filter_out_all_child_changes :: H.Property
     prop_existed_parent_should_filter_out_all_child_changes = H.property $ do
       parent_pathes <- H.forAll $ path_segments_gen $ Range.linear 0 10
@@ -262,6 +281,6 @@ props_filesystem_change =
     path_segments_gen length_range = Gen.list length_range $ replicateM 2 Gen.alphaNum
 
     filesystem_change_gen :: H.Gen FileSystemChange
-    filesystem_change_gen = Gen.element [IsNew random_abs_path, NeedFreshBackup random_abs_path, IsRemoved]
-      where
-        random_abs_path = [Path.absfile|/aabb|]
+    filesystem_change_gen = do
+      random_abs_path <- either (error . show) id . Path.parseAbsFile . ('/' :) <$> Gen.list (Range.constant 4 10) Gen.alphaNum
+      Gen.element [IsNew random_abs_path, NeedFreshBackup random_abs_path, IsRemoved]
