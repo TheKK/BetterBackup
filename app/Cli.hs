@@ -46,6 +46,7 @@ import Better.Hash (Digest)
 import qualified Better.Repository as Repo
 
 import Cli.Backup (parser_info)
+import Cli.FamiliarBackup (parser_info)
 import Cli.GarbageCollection (parser_info)
 import Cli.IntegrityCheck (parser_info)
 import Cli.PatchBackup (parser_info)
@@ -119,6 +120,7 @@ cmds = info (helper <*> parser) infoMod
         ,
           [ command "backup" Cli.Backup.parser_info
           , command "patch-backup" Cli.PatchBackup.parser_info
+          , command "familiar-backup" Cli.FamiliarBackup.parser_info
           ]
         ]
 

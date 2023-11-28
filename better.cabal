@@ -123,6 +123,7 @@ executable better
       Cli
       Cli.Backup
       Cli.PatchBackup
+      Cli.FamiliarBackup
       Cli.GarbageCollection
       Cli.IntegrityCheck
       Cli.RestoreTree
