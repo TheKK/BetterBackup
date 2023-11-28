@@ -5,12 +5,26 @@ module Main (
 ) where
 
 import qualified Options.Applicative as O
+
+import Control.Monad (join)
+
+import Data.Foldable (fold)
+
 import qualified System.Console.Terminal.Size as Term
 
 import qualified Cli
-import Control.Monad (join)
 
 main :: IO ()
 main = do
   term_column_perf <- maybe mempty (O.columns . Term.width) <$> Term.size
-  join $ O.customExecParser (O.prefs $ term_column_perf <> O.showHelpOnError <> O.showHelpOnEmpty) Cli.cmds
+  let
+    parser_prefs =
+      O.prefs $
+        fold
+          [ term_column_perf
+          , O.showHelpOnError
+          , O.showHelpOnEmpty
+          , O.multiSuffix "..."
+          , O.noBacktrack
+          ]
+  join $ O.customExecParser parser_prefs Cli.cmds
