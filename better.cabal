@@ -171,6 +171,10 @@ executable better
       Cli.VersionFind
       Cli.Versions
       Cli.TreeList
+      Cli.CatTree
+      Cli.CatChunk
+      Cli.CatFileChunks
+      Cli.InitLocal
       Cli.Ref
       Cli.Ref.Cat
       Repository.Find
