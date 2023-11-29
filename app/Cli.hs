@@ -29,34 +29,34 @@ import Control.Monad.IO.Class (MonadIO (liftIO))
 import Data.Foldable (Foldable (fold), asum)
 import Data.Function ((&))
 
-import qualified Data.Text as T
-import qualified Data.Text.IO as T
+import Data.Text qualified as T
+import Data.Text.IO qualified as T
 
-import qualified Streamly.Data.Fold as F
-import qualified Streamly.Data.Stream.Prelude as S
+import Streamly.Data.Fold qualified as F
+import Streamly.Data.Stream.Prelude qualified as S
 
-import qualified Streamly.Console.Stdio as Stdio
+import Streamly.Console.Stdio qualified as Stdio
 
-import qualified Effectful.Dispatch.Static.Unsafe as E
+import Effectful.Dispatch.Static.Unsafe qualified as E
 
 import Config (Config (..))
-import qualified Config
+import Config qualified
 
 import Better.Hash (Digest)
-import qualified Better.Repository as Repo
+import Better.Repository qualified as Repo
 
 import Cli.Backup (parser_info)
 import Cli.FamiliarBackup (parser_info)
 import Cli.GarbageCollection (parser_info)
 import Cli.IntegrityCheck (parser_info)
 import Cli.PatchBackup (parser_info)
-import qualified Cli.Ref as Ref
+import Cli.Ref qualified as Ref
 import Cli.RestoreTree (parser_info)
 import Cli.TreeList (parser_info)
 import Cli.VersionFind (parser_info)
 import Cli.Versions (parser_info)
 
-import qualified LocalCache
+import LocalCache qualified
 import Monad (run_readonly_repo_t_from_cwd)
 import Util.Options (absDirRead, digestRead, someBaseDirRead)
 
