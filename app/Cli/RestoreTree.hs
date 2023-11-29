@@ -1,8 +1,4 @@
-{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TupleSections #-}
-{-# LANGUAGE TypeOperators #-}
 
 module Cli.RestoreTree (
   parser_info,
@@ -21,7 +17,7 @@ import Options.Applicative (
   progDesc,
  )
 
-import qualified Ki
+import Ki qualified
 
 import Control.Concurrent.STM (STM, TBQueue, atomically, newTBQueueIO, readTBQueue, writeTBQueue)
 import Control.Exception (throwIO)
@@ -33,26 +29,26 @@ import Numeric.Natural (Natural)
 import Data.Foldable (Foldable (fold))
 import Data.Function ((&))
 
-import qualified Data.Text as T
+import Data.Text qualified as T
 
-import qualified Streamly.Data.Fold as F
-import qualified Streamly.Data.Stream.Prelude as S
-import qualified Streamly.FileSystem.Handle as Handle
+import Streamly.Data.Fold qualified as F
+import Streamly.Data.Stream.Prelude qualified as S
+import Streamly.FileSystem.Handle qualified as Handle
 
-import qualified Effectful as E
-import qualified Effectful.Dispatch.Static.Unsafe as E
+import Effectful qualified as E
+import Effectful.Dispatch.Static.Unsafe qualified as E
 
-import qualified System.Directory as D
+import System.Directory qualified as D
 import System.IO (IOMode (WriteMode), withBinaryFile)
 
 import Path (Path)
-import qualified Path
+import Path qualified
 
 import Monad (run_readonly_repo_t_from_cwd)
 import Util.Options (digestRead, someBaseDirRead)
 
 import Better.Hash (Digest)
-import qualified Better.Repository as Repo
+import Better.Repository qualified as Repo
 import Better.Repository.Class (Repository)
 
 parser_info :: ParserInfo (IO ())
