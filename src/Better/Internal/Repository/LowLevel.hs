@@ -104,6 +104,7 @@ import qualified Streamly.Internal.Unicode.Stream as US
 
 import System.IO (IOMode (..), hClose, hPutBuf, openBinaryFile)
 import System.IO.Error (isDoesNotExistError)
+import System.IO.Unsafe (unsafePerformIO)
 
 import qualified System.Directory as D
 
@@ -398,13 +399,16 @@ catChunk
   => Digest
   -> S.Stream (E.Eff es) (Array.Array Word8)
 catChunk digest = S.concatEffect $ E.reallyUnsafeUnliftIO $ \un -> do
-  aes <- that_aes
   pure $!
     cat_stuff_under folder_chunk digest
       & S.morphInner un
       & decryptCtr aes (32 * 1024)
       & S.morphInner E.unsafeEff_
 {-# INLINE catChunk #-}
+
+{-# NOINLINE aes #-}
+-- TODO Move this to EffectRep.
+aes = unsafePerformIO that_aes
 
 getChunkSize :: (E.Repository E.:> es) => Digest -> E.Eff es FileOffset
 getChunkSize sha = do
