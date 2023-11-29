@@ -4,8 +4,6 @@ module Cli.RestoreTree (
   parser_info,
 ) where
 
-import Control.Parallel (par)
-
 import Options.Applicative (
   Alternative ((<|>)),
   ParserInfo,
@@ -33,18 +31,17 @@ import Data.Text qualified as T
 
 import Streamly.Data.Fold qualified as F
 import Streamly.Data.Stream.Prelude qualified as S
-import Streamly.FileSystem.Handle qualified as Handle
 
 import Effectful qualified as E
 import Effectful.Dispatch.Static.Unsafe qualified as E
 
 import System.Directory qualified as D
-import System.IO (IOMode (WriteMode), withBinaryFile)
 
 import Path (Path)
 import Path qualified
 
 import Monad (run_readonly_repo_t_from_cwd)
+import Repository.Restore (restoreDirMeta, restoreFile)
 import Util.Options (digestRead, someBaseDirRead)
 
 import Better.Hash (Digest)
@@ -97,8 +94,8 @@ parser_info = info (helper <*> parser) infoMod
           (S.maxBuffer 50 . S.eager True)
           (\tbq -> traverse_tree_and_produce_jobs tbq abs_out_path sha)
           ( \case
-              RestoreTree abs_dir_path digest -> restore_dir abs_dir_path digest
-              RestoreFile abs_file_path digest -> restore_file abs_file_path digest
+              RestoreTree abs_dir_path digest -> restoreDirMeta abs_dir_path digest
+              RestoreFile abs_file_path digest -> restoreFile abs_file_path digest
           )
 
     {-# NOINLINE traverse_tree_and_produce_jobs #-}
@@ -123,25 +120,6 @@ parser_info = info (helper <*> parser) infoMod
                 )
             )
           & S.fold F.drain
-
-    {-# NOINLINE restore_file #-}
-    restore_file :: (Repository E.:> es, E.IOE E.:> es) => Path Path.Abs Path.File -> Digest -> E.Eff es ()
-    restore_file abs_out_path digest = E.reallyUnsafeUnliftIO $ \un -> withBinaryFile (Path.fromAbsFile abs_out_path) WriteMode $ \h -> do
-      Repo.catFile digest
-        & S.morphInner un
-        -- Use parConcatMap to open multiple chunk files concurrently.
-        -- This allow us to read from catFile and open chunk file ahead of time before catual writing.
-        & S.parConcatMap (S.eager True . S.ordered True . S.maxBuffer (6 * 5)) (S.mapM (\e -> par e $ pure e) . S.morphInner un . Repo.catChunk . Repo.chunk_name)
-        -- Use parEval to read from chunks concurrently.
-        -- Since read is often faster than write, using parEval with buffer should reduce running time.
-        & S.parEval (S.maxBuffer 30)
-        & S.fold (Handle.writeChunks h)
-
-    {-# NOINLINE restore_dir #-}
-    restore_dir :: (Repository E.:> es, E.IOE E.:> es) => Path Path.Abs Path.Dir -> Digest -> E.Eff es ()
-    restore_dir _ _ = do
-      -- TODO Permission should be backed up as well.
-      pure ()
 
 data RestoreJob = RestoreTree (Path Path.Abs Path.Dir) Digest | RestoreFile (Path Path.Abs Path.File) Digest
   deriving (Show)
