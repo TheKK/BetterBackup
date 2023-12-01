@@ -9,35 +9,36 @@ module Repository.Find (
   findTree,
 ) where
 
-import Control.Monad (when, (<$!>))
+import Control.Monad (when, (<$!>), (<=<))
 import Control.Monad.IO.Class (MonadIO (liftIO))
 
-import qualified Streamly.Data.Fold as F
-import qualified Streamly.Data.Stream as S
+import Streamly.Data.Fold qualified as F
+import Streamly.Data.Stream qualified as S
 
-import qualified System.FilePath as FP
+import System.FilePath qualified as FP
 
 import Data.Foldable (foldlM)
 import Data.Function ((&))
-import Data.Maybe (fromMaybe)
 import Data.Word (Word64)
 
-import qualified Data.Text as T
-import qualified Data.Text.IO as T
+import Data.Text qualified as T
+import Data.Text.IO qualified as T
 
 import Path (Path)
-import qualified Path
+import Path qualified
 
-import qualified Effectful as E
+import Effectful qualified as E
 
 import Better.Hash (TreeDigest)
-import qualified Better.Repository as Repo
+import Better.Repository qualified as Repo
 import Better.Repository.Class (Repository)
+import Control.Monad.Trans (lift)
+import Control.Monad.Trans.Except (ExceptT, except, runExceptT)
 
 findTree :: (Repository E.:> es, E.IOE E.:> es) => Bool -> Maybe Word64 -> TreeDigest -> Maybe (Path.SomeBase Path.Dir) -> E.Eff es ()
 findTree show_digest opt_depth tree_root opt_somebase_dir = do
   tree_root' <- case opt_somebase_dir of
-    Just somebase_dir -> search_dir_in_tree tree_root somebase_dir
+    Just somebase_dir -> either error id <$> search_dir_in_tree tree_root somebase_dir
     Nothing -> pure tree_root
 
   echo_tree opt_depth "/" tree_root'
@@ -60,7 +61,7 @@ findTree show_digest opt_depth tree_root opt_somebase_dir = do
             )
           & S.fold F.drain
 
-search_dir_in_tree :: (Repository E.:> es) => TreeDigest -> Path.SomeBase Path.Dir -> E.Eff es TreeDigest
+search_dir_in_tree :: (Repository E.:> es) => TreeDigest -> Path.SomeBase Path.Dir -> E.Eff es (Either String TreeDigest)
 search_dir_in_tree root_digest somebase = do
   -- Make everything abs dir, then split them into ["/", "a", "b"] and drop the "/" part.
   let dir_segments = tail $ FP.splitDirectories $ Path.fromAbsDir abs_dir_path
@@ -71,24 +72,27 @@ search_dir_in_tree root_digest somebase = do
       Path.Abs abs_dir -> abs_dir
       Path.Rel rel_dir -> [Path.absdir|/|] Path.</> rel_dir
 
-    go :: (Repository E.:> es) => TreeDigest -> [FilePath] -> E.Eff es TreeDigest
-    go digest path_segments = snd <$> foldlM step (["/"], digest) path_segments
+    go :: (Repository E.:> es) => TreeDigest -> [FilePath] -> E.Eff es (Either String TreeDigest)
+    go !digest path_segments = runExceptT $ snd <$> foldlM step (["/"], digest) path_segments
 
-    step :: (Repository E.:> es) => ([FilePath], TreeDigest) -> FilePath -> E.Eff es ([FilePath], TreeDigest)
+    {-# INLINE step #-}
+    step :: (Repository E.:> es) => ([FilePath], TreeDigest) -> FilePath -> ExceptT String (E.Eff es) ([FilePath], TreeDigest)
     step (traversed_pathes, !digest) path = do
       !next_digest <-
-        Repo.catTree digest
-          & S.mapMaybe
-            ( \case
-                Left tree ->
-                  if Repo.tree_name tree == T.pack path
-                    then Just $! Repo.tree_sha tree
-                    else Nothing
-                Right _file -> Nothing
-            )
-          & S.fold F.one
-          & fmap
-            ( fromMaybe . error $
-                "unable to find directory '" <> path <> "' under '" <> FP.joinPath traversed_pathes <> "' [" <> show digest <> "] in backup tree"
-            )
+        (except <=< lift) $
+          Repo.catTree digest
+            & S.mapMaybe
+              ( \case
+                  Left tree ->
+                    if Repo.tree_name tree == T.pack path
+                      then Just $! Repo.tree_sha tree
+                      else Nothing
+                  Right _file -> Nothing
+              )
+            & S.fold F.one
+            & fmap
+              ( \case
+                  Nothing -> Left $ "unable to find directory '" <> path <> "' under '" <> FP.joinPath traversed_pathes <> "' [" <> show digest <> "] in backup tree"
+                  Just d -> Right d
+              )
       pure (traversed_pathes <> [path], next_digest)
