@@ -46,6 +46,7 @@ parser_info = info (helper <*> parser) infoMod
           DFS
           ( fold
               [ help "Use DFS instead of BFS to traverse backup tree while restoring."
+              , long "dfs"
               ]
           )
         <*> argument
