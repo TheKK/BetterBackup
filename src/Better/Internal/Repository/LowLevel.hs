@@ -70,69 +70,70 @@ import Prelude hiding (read)
 import Data.Function ((&))
 import Data.Word (Word32, Word8)
 
-import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
+import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
 
 import Data.Maybe (fromMaybe)
 
-import qualified Data.Base16.Types as Base16
+import Data.Base16.Types qualified as Base16
 
-import qualified Data.ByteString as BS
-import qualified Data.ByteString.Base16 as BS16
-import qualified Data.ByteString.Builder as BB
-import qualified Data.ByteString.Char8 as BSC
-import qualified Data.ByteString.Lazy as BL
-import qualified Data.ByteString.Lazy.Base16 as BL16
-import qualified Data.ByteString.Short as BShort
-import qualified Data.ByteString.Short.Base16 as BSS16
+import Data.ByteString qualified as BS
+import Data.ByteString.Base16 qualified as BS16
+import Data.ByteString.Builder qualified as BB
+import Data.ByteString.Char8 qualified as BSC
+import Data.ByteString.Lazy qualified as BL
+import Data.ByteString.Lazy.Base16 qualified as BL16
+import Data.ByteString.Short qualified as BShort
+import Data.ByteString.Short.Base16 qualified as BSS16
 
-import qualified Codec.Binary.UTF8.String as UTF8
+import Codec.Binary.UTF8.String qualified as UTF8
 
-import qualified Data.Binary as Bin
+import Data.Binary qualified as Bin
 
-import qualified Data.ByteArray as BA
+import Data.ByteArray qualified as BA
 
 import Text.Read (readMaybe)
 
 import Control.Monad (unless, (<=<))
 import Control.Monad.Catch (MonadThrow, handleIf, throwM)
 
-import qualified Streamly.Data.Array as Array
+import Streamly.Data.Array qualified as Array
 
-import qualified Streamly.FileSystem.File as File
-import qualified Streamly.Internal.Unicode.Stream as US
+import Streamly.FileSystem.File qualified as File
+import Streamly.Internal.Unicode.Stream qualified as US
 
 import System.IO (IOMode (..), hClose, hPutBuf, openBinaryFile)
 import System.IO.Error (isDoesNotExistError)
 import System.IO.Unsafe (unsafePerformIO)
 
-import qualified System.Directory as D
+import System.Directory qualified as D
 
-import qualified System.Posix.Directory as P
-import qualified System.Posix.Files as P
+import System.Posix.Directory qualified as P
+import System.Posix.Files qualified as P
 import System.Posix.Types (FileOffset)
 
 import Path (Path, (</>))
-import qualified Path
+import Path qualified
 
-import qualified Streamly.Data.Fold as F
-import qualified Streamly.Data.Stream.Prelude as S
-import qualified Streamly.Internal.Data.Array.Type as Array
-import qualified Streamly.Internal.Data.Fold as F
+import Streamly.Data.Fold qualified as F
+import Streamly.Data.Stream.Prelude qualified as S
+import Streamly.Internal.Data.Array.Type qualified as Array
+import Streamly.Internal.Data.Fold qualified as F
 
 import Control.Exception (mask_, onException)
 
-import qualified Effectful as E
-import qualified Effectful.Dispatch.Static as E
-import qualified Effectful.Dispatch.Static.Unsafe as E
+import Effectful qualified as E
+import Effectful.Dispatch.Static qualified as E
+import Effectful.Dispatch.Static.Unsafe qualified as E
 
-import Better.Hash (Digest, digestFromByteString, digestToBase16ByteString, digestToBase16ShortByteString, hashByteStringFoldIO)
+import Better.Hash (ChunkDigest (..), Digest, FileDigest (..), TreeDigest (UnsafeMkTreeDigest), VersionDigest (UnsafeMkVersionDigest), digestFromByteString, digestToBase16ByteString, digestToBase16ShortByteString, hashByteStringFoldIO)
 import Better.Internal.Streamly.Array (ArrayBA (ArrayBA, un_array_ba), fastArrayAsPtrUnsafe)
-import qualified Better.Internal.Streamly.Array as BetterArray
+import Better.Internal.Streamly.Array qualified as BetterArray
 import Better.Internal.Streamly.Crypto.AES (decryptCtr, that_aes)
-import qualified Better.Repository.Class as E
+import Better.Repository.Class qualified as E
 import Better.Repository.Types (Version (..))
-import qualified Better.Streamly.FileSystem.Dir as Dir
+import Better.Streamly.FileSystem.Dir qualified as Dir
+import Data.Coerce (coerce)
 
 data Repository = Repository
   { _repo_putFile :: (Path Path.Rel Path.File -> F.Fold IO (Array.Array Word8) ())
@@ -147,18 +148,18 @@ data Repository = Repository
 
 data Tree = Tree
   { tree_name :: {-# UNPACK #-} !T.Text
-  , tree_sha :: {-# UNPACK #-} !Digest
+  , tree_sha :: {-# UNPACK #-} !TreeDigest
   }
   deriving (Show)
 
 data FFile = FFile
   { file_name :: {-# UNPACK #-} !T.Text
-  , file_sha :: {-# UNPACK #-} !Digest
+  , file_sha :: {-# UNPACK #-} !FileDigest
   }
   deriving (Show)
 
 data Object = Object
-  { chunk_name :: {-# UNPACK #-} !Digest
+  { chunk_name :: {-# UNPACK #-} !ChunkDigest
   }
   deriving (Show)
 
@@ -170,13 +171,13 @@ listFolderFiles
 listFolderFiles = mkListFolderFiles
 
 {-# INLINE listVersions #-}
-listVersions :: (E.Repository E.:> es) => S.Stream (E.Eff es) (Digest, Version)
+listVersions :: (E.Repository E.:> es) => S.Stream (E.Eff es) (VersionDigest, Version)
 listVersions =
   listFolderFiles folder_version
     -- TODO Maybe we could skip invalid version files.
     & S.mapM
       ( \version_file_path -> do
-          !version_digest <- s2d $ Path.fromRelFile version_file_path
+          !version_digest <- fmap UnsafeMkVersionDigest <$> s2d $ Path.fromRelFile version_file_path
           !version <- catVersion version_digest
           pure (version_digest, version)
       )
@@ -187,19 +188,19 @@ does_that_exist that_folder digest = do
   exists <- fileExists $ that_folder </> path_digest
   pure $! exists
 
-doesVersionExists :: (E.Repository E.:> es) => Digest -> E.Eff es Bool
-doesVersionExists = does_that_exist folder_version
+doesVersionExists :: (E.Repository E.:> es) => VersionDigest -> E.Eff es Bool
+doesVersionExists = does_that_exist folder_version . coerce
 
-doesTreeExists :: (E.Repository E.:> es) => Digest -> E.Eff es Bool
-doesTreeExists = does_that_exist folder_tree
+doesTreeExists :: (E.Repository E.:> es) => TreeDigest -> E.Eff es Bool
+doesTreeExists = does_that_exist folder_tree . coerce
 
-doesFileExists :: (E.Repository E.:> es) => Digest -> E.Eff es Bool
-doesFileExists = does_that_exist folder_file
+doesFileExists :: (E.Repository E.:> es) => FileDigest -> E.Eff es Bool
+doesFileExists = does_that_exist folder_file . coerce
 
-doesChunkExists :: (E.Repository E.:> es) => Digest -> E.Eff es Bool
-doesChunkExists = does_that_exist folder_chunk
+doesChunkExists :: (E.Repository E.:> es) => ChunkDigest -> E.Eff es Bool
+doesChunkExists = does_that_exist folder_chunk . coerce
 
-tryCatingVersion :: (E.Repository E.:> es) => Digest -> E.Eff es (Maybe Version)
+tryCatingVersion :: (E.Repository E.:> es) => VersionDigest -> E.Eff es (Maybe Version)
 tryCatingVersion digest = do
   path_digest <- Path.parseRelFile $ show digest
   -- TODO using fileExists could cause issue of TOCTOU,
@@ -380,7 +381,7 @@ cat_stuff_under folder stuff = S.concatEffect $ do
   pure $! read (folder </> stuff_path)
 {-# INLINE cat_stuff_under #-}
 
-catFile :: (E.Repository E.:> es) => Digest -> S.Stream (E.Eff es) Object
+catFile :: (E.Repository E.:> es) => FileDigest -> S.Stream (E.Eff es) Object
 catFile sha = S.concatEffect $ E.reallyUnsafeUnliftIO $ \un -> do
   pure $!
     cat_stuff_under folder_file sha
@@ -391,12 +392,12 @@ catFile sha = S.concatEffect $ E.reallyUnsafeUnliftIO $ \un -> do
       & S.morphInner E.unsafeEff_
   where
     parse_file_content :: (MonadThrow m, Applicative m) => T.Text -> m Object
-    parse_file_content = fmap Object . t2d
+    parse_file_content = fmap (Object . UnsafeMkChunkDigest) . t2d
 {-# INLINE catFile #-}
 
 catChunk
   :: (E.Repository E.:> es)
-  => Digest
+  => ChunkDigest
   -> S.Stream (E.Eff es) (Array.Array Word8)
 catChunk digest = S.concatEffect $ E.reallyUnsafeUnliftIO $ \un -> do
   pure $!
@@ -410,12 +411,12 @@ catChunk digest = S.concatEffect $ E.reallyUnsafeUnliftIO $ \un -> do
 -- TODO Move this to EffectRep.
 aes = unsafePerformIO that_aes
 
-getChunkSize :: (E.Repository E.:> es) => Digest -> E.Eff es FileOffset
+getChunkSize :: (E.Repository E.:> es) => ChunkDigest -> E.Eff es FileOffset
 getChunkSize sha = do
   sha_path <- E.unsafeEff_ $ Path.parseRelFile $ show sha
   fileSize $ folder_chunk </> sha_path
 
-catVersion :: (E.Repository E.:> es) => Digest -> E.Eff es Version
+catVersion :: (E.Repository E.:> es) => VersionDigest -> E.Eff es Version
 catVersion digest = do
   decode_result <-
     cat_stuff_under folder_version digest
@@ -429,7 +430,7 @@ catVersion digest = do
       unless (BL.null remain_bytes) $ throwM $ userError $ "failed to decode version " <> show digest <> ": there're remaining bytes"
       pure v
 
-catTree :: (E.Repository E.:> es) => Digest -> S.Stream (E.Eff es) (Either Tree FFile)
+catTree :: (E.Repository E.:> es) => TreeDigest -> S.Stream (E.Eff es) (Either Tree FFile)
 catTree tree_sha' = S.concatEffect $ E.reallyUnsafeUnliftIO $ \un -> do
   pure $!
     cat_stuff_under folder_tree tree_sha'
@@ -443,10 +444,10 @@ catTree tree_sha' = S.concatEffect $ E.reallyUnsafeUnliftIO $ \un -> do
     parse_tree_content :: MonadThrow m => T.Text -> m (Either Tree FFile)
     parse_tree_content buf = case T.splitOn " " buf of
       ["dir", name, sha] -> do
-        digest <- t2d sha
+        digest <- UnsafeMkTreeDigest <$> t2d sha
         pure $ Left $ Tree name digest
       ["file", name, sha] -> do
-        digest <- t2d sha
+        digest <- UnsafeMkFileDigest <$> t2d sha
         pure $ Right $ FFile name digest
       _ -> throwM $ userError $ "invalid dir content: " <> T.unpack buf
 {-# INLINE catTree #-}

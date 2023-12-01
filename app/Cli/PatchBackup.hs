@@ -67,7 +67,7 @@ import Better.Statistics.Backup.Class (
 import Monad (run_backup_repo_t_from_cwd)
 import Streamly.External.ByteString (fromArray)
 import qualified Streamly.Internal.Data.Stream.Chunked as Chunked
-import Util.Options (digestRead)
+import Util.Options (treeDigestRead)
 
 parser_info :: ParserInfo (IO ())
 parser_info = info (helper <*> parser) infoMod
@@ -80,7 +80,7 @@ parser_info = info (helper <*> parser) infoMod
     parser =
       go
         <$> argument
-          digestRead
+          treeDigestRead
           ( fold
               [ metavar "TREE_DIGEST"
               , help "the tree you'd like to patch with"

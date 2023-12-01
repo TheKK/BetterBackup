@@ -2,7 +2,10 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Util.Options (
-  digestRead,
+  versionDigestRead,
+  treeDigestRead,
+  fileDigestRead,
+  chunkDigestRead,
   someBaseDirRead,
   absDirRead,
 ) where
@@ -11,16 +14,23 @@ import Options.Applicative (ReadM, eitherReader)
 
 import Control.Exception (Exception (displayException))
 
-import qualified Data.ByteString.Base16 as BSBase16
+import Data.ByteString.Base16 qualified as BSBase16
 
 import Data.Bifunctor (Bifunctor (first))
 import Data.String (fromString)
 
-import qualified Data.Text as T
+import Data.Text qualified as T
 
-import qualified Path
+import Path qualified
 
-import Better.Hash (Digest, digestFromByteString)
+import Better.Hash (
+  ChunkDigest (..),
+  Digest,
+  FileDigest (..),
+  TreeDigest (..),
+  VersionDigest (..),
+  digestFromByteString,
+ )
 
 -- TODO This is a copy-paste snippt.
 digestRead :: ReadM Digest
@@ -32,6 +42,18 @@ digestRead = eitherReader $ \raw_sha -> do
   case digestFromByteString sha_decoded of
     Nothing -> Left $ "invalid sha256: " <> raw_sha <> ", incorrect length"
     Just digest -> pure digest
+
+versionDigestRead :: ReadM VersionDigest
+versionDigestRead = UnsafeMkVersionDigest <$> digestRead
+
+treeDigestRead :: ReadM TreeDigest
+treeDigestRead = UnsafeMkTreeDigest <$> digestRead
+
+fileDigestRead :: ReadM FileDigest
+fileDigestRead = UnsafeMkFileDigest <$> digestRead
+
+chunkDigestRead :: ReadM ChunkDigest
+chunkDigestRead = UnsafeMkChunkDigest <$> digestRead
 
 -- TODO This is a copy-paste snippt.
 someBaseDirRead :: ReadM (Path.SomeBase Path.Dir)

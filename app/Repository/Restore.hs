@@ -57,7 +57,7 @@ import Effectful qualified as E
 import Effectful.Dispatch.Static qualified as E
 import Effectful.Dispatch.Static.Unsafe qualified as E
 
-import Better.Hash (Digest)
+import Better.Hash (TreeDigest, FileDigest)
 import Better.Repository qualified as Repo
 import Better.Repository.Class (Repository)
 
@@ -98,7 +98,7 @@ runParallelRestore par_map_config emitter = E.withEffToIO (E.ConcUnlift E.Epheme
       RestoreTree abs_dir_path digest -> restoreDirMeta abs_dir_path digest
       RestoreFile abs_file_path digest -> restoreFile abs_file_path digest
 
-restoreTreeInDFS :: (Repository E.:> es, RepositoryRestore E.:> es, E.IOE E.:> es) => Path Path.Abs Path.Dir -> Digest -> E.Eff es ()
+restoreTreeInDFS :: (Repository E.:> es, RepositoryRestore E.:> es, E.IOE E.:> es) => Path Path.Abs Path.Dir -> TreeDigest -> E.Eff es ()
 restoreTreeInDFS abs_out_path tree_digest = do
   RepositoryRestoreRep tbq <- E.getStaticRep
 
@@ -122,7 +122,7 @@ restoreTreeInDFS abs_out_path tree_digest = do
         )
       & S.fold F.drain
 
-restoreTreeInBFS :: (Repository E.:> es, RepositoryRestore E.:> es, E.IOE E.:> es) => Path Path.Abs Path.Dir -> Digest -> E.Eff es ()
+restoreTreeInBFS :: (Repository E.:> es, RepositoryRestore E.:> es, E.IOE E.:> es) => Path Path.Abs Path.Dir -> TreeDigest -> E.Eff es ()
 restoreTreeInBFS abs_root_path root_digest = do
   RepositoryRestoreRep restore_job_tbq <- E.getStaticRep
 
@@ -165,7 +165,7 @@ restoreTreeInBFS abs_root_path root_digest = do
         Nothing -> pure ()
     atomically $ Ki.awaitAll scope
 
-data RestoreJob = RestoreTree (Path Path.Abs Path.Dir) Digest | RestoreFile (Path Path.Abs Path.File) Digest
+data RestoreJob = RestoreTree (Path Path.Abs Path.Dir) TreeDigest | RestoreFile (Path Path.Abs Path.File) FileDigest
   deriving (Show)
 
 -- | Restore meta of existed directory.
@@ -173,7 +173,7 @@ data RestoreJob = RestoreTree (Path Path.Abs Path.Dir) Digest | RestoreFile (Pat
 -- The parent path must exists before calling this function. And it's fine if the file has not existed yet.
 -- If the file exists then its content and meta would be overwritten after this function.
 {-# NOINLINE restoreFile #-}
-restoreFile :: (Repository E.:> es, E.IOE E.:> es) => Path Path.Abs Path.File -> Digest -> E.Eff es ()
+restoreFile :: (Repository E.:> es, E.IOE E.:> es) => Path Path.Abs Path.File -> FileDigest -> E.Eff es ()
 restoreFile abs_out_path digest = E.reallyUnsafeUnliftIO $ \un -> withBinaryFile (Path.fromAbsFile abs_out_path) WriteMode $ \h -> do
   Repo.catFile digest
     & S.morphInner un
@@ -188,7 +188,7 @@ restoreFile abs_out_path digest = E.reallyUnsafeUnliftIO $ \un -> withBinaryFile
 -- | Restore meta of existed directory.
 --
 -- Might throws exception If directory does not exist.
-restoreDirMeta :: (Repository E.:> es, E.IOE E.:> es) => Path Path.Abs Path.Dir -> Digest -> E.Eff es ()
+restoreDirMeta :: (Repository E.:> es, E.IOE E.:> es) => Path Path.Abs Path.Dir -> TreeDigest -> E.Eff es ()
 restoreDirMeta _ _ = do
   -- TODO Permission should be backed up as well.
   pure ()

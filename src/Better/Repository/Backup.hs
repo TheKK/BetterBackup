@@ -42,18 +42,18 @@ import Data.Maybe (fromMaybe)
 import Data.Time (getCurrentTime)
 import Data.Word (Word8)
 
-import qualified StmContainers.Set as STMSet
+import StmContainers.Set qualified as STMSet
 
-import qualified Ki
+import Ki qualified
 
-import qualified Data.Text as T
+import Data.Text qualified as T
 
-import qualified Data.ByteString as BS
-import qualified Data.ByteString.Builder as BB
-import qualified Data.ByteString.Builder.Extra as BB
-import qualified Data.ByteString.Char8 as BC
-import qualified Data.ByteString.Lazy as BL
-import qualified Data.ByteString.Short as BSS
+import Data.ByteString qualified as BS
+import Data.ByteString.Builder qualified as BB
+import Data.ByteString.Builder.Extra qualified as BB
+import Data.ByteString.Char8 qualified as BC
+import Data.ByteString.Lazy qualified as BL
+import Data.ByteString.Short qualified as BSS
 
 import Data.Foldable (for_)
 
@@ -64,34 +64,34 @@ import Control.Monad (guard, replicateM, unless, when)
 import Control.Monad.Catch (throwM)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.IO.Unlift (MonadUnliftIO)
-import qualified Control.Monad.IO.Unlift as Un
+import Control.Monad.IO.Unlift qualified as Un
 
 import Control.Concurrent.STM (TBQueue, TVar, atomically, modifyTVar', newTBQueueIO, newTVarIO, readTBQueue, readTVar, writeTBQueue)
 
-import qualified Streamly.Data.Array as Array
+import Streamly.Data.Array qualified as Array
 import Streamly.External.ByteString (toArray)
-import qualified Streamly.Internal.Data.Array.Type as Array (byteLength)
+import Streamly.Internal.Data.Array.Type qualified as Array (byteLength)
 
 import Streamly.Internal.System.IO (defaultChunkSize)
 
-import qualified Streamly.FileSystem.File as File
+import Streamly.FileSystem.File qualified as File
 
-import qualified System.Directory as D
+import System.Directory qualified as D
 import System.Environment (lookupEnv)
-import qualified System.FilePath as FP
+import System.FilePath qualified as FP
 import System.IO (IOMode (ReadMode, WriteMode), withBinaryFile)
-import qualified System.Posix as P
+import System.Posix qualified as P
 
 import Path (Path, (</>))
-import qualified Path
+import Path qualified
 
-import qualified Crypto.Cipher.AES as Cipher
+import Crypto.Cipher.AES qualified as Cipher
 import Crypto.Cipher.Types (ivAdd)
-import qualified Crypto.Cipher.Types as Cipher
-import qualified Crypto.Random.Entropy as CRE
+import Crypto.Cipher.Types qualified as Cipher
+import Crypto.Random.Entropy qualified as CRE
 
-import qualified Streamly.Data.Fold as F
-import qualified Streamly.Data.Stream.Prelude as S
+import Streamly.Data.Fold qualified as F
+import Streamly.Data.Stream.Prelude qualified as S
 
 import Control.Concurrent.QSem (QSem, newQSem, signalQSem, waitQSem)
 import Control.Concurrent.STM.TSem (TSem, newTSem, signalTSem, waitTSem)
@@ -99,34 +99,35 @@ import Control.Exception (finally, mask, onException)
 import Control.Monad.ST.Strict (stToIO)
 import Control.Monad.Trans.Maybe (MaybeT (MaybeT, runMaybeT))
 
-import qualified Effectful as E
-import qualified Effectful.Dispatch.Static as E
-import qualified Effectful.Dispatch.Static.Unsafe as E
-import qualified Effectful.Dispatch.Static.Unsafe as EU
+import Effectful qualified as E
+import Effectful.Dispatch.Static qualified as E
+import Effectful.Dispatch.Static.Unsafe qualified as E
+import Effectful.Dispatch.Static.Unsafe qualified as EU
 
-import qualified Hedgehog as H
-import qualified Hedgehog.Gen as Gen
-import qualified Hedgehog.Range as Range
+import Hedgehog qualified as H
+import Hedgehog.Gen qualified as Gen
+import Hedgehog.Range qualified as Range
 
-import qualified Better.Data.FileSystemChanges as FSC
-import Better.Hash (Digest, digestToBase16ShortByteString, finalize, hashArrayFoldIO, hashByteArrayAccess', hashByteStringFoldIO)
-import qualified Better.Hash as Hash
+import Better.Data.FileSystemChanges qualified as FSC
+import Better.Hash (Digest, FileDigest (UnsafeMkFileDigest), TreeDigest (UnsafeMkTreeDigest), digestToBase16ShortByteString, finalize, hashArrayFoldIO, hashByteArrayAccess', hashByteStringFoldIO)
+import Better.Hash qualified as Hash
 import Better.Internal.Repository.LowLevel (addBlob', addDir', addFile', d2b, doesTreeExists)
-import qualified Better.Internal.Repository.LowLevel as Repo
+import Better.Internal.Repository.LowLevel qualified as Repo
 import Better.Internal.Streamly.Array (chunkReaderFromToWith)
 import Better.Internal.Streamly.Crypto.AES (encryptCtr, that_aes)
-import qualified Better.Logging.Effect as E
+import Better.Logging.Effect qualified as E
 import Better.Repository.BackupCache.Class (BackupCache)
-import qualified Better.Repository.BackupCache.LevelDB as BackupCacheLevelDB
+import Better.Repository.BackupCache.LevelDB qualified as BackupCacheLevelDB
 import Better.Repository.Class (RepositoryWrite)
-import qualified Better.Repository.Class as E
-import qualified Better.Statistics.Backup as BackupSt
+import Better.Repository.Class qualified as E
+import Better.Statistics.Backup qualified as BackupSt
 import Better.Statistics.Backup.Class (BackupStatistics)
-import qualified Better.Statistics.Backup.Class as BackupSt
-import qualified Better.Streamly.FileSystem.Chunker as Chunker
-import qualified Better.Streamly.FileSystem.Dir as Dir
-import qualified Better.TempDir as Tmp
+import Better.Statistics.Backup.Class qualified as BackupSt
+import Better.Streamly.FileSystem.Chunker qualified as Chunker
+import Better.Streamly.FileSystem.Dir qualified as Dir
+import Better.TempDir qualified as Tmp
 import Better.TempDir.Class (Tmp)
+import Data.Coerce (coerce)
 
 data Ctr = Ctr
   { _ctr_aes :: Cipher.AES128
@@ -161,7 +162,7 @@ backup_dir
      , E.IOE E.:> es
      )
   => Path Path.Abs Path.Dir
-  -> E.Eff es Digest
+  -> E.Eff es TreeDigest
 backup_dir abs_dir = E.reallyUnsafeUnliftIO $ \un -> do
   Ki.scoped $ \scope -> do
     stat_async <- Ki.fork scope (un $ collect_dir_and_file_statistics abs_dir)
@@ -177,7 +178,7 @@ data instance E.StaticRep RepositoryWrite = RepositoryWriteRep {-# UNPACK #-} !K
 -- TODO We can't force Digest to be "digest of tree" now, this is bad for users of this API and harms correctness.
 runBackup
   :: (E.Logging E.:> es, E.Repository E.:> es, BackupCache E.:> es, Tmp E.:> es, BackupStatistics E.:> es, E.IOE E.:> es)
-  => E.Eff (RepositoryWrite : es) Digest
+  => E.Eff (RepositoryWrite : es) TreeDigest
   -> E.Eff es Repo.Version
 runBackup m = EU.reallyUnsafeUnliftIO $ \un -> do
   let
@@ -266,25 +267,34 @@ tree_content_from_dir_entry file_or_dir =
       DirEntryFile _ _ -> "file"
       DirEntryDir _ _ -> "dir"
     !byteshash = d2b $ case file_or_dir of
-      DirEntryFile digest _ -> digest
-      DirEntryDir digest _ -> digest
+      DirEntryFile digest _ -> coerce digest
+      DirEntryDir digest _ -> coerce digest
   in
     BS.concat [t, BS.singleton 0x20, name, BS.singleton 0x20, byteshash, BS.singleton 0x0a]
 
-tree_content :: Either (Path Path.Rel Path.File) (Path Path.Rel Path.Dir) -> Digest -> BS.ByteString
-tree_content file_or_dir hash' =
+tree_content_of_tree :: Path Path.Rel Path.Dir -> TreeDigest -> BS.ByteString
+tree_content_of_tree dir_path hash' =
   let
-    !name = either file_name' dir_name' file_or_dir
-    !t = either (const "file") (const "dir") file_or_dir
-    !byteshash = d2b hash'
+    !name = dir_name' dir_path
+    !t = "dir"
+    !byteshash = d2b $ coerce hash'
+  in
+    BS.concat [t, BS.singleton 0x20, name, BS.singleton 0x20, byteshash, BS.singleton 0x0a]
+  where
+    dir_name' :: Path r Path.Dir -> BS.ByteString
+    dir_name' = BC.pack . init . Path.toFilePath . Path.dirname
+
+tree_content_of_file :: Path Path.Rel Path.File -> FileDigest -> BS.ByteString
+tree_content_of_file file_path hash' =
+  let
+    !name = file_name' file_path
+    !t = "file"
+    !byteshash = d2b $ coerce hash'
   in
     BS.concat [t, BS.singleton 0x20, name, BS.singleton 0x20, byteshash, BS.singleton 0x0a]
   where
     file_name' :: Path r Path.File -> BS.ByteString
     file_name' = BC.pack . Path.toFilePath . Path.filename
-
-    dir_name' :: Path r Path.Dir -> BS.ByteString
-    dir_name' = BC.pack . init . Path.toFilePath . Path.dirname
 
 collect_dir_and_file_statistics
   :: (E.Repository E.:> es, BackupStatistics E.:> es, E.IOE E.:> es)
@@ -332,24 +342,23 @@ fork_or_run_directly s = \scope io -> mask $ \restore -> do
 
 data ForkFns
   = ForkFns
-      (IO Digest -> IO (IO Digest))
-      (IO Digest -> IO (IO Digest))
+      (forall a. IO a -> IO (IO a))
+      (forall a. IO a -> IO (IO a))
 
 -- | Backup specified directory, and only do backup.
 --
 -- NOTE: Normally you'll only need 'backup_dir' unless you have special needs.
 --
 -- This function WON'T collect statistics of directories and files concurrently, which gives you more control.
-backupDirWithoutCollectingDirAndFileStatistics :: (RepositoryWrite E.:> es, BackupCache E.:> es, Tmp E.:> es, E.IOE E.:> es) => Path Path.Abs Path.Dir -> E.Eff es Digest
+backupDirWithoutCollectingDirAndFileStatistics :: (RepositoryWrite E.:> es, BackupCache E.:> es, Tmp E.:> es, E.IOE E.:> es) => Path Path.Abs Path.Dir -> E.Eff es TreeDigest
 backupDirWithoutCollectingDirAndFileStatistics rel_tree_name = Tmp.withEmptyTmpFile $ \file_name' -> EU.reallyUnsafeUnliftIO $ \un -> do
   RepositoryWriteRep _ (ForkFns file_fork_or_not dir_fork_or_not) tbq _ <- un $ E.getStaticRep @RepositoryWrite
   !dir_hash <- liftIO $ withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
     Dir.readEither rel_tree_name
       & S.mapM
-        ( \fod ->
-            fmap (tree_content fod) <$> case fod of
-              Left f -> file_fork_or_not $ un $ backup_file $ rel_tree_name </> f
-              Right d -> dir_fork_or_not $ un $ backupDirWithoutCollectingDirAndFileStatistics $ rel_tree_name </> d
+        ( \case
+            Left f -> file_fork_or_not $ un $ fmap (tree_content_of_file f) $ backup_file $ rel_tree_name </> f
+            Right d -> dir_fork_or_not $ un $ fmap (tree_content_of_tree d) $ backupDirWithoutCollectingDirAndFileStatistics $ rel_tree_name </> d
         )
       & S.parSequence (S.ordered True)
       & S.trace (BC.hPut fd)
@@ -357,13 +366,13 @@ backupDirWithoutCollectingDirAndFileStatistics rel_tree_name = Tmp.withEmptyTmpF
 
   liftIO $ atomically $ writeTBQueue tbq $ UploadTree dir_hash file_name'
 
-  pure dir_hash
+  pure $ UnsafeMkTreeDigest dir_hash
 
 data DirEntry
-  = DirEntryFile {-# UNPACK #-} !Digest {-# UNPACK #-} !BS.ByteString
-  | DirEntryDir {-# UNPACK #-} !Digest {-# UNPACK #-} !BS.ByteString
+  = DirEntryFile {-# UNPACK #-} !FileDigest {-# UNPACK #-} !BS.ByteString
+  | DirEntryDir {-# UNPACK #-} !TreeDigest {-# UNPACK #-} !BS.ByteString
 
-backupDirFromList :: (RepositoryWrite E.:> es, BackupStatistics E.:> es, Tmp E.:> es, E.IOE E.:> es) => [DirEntry] -> E.Eff es Digest
+backupDirFromList :: (RepositoryWrite E.:> es, BackupStatistics E.:> es, Tmp E.:> es, E.IOE E.:> es) => [DirEntry] -> E.Eff es TreeDigest
 backupDirFromList inputs = Tmp.withEmptyTmpFile $ \file_name' -> do
   RepositoryWriteRep _ _ tbq _ <- E.getStaticRep @RepositoryWrite
 
@@ -377,9 +386,9 @@ backupDirFromList inputs = Tmp.withEmptyTmpFile $ \file_name' -> do
 
   liftIO $ atomically $ writeTBQueue tbq $ UploadTree dir_hash file_name'
 
-  pure dir_hash
+  pure $ UnsafeMkTreeDigest dir_hash
 
-backup_file :: (RepositoryWrite E.:> es, BackupCache E.:> es, Tmp E.:> es, E.IOE E.:> es) => Path Path.Abs Path.File -> E.Eff es Digest
+backup_file :: (RepositoryWrite E.:> es, BackupCache E.:> es, Tmp E.:> es, E.IOE E.:> es) => Path Path.Abs Path.File -> E.Eff es FileDigest
 backup_file rel_file_name = do
   RepositoryWriteRep _ _ tbq _ <- E.getStaticRep @RepositoryWrite
 
@@ -388,7 +397,7 @@ backup_file rel_file_name = do
   case to_scan of
     Just cached_digest -> do
       liftIO $ atomically $ writeTBQueue tbq $ FindNoChangeFile cached_digest st
-      pure $! cached_digest
+      pure $! UnsafeMkFileDigest cached_digest
     Nothing -> Tmp.withEmptyTmpFile $ \file_name' -> E.reallyUnsafeUnliftIO $ \un -> do
       !file_hash <- withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd ->
         withBinaryFile (Path.fromAbsFile rel_file_name) ReadMode $ \fdd ->
@@ -403,7 +412,7 @@ backup_file rel_file_name = do
             & S.fold hashByteStringFoldIO
 
       atomically $ writeTBQueue tbq $ UploadFile file_hash file_name' (Just st)
-      pure file_hash
+      pure $ UnsafeMkFileDigest file_hash
 
 backupFileFromBuilder :: (RepositoryWrite E.:> es, BackupStatistics E.:> es, Tmp E.:> es, E.IOE E.:> es) => BB.Builder -> E.Eff es Digest
 backupFileFromBuilder builder = do
@@ -535,7 +544,7 @@ backupDirFromExistedTree
      , E.IOE E.:> es
      )
   => FSC.FileSystemChanges
-  -> Digest
+  -> TreeDigest
   -> Path Path.Rel Path.Dir
   -> E.Eff es (Maybe DirEntry)
 backupDirFromExistedTree fsc digest rel_dir_path_in_tree = do
@@ -563,7 +572,7 @@ backup_file_from_existed_tree
      , E.IOE E.:> es
      )
   => FSC.FileSystemChanges
-  -> Digest
+  -> FileDigest
   -> Path Path.Rel Path.File
   -> E.Eff es (Maybe DirEntry)
 backup_file_from_existed_tree fsc digest rel_file_path_in_tree = do
@@ -585,10 +594,10 @@ keep_traversing_existed_tree
      , E.IOE E.:> es
      )
   => FSC.FileSystemChanges
-  -> Digest
+  -> TreeDigest
   -> Path Path.Rel Path.Dir
   -> [(Path Path.Rel Path.File, Path Path.Abs Path.File)]
-  -> E.Eff es (Maybe Digest)
+  -> E.Eff es (Maybe TreeDigest)
 keep_traversing_existed_tree fsc digest_of_existed_tree rel_dir_path_in_tree possible_new_entries = do
   RepositoryWriteRep _ _ tbq _ <- E.getStaticRep @RepositoryWrite
 
@@ -637,7 +646,7 @@ keep_traversing_existed_tree fsc digest_of_existed_tree rel_dir_path_in_tree pos
 
     liftIO $ atomically $ writeTBQueue tbq $ UploadTree dir_hash file_name'
 
-    pure dir_hash
+    pure $ UnsafeMkTreeDigest dir_hash
 
 try_backing_up_file_or_dir
   :: ( E.Logging E.:> es

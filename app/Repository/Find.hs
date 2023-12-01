@@ -30,11 +30,11 @@ import qualified Path
 
 import qualified Effectful as E
 
-import Better.Hash (Digest)
+import Better.Hash (TreeDigest)
 import qualified Better.Repository as Repo
 import Better.Repository.Class (Repository)
 
-findTree :: (Repository E.:> es, E.IOE E.:> es) => Bool -> Maybe Word64 -> Digest -> Maybe (Path.SomeBase Path.Dir) -> E.Eff es ()
+findTree :: (Repository E.:> es, E.IOE E.:> es) => Bool -> Maybe Word64 -> TreeDigest -> Maybe (Path.SomeBase Path.Dir) -> E.Eff es ()
 findTree show_digest opt_depth tree_root opt_somebase_dir = do
   tree_root' <- case opt_somebase_dir of
     Just somebase_dir -> search_dir_in_tree tree_root somebase_dir
@@ -43,7 +43,7 @@ findTree show_digest opt_depth tree_root opt_somebase_dir = do
   echo_tree opt_depth "/" tree_root'
   where
     {-# NOINLINE echo_tree #-}
-    echo_tree :: (Repository E.:> es, E.IOE E.:> es) => Maybe Word64 -> T.Text -> Digest -> E.Eff es ()
+    echo_tree :: (Repository E.:> es, E.IOE E.:> es) => Maybe Word64 -> T.Text -> TreeDigest -> E.Eff es ()
     echo_tree opt_cur_depth parent digest = do
       let opt_tree_digest = if show_digest then T.pack ("[" <> show digest <> "][d] ") else ""
       liftIO $ T.putStrLn $ opt_tree_digest <> parent
@@ -60,7 +60,7 @@ findTree show_digest opt_depth tree_root opt_somebase_dir = do
             )
           & S.fold F.drain
 
-search_dir_in_tree :: (Repository E.:> es) => Digest -> Path.SomeBase Path.Dir -> E.Eff es Digest
+search_dir_in_tree :: (Repository E.:> es) => TreeDigest -> Path.SomeBase Path.Dir -> E.Eff es TreeDigest
 search_dir_in_tree root_digest somebase = do
   -- Make everything abs dir, then split them into ["/", "a", "b"] and drop the "/" part.
   let dir_segments = tail $ FP.splitDirectories $ Path.fromAbsDir abs_dir_path
@@ -71,10 +71,10 @@ search_dir_in_tree root_digest somebase = do
       Path.Abs abs_dir -> abs_dir
       Path.Rel rel_dir -> [Path.absdir|/|] Path.</> rel_dir
 
-    go :: (Repository E.:> es) => Digest -> [FilePath] -> E.Eff es Digest
+    go :: (Repository E.:> es) => TreeDigest -> [FilePath] -> E.Eff es TreeDigest
     go digest path_segments = snd <$> foldlM step (["/"], digest) path_segments
 
-    step :: (Repository E.:> es) => ([FilePath], Digest) -> FilePath -> E.Eff es ([FilePath], Digest)
+    step :: (Repository E.:> es) => ([FilePath], TreeDigest) -> FilePath -> E.Eff es ([FilePath], TreeDigest)
     step (traversed_pathes, !digest) path = do
       !next_digest <-
         Repo.catTree digest

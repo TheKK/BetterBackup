@@ -22,7 +22,7 @@ import Data.Time.LocalTime (getCurrentTimeZone)
 
 import qualified Streamly.Data.Stream.Prelude as S
 
-import Better.Hash (Digest)
+import Better.Hash (VersionDigest)
 import qualified Better.Repository as Repo
 
 import Monad (run_readonly_repo_t_from_cwd)
@@ -78,7 +78,7 @@ parser_info = info (helper <*> parser) infoMod
           <> show (Repo.ver_root v)
           <> "]"
 
-    render_json :: (UTCTime -> String) -> Digest -> Repo.Version -> IO ()
+    render_json :: (UTCTime -> String) -> VersionDigest -> Repo.Version -> IO ()
     render_json display_time v_digest v =
       BL.putStrLn . A.encode $
         A.object

@@ -25,11 +25,11 @@ import System.Directory qualified as D
 
 import Path qualified
 
-import Better.Hash (Digest)
+import Better.Hash (TreeDigest)
 
 import Monad (run_readonly_repo_t_from_cwd)
 import Repository.Restore (restoreTreeInBFS, restoreTreeInDFS, runParallelRestore)
-import Util.Options (digestRead, someBaseDirRead)
+import Util.Options (treeDigestRead, someBaseDirRead)
 
 parser_info :: ParserInfo (IO ())
 parser_info = info (helper <*> parser) infoMod
@@ -50,7 +50,7 @@ parser_info = info (helper <*> parser) infoMod
               ]
           )
         <*> argument
-          digestRead
+          treeDigestRead
           ( fold
               [ metavar "SHA"
               , help "SHA of tree"
@@ -65,7 +65,7 @@ parser_info = info (helper <*> parser) infoMod
           )
 
     {-# NOINLINE go #-}
-    go :: TraverseMethod -> Digest -> Path.SomeBase Path.Dir -> IO ()
+    go :: TraverseMethod -> TreeDigest -> Path.SomeBase Path.Dir -> IO ()
     go traverse_method sha some_dir = do
       abs_out_path <- case some_dir of
         Path.Abs abs_dir -> pure abs_dir

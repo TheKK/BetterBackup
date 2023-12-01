@@ -29,11 +29,11 @@ import qualified Path
 import Data.Foldable (Foldable (fold))
 import Data.Word (Word64)
 
-import Better.Hash (Digest)
+import Better.Hash (TreeDigest)
 
 import Monad (run_readonly_repo_t_from_cwd)
 import Repository.Find (findTree)
-import Util.Options (digestRead, someBaseDirRead)
+import Util.Options (treeDigestRead, someBaseDirRead)
 
 parser_info :: ParserInfo (IO ())
 parser_info = info (helper <*> parser) infoMod
@@ -63,7 +63,7 @@ parser_info = info (helper <*> parser) infoMod
               ]
           )
         <*> argument
-          digestRead
+          treeDigestRead
           ( fold
               [ help "SHA of tree"
               , metavar "SHA"
@@ -79,6 +79,6 @@ parser_info = info (helper <*> parser) infoMod
               ]
           )
 
-    go :: Bool -> Word64 -> Digest -> Path.SomeBase Path.Dir -> IO ()
+    go :: Bool -> Word64 -> TreeDigest -> Path.SomeBase Path.Dir -> IO ()
     go !show_digest !depth !tree_root !opt_somebase_dir = run_readonly_repo_t_from_cwd $ do
       findTree show_digest (Just depth) tree_root (Just opt_somebase_dir)

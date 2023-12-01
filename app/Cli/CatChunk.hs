@@ -19,11 +19,11 @@ import Streamly.Data.Stream.Prelude qualified as S
 
 import Streamly.Console.Stdio qualified as Stdio
 
-import Better.Hash (Digest)
+import Better.Hash (ChunkDigest)
 import Better.Repository qualified as Repo
 
 import Monad (run_readonly_repo_t_from_cwd)
-import Util.Options (digestRead)
+import Util.Options (chunkDigestRead)
 
 parser_info :: ParserInfo (IO ())
 parser_info = info (helper <*> parser) infoMod
@@ -36,7 +36,7 @@ parser_info = info (helper <*> parser) infoMod
     parser =
       go
         <$> argument
-          digestRead
+          chunkDigestRead
           ( fold
               [ metavar "SHA"
               , help "SHA of chunk"
@@ -44,7 +44,7 @@ parser_info = info (helper <*> parser) infoMod
           )
 
     {-# NOINLINE go #-}
-    go :: Digest -> IO ()
+    go :: ChunkDigest -> IO ()
     go sha =
       run_readonly_repo_t_from_cwd $
         Repo.catChunk sha

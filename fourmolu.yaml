@@ -1,4 +1,5 @@
 indentation: 2
+column-limit: 120
 indent-wheres: true
 haddock-style: single-line
 in-style: left-align

@@ -8,6 +8,10 @@
 
 module Better.Hash (
   -- * Digest
+  VersionDigest (..),
+  TreeDigest (..),
+  FileDigest (..),
+  ChunkDigest (..),
   Digest,
   digestSize,
   digestUnpack,
@@ -33,27 +37,27 @@ module Better.Hash (
 
 import Data.Word (Word8)
 
-import qualified Data.Base16.Types as B16
+import Data.Base16.Types qualified as B16
 
-import qualified Data.ByteString as BS
-import qualified Data.ByteString.Char8 as BSC
-import qualified Data.ByteString.Short as BSS
-import qualified Data.ByteString.Short.Base16 as BSS16
-import qualified Data.ByteString.Short.Internal as BSS
+import Data.ByteString qualified as BS
+import Data.ByteString.Char8 qualified as BSC
+import Data.ByteString.Short qualified as BSS
+import Data.ByteString.Short.Base16 qualified as BSS16
+import Data.ByteString.Short.Internal qualified as BSS
 
 import Data.Hashable (Hashable)
 
-import qualified Data.Binary as Bin
-import qualified Data.Binary.Get as Bin
+import Data.Binary qualified as Bin
+import Data.Binary.Get qualified as Bin
 
-import qualified Streamly.Data.Array as Array
-import qualified Streamly.Data.Fold as F
+import Streamly.Data.Array qualified as Array
+import Streamly.Data.Fold qualified as F
 
-import qualified Data.ByteArray as BA
-import qualified Data.ByteArray.Sized as BAS
+import Data.ByteArray qualified as BA
+import Data.ByteArray.Sized qualified as BAS
 
-import qualified BLAKE3
-import qualified BLAKE3.IO as BIO
+import BLAKE3 qualified
+import BLAKE3.IO qualified as BIO
 
 import Better.Internal.Streamly.Array (ArrayBA (ArrayBA))
 
@@ -62,7 +66,19 @@ import Control.Parallel.Strategies (NFData)
 import Control.Monad.ST (ST, stToIO)
 import Control.Monad.ST.Unsafe (unsafeIOToST)
 
-import qualified Foreign.Marshal as Alloc
+import Foreign.Marshal qualified as Alloc
+
+newtype VersionDigest = UnsafeMkVersionDigest Digest
+  deriving newtype (Ord, Eq, NFData, Hashable, Show, Bin.Binary)
+
+newtype TreeDigest = UnsafeMkTreeDigest Digest
+  deriving newtype (Ord, Eq, NFData, Hashable, Show, Bin.Binary)
+
+newtype FileDigest = UnsafeMkFileDigest Digest
+  deriving newtype (Ord, Eq, NFData, Hashable, Show, Bin.Binary)
+
+newtype ChunkDigest = UnsafeMkChunkDigest Digest
+  deriving newtype (Ord, Eq, NFData, Hashable, Show, Bin.Binary)
 
 newtype Digest = Digest BSS.ShortByteString
   deriving (Ord, Eq, NFData, Hashable)

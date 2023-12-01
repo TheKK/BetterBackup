@@ -2,16 +2,16 @@ module Better.Repository.Types (
   Version (..),
 ) where
 
-import qualified Data.Binary as Bin
+import Data.Binary qualified as Bin
 
 import Data.Time (UTCTime ())
 import Data.Time.Format.ISO8601 (iso8601ParseM, iso8601Show)
 
-import Better.Hash (Digest)
+import Better.Hash (TreeDigest)
 
 data Version = Version
   { ver_timestamp :: {-# UNPACK #-} !UTCTime
-  , ver_root :: {-# UNPACK #-} !Digest
+  , ver_root :: {-# UNPACK #-} !TreeDigest
   }
   deriving (Show, Eq, Ord)
 

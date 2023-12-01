@@ -23,7 +23,7 @@ import Streamly.Data.Stream.Prelude qualified as S
 import Better.Repository qualified as Repo
 
 import Monad (run_readonly_repo_t_from_cwd)
-import Util.Options (digestRead)
+import Util.Options (fileDigestRead)
 
 parser_info :: ParserInfo (IO ())
 parser_info = info (helper <*> parser) infoMod
@@ -36,7 +36,7 @@ parser_info = info (helper <*> parser) infoMod
     parser =
       go
         <$> argument
-          digestRead
+          fileDigestRead
           ( fold
               [ metavar "SHA"
               , help "SHA of file"

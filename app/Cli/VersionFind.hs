@@ -26,12 +26,12 @@ import qualified Path
 import Data.Foldable
 import Data.Word (Word64)
 
-import Better.Hash (Digest)
+import Better.Hash (VersionDigest)
 import qualified Better.Repository as Repo
 
 import Monad (run_readonly_repo_t_from_cwd)
 import Repository.Find (findTree)
-import Util.Options (digestRead, someBaseDirRead)
+import Util.Options (versionDigestRead, someBaseDirRead)
 
 parser_info :: ParserInfo (IO ())
 parser_info = info (helper <*> parser) infoMod
@@ -60,7 +60,7 @@ parser_info = info (helper <*> parser) infoMod
               )
           )
         <*> argument
-          digestRead
+          versionDigestRead
           ( fold
               [ help "SHA of tree"
               , metavar "SHA"
@@ -76,7 +76,7 @@ parser_info = info (helper <*> parser) infoMod
               )
           )
 
-    go :: Bool -> Maybe Word64 -> Digest -> Maybe (Path.SomeBase Path.Dir) -> IO ()
+    go :: Bool -> Maybe Word64 -> VersionDigest -> Maybe (Path.SomeBase Path.Dir) -> IO ()
     go show_digest opt_depth version_digest opt_somebase_dir = run_readonly_repo_t_from_cwd $ do
       tree_root <- Repo.ver_root <$> Repo.catVersion version_digest
       findTree show_digest opt_depth tree_root opt_somebase_dir

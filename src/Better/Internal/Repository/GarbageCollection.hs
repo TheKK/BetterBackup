@@ -20,18 +20,18 @@ import Data.Function (fix, (&))
 
 import Debug.Trace (traceMarker, traceMarkerIO)
 
-import qualified Data.Set as Set
+import Data.Set qualified as Set
 
 import Path ((</>))
-import qualified Path
+import Path qualified
 
-import qualified Streamly.Data.Fold as F
-import qualified Streamly.Data.Stream.Prelude as S
+import Streamly.Data.Fold qualified as F
+import Streamly.Data.Stream.Prelude qualified as S
 
 import Control.Monad (unless, void, when)
 
-import qualified Effectful as E
-import qualified Effectful.Dispatch.Static.Unsafe as E
+import Effectful qualified as E
+import Effectful.Dispatch.Static.Unsafe qualified as E
 
 import Better.Internal.Repository.LowLevel (
   FFile (file_sha),
@@ -49,8 +49,8 @@ import Better.Internal.Repository.LowLevel (
   s2d,
  )
 
-import Better.Hash (Digest)
-import qualified Better.Repository.Class as E
+import Better.Hash (ChunkDigest (UnsafeMkChunkDigest), FileDigest (UnsafeMkFileDigest), TreeDigest (UnsafeMkTreeDigest))
+import Better.Repository.Class qualified as E
 import Control.Concurrent.Async (replicateConcurrently_)
 import Control.Concurrent.STM
 import Control.Exception (bracket_)
@@ -61,7 +61,7 @@ garbageCollection :: (E.Repository E.:> es) => E.Eff es ()
 garbageCollection = gc_tree >>= gc_file >>= gc_chunk
   where
     {-# INLINE [2] gc_tree #-}
-    gc_tree :: (E.Repository E.:> es) => E.Eff es (Set.Set Digest)
+    gc_tree :: (E.Repository E.:> es) => E.Eff es (Set.Set FileDigest)
     gc_tree = Debug.Trace.traceMarker "gc_tree" $ E.reallyUnsafeUnliftIO $ \un -> do
       (traversal_queue, live_tree_set) <- do
         trees <-
@@ -133,7 +133,7 @@ garbageCollection = gc_tree >>= gc_file >>= gc_chunk
         & S.parMapM
           (S.eager True . S.maxBuffer 100)
           ( \rel_tree_file -> tryIOError $ do
-              tree_sha' <- s2d $ Path.fromRelFile rel_tree_file
+              tree_sha' <- fmap UnsafeMkTreeDigest <$> s2d $ Path.fromRelFile rel_tree_file
               let exist = Set.member tree_sha' live_tree_set'
               unless exist $ void $ tryIOError $ do
                 putStrLn $ "delete tree: " <> Path.toFilePath rel_tree_file
@@ -145,14 +145,14 @@ garbageCollection = gc_tree >>= gc_file >>= gc_chunk
       readTVarIO live_file_set
 
     {-# INLINE [2] gc_file #-}
-    gc_file :: (E.Repository E.:> es) => Set.Set Digest -> E.Eff es (Set.Set Digest)
+    gc_file :: (E.Repository E.:> es) => Set.Set FileDigest -> E.Eff es (Set.Set ChunkDigest)
     gc_file live_file_set = E.reallyUnsafeUnliftIO $ \un -> Debug.Trace.traceMarker "gc_file" $ do
       listFolderFiles folder_file
         & S.morphInner un
         & S.parMapM
           (S.eager True . S.maxBuffer 100)
           ( \rel_file -> do
-              file_sha' <- s2d $ Path.fromRelFile rel_file
+              file_sha' <- fmap UnsafeMkFileDigest <$> s2d $ Path.fromRelFile rel_file
               let still_alive = Set.member file_sha' live_file_set
 
               if still_alive
@@ -167,14 +167,14 @@ garbageCollection = gc_tree >>= gc_file >>= gc_chunk
         & S.fold F.toSet
 
     {-# INLINE [2] gc_chunk #-}
-    gc_chunk :: (E.Repository E.:> es) => Set.Set Digest -> E.Eff es ()
+    gc_chunk :: (E.Repository E.:> es) => Set.Set ChunkDigest -> E.Eff es ()
     gc_chunk live_chunk_set = E.reallyUnsafeUnliftIO $ \un -> Debug.Trace.traceMarker "gc_chunk" $ do
       listFolderFiles folder_chunk
         & S.morphInner un
         & S.parMapM
           (S.eager True . S.maxBuffer 100)
           ( \rel_chunk -> do
-              chunk_sha' <- s2d $ Path.fromRelFile rel_chunk
+              chunk_sha' <- fmap UnsafeMkChunkDigest <$> s2d $ Path.fromRelFile rel_chunk
               let exist = Set.member chunk_sha' live_chunk_set
               unless exist $ void $ tryIOError $ do
                 putStrLn $ "delete chunk: " <> Path.toFilePath rel_chunk
