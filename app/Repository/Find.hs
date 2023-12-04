@@ -7,6 +7,7 @@
 
 module Repository.Find (
   findTree,
+  searchDirInTree,
 ) where
 
 import Control.Monad (when, (<$!>), (<=<))
@@ -38,7 +39,7 @@ import Control.Monad.Trans.Except (ExceptT, except, runExceptT)
 findTree :: (Repository E.:> es, E.IOE E.:> es) => Bool -> Maybe Word64 -> TreeDigest -> Maybe (Path.SomeBase Path.Dir) -> E.Eff es ()
 findTree show_digest opt_depth tree_root opt_somebase_dir = do
   tree_root' <- case opt_somebase_dir of
-    Just somebase_dir -> either error id <$> search_dir_in_tree tree_root somebase_dir
+    Just somebase_dir -> either error pure =<< searchDirInTree tree_root somebase_dir
     Nothing -> pure tree_root
 
   echo_tree opt_depth "/" tree_root'
@@ -61,8 +62,8 @@ findTree show_digest opt_depth tree_root opt_somebase_dir = do
             )
           & S.fold F.drain
 
-search_dir_in_tree :: (Repository E.:> es) => TreeDigest -> Path.SomeBase Path.Dir -> E.Eff es (Either String TreeDigest)
-search_dir_in_tree root_digest somebase = do
+searchDirInTree :: (Repository E.:> es) => TreeDigest -> Path.SomeBase Path.Dir -> E.Eff es (Either String TreeDigest)
+searchDirInTree root_digest somebase = do
   -- Make everything abs dir, then split them into ["/", "a", "b"] and drop the "/" part.
   let dir_segments = tail $ FP.splitDirectories $ Path.fromAbsDir abs_dir_path
   go root_digest dir_segments
