@@ -25,6 +25,7 @@
             pkgs.haskell.compiler.ghc92
             pkgs.haskell.packages.ghc92.cabal-install
             pkgs.haskell.packages.ghc92.haskell-language-server
+            pkgs.llvm_12
           ];
         };
       });
