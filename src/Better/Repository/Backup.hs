@@ -282,7 +282,7 @@ tree_content_of_tree dir_path hash' =
     BS.concat [t, BS.singleton 0x20, name, BS.singleton 0x20, byteshash, BS.singleton 0x0a]
   where
     dir_name' :: Path r Path.Dir -> BS.ByteString
-    dir_name' = BC.pack . init . Path.toFilePath . Path.dirname
+    dir_name' = BC.pack . FP.dropTrailingPathSeparator . Path.toFilePath . Path.dirname
 
 tree_content_of_file :: Path Path.Rel Path.File -> FileDigest -> BS.ByteString
 tree_content_of_file file_path hash' =
