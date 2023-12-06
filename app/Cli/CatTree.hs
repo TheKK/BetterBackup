@@ -25,7 +25,7 @@ import Streamly.Data.Stream.Prelude qualified as S
 
 import Better.Repository qualified as Repo
 
-import Monad (run_readonly_repo_t_from_cwd)
+import Monad (runReadonlyRepositoryFromCwd)
 import Util.Options (treeDigestRead)
 
 parser_info :: ParserInfo (IO ())
@@ -46,6 +46,6 @@ parser_info = info (helper <*> parser) infoMod
               ]
           )
 
-    go sha = run_readonly_repo_t_from_cwd $ do
+    go sha = runReadonlyRepositoryFromCwd $ do
       Repo.catTree sha
         & S.fold (F.drainMapM $ liftIO . T.putStrLn . T.pack . show)

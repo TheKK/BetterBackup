@@ -29,7 +29,7 @@ import Data.Word (Word64)
 import Better.Hash (VersionDigest)
 import qualified Better.Repository as Repo
 
-import Monad (run_readonly_repo_t_from_cwd)
+import Monad (runReadonlyRepositoryFromCwd)
 import Repository.Find (findTree)
 import Util.Options (versionDigestRead, someBaseDirRead)
 
@@ -77,6 +77,6 @@ parser_info = info (helper <*> parser) infoMod
           )
 
     go :: Bool -> Maybe Word64 -> VersionDigest -> Maybe (Path.SomeBase Path.Dir) -> IO ()
-    go show_digest opt_depth version_digest opt_somebase_dir = run_readonly_repo_t_from_cwd $ do
+    go show_digest opt_depth version_digest opt_somebase_dir = runReadonlyRepositoryFromCwd $ do
       tree_root <- Repo.ver_root <$> Repo.catVersion version_digest
       findTree show_digest opt_depth tree_root opt_somebase_dir

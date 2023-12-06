@@ -64,7 +64,7 @@ import Better.Statistics.Backup.Class (
   uploadedBytes,
  )
 
-import Monad (run_backup_repo_t_from_cwd)
+import Monad (runRepositoryForBackupFromCwd)
 import Streamly.External.ByteString (fromArray)
 import qualified Streamly.Internal.Data.Stream.Chunked as Chunked
 import Util.Options (treeDigestRead)
@@ -90,7 +90,7 @@ parser_info = info (helper <*> parser) infoMod
     go tree_digest = do
       fsc <- read_filesystem_chagnes_from_stdin
 
-      run_backup_repo_t_from_cwd $ EU.reallyUnsafeUnliftIO $ \un -> do
+      runRepositoryForBackupFromCwd $ EU.reallyUnsafeUnliftIO $ \un -> do
         let
           process_reporter = forever $ do
             mask_ $ un report_backup_stat

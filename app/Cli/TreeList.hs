@@ -31,7 +31,7 @@ import Data.Word (Word64)
 
 import Better.Hash (TreeDigest)
 
-import Monad (run_readonly_repo_t_from_cwd)
+import Monad (runReadonlyRepositoryFromCwd)
 import Repository.Find (findTree)
 import Util.Options (treeDigestRead, someBaseDirRead)
 
@@ -80,5 +80,5 @@ parser_info = info (helper <*> parser) infoMod
           )
 
     go :: Bool -> Word64 -> TreeDigest -> Path.SomeBase Path.Dir -> IO ()
-    go !show_digest !depth !tree_root !opt_somebase_dir = run_readonly_repo_t_from_cwd $ do
+    go !show_digest !depth !tree_root !opt_somebase_dir = runReadonlyRepositoryFromCwd $ do
       findTree show_digest (Just depth) tree_root (Just opt_somebase_dir)

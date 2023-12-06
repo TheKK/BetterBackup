@@ -1,4 +1,3 @@
-{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeOperators #-}
@@ -37,7 +36,7 @@ import qualified Better.Repository.Backup as Repo
 import qualified Better.Statistics.Backup as BackupSt
 import Better.Statistics.Backup.Class (BackupStatistics, newChunkCount, newDirCount, newFileCount, processedChunkCount, processedDirCount, processedFileCount, totalDirCount, totalFileCount, uploadedBytes)
 
-import Monad (run_backup_repo_t_from_cwd)
+import Monad (runRepositoryForBackupFromCwd)
 import Util.Options (someBaseDirRead)
 
 parser_info :: ParserInfo (IO ())
@@ -58,7 +57,7 @@ parser_info = info (helper <*> parser) infoMod
               ]
           )
 
-    go dir_to_backup = run_backup_repo_t_from_cwd $ EU.reallyUnsafeUnliftIO $ \un -> do
+    go dir_to_backup = runRepositoryForBackupFromCwd $ EU.reallyUnsafeUnliftIO $ \un -> do
       let
         process_reporter = forever $ do
           mask_ $ un report_backup_stat

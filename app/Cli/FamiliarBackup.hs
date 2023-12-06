@@ -56,7 +56,7 @@ import Better.Logging.Effect (logging, loggingOnSyncException)
 import Control.Monad.Catch (MonadThrow (throwM), mask_)
 import Katip (katipAddNamespace)
 import qualified Katip as Log
-import Monad (run_backup_repo_t_from_cwd)
+import Monad (runRepositoryForBackupFromCwd)
 import qualified System.Directory as D
 import Util.Options (someBaseDirRead)
 
@@ -97,7 +97,7 @@ parser_info = info (helper <*> parser) infoMod
 
     go :: Path.SomeBase Path.Dir -> [(String, Path.SomeBase Path.Dir)] -> IO ()
     go os_config_some_path list_of_share_and_filesystem_some_path = do
-      run_backup_repo_t_from_cwd $ katipAddNamespace "familiar_backup" $ do
+      runRepositoryForBackupFromCwd $ katipAddNamespace "familiar_backup" $ do
         abs_pwd <- liftIO $ Path.parseAbsDir =<< P.getWorkingDirectory
 
         let

@@ -22,7 +22,7 @@ import Streamly.Console.Stdio qualified as Stdio
 import Better.Hash (ChunkDigest)
 import Better.Repository qualified as Repo
 
-import Monad (run_readonly_repo_t_from_cwd)
+import Monad (runReadonlyRepositoryFromCwd)
 import Util.Options (chunkDigestRead)
 
 parser_info :: ParserInfo (IO ())
@@ -46,6 +46,6 @@ parser_info = info (helper <*> parser) infoMod
     {-# NOINLINE go #-}
     go :: ChunkDigest -> IO ()
     go sha =
-      run_readonly_repo_t_from_cwd $
+      runReadonlyRepositoryFromCwd $
         Repo.catChunk sha
           & S.fold Stdio.writeChunks

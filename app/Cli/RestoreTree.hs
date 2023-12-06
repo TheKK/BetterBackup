@@ -27,7 +27,7 @@ import Path qualified
 
 import Better.Hash (TreeDigest)
 
-import Monad (run_readonly_repo_t_from_cwd)
+import Monad (runReadonlyRepositoryFromCwd)
 import Repository.Restore (restoreTreeInBFS, restoreTreeInDFS, runParallelRestore)
 import Util.Options (treeDigestRead, someBaseDirRead)
 
@@ -79,7 +79,7 @@ parser_info = info (helper <*> parser) infoMod
       out_path_is_empty <- null <$> D.listDirectory (Path.fromAbsDir abs_out_path)
       unless out_path_is_empty $ throwIO $ userError $ "given directory is not empty: " <> Path.fromAbsDir abs_out_path
 
-      run_readonly_repo_t_from_cwd $ do
+      runReadonlyRepositoryFromCwd $ do
         runParallelRestore (S.maxBuffer 20 . S.eager True) $ do
           case traverse_method of
             BFS -> restoreTreeInBFS abs_out_path sha

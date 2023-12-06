@@ -9,8 +9,8 @@
 {-# LANGUAGE UndecidableInstances #-}
 
 module Monad (
-  run_readonly_repo_t_from_cwd,
-  run_backup_repo_t_from_cwd,
+  runReadonlyRepositoryFromCwd,
+  runRepositoryForBackupFromCwd,
 ) where
 
 import Path qualified
@@ -49,8 +49,8 @@ import Katip qualified
 import Config qualified
 import LocalCache qualified
 
-run_readonly_repo_t_from_cwd :: E.Eff '[E.Repository, E.Logging, E.IOE] a -> IO a
-run_readonly_repo_t_from_cwd m = E.runEff $ runHandleScribeKatip $ do
+runReadonlyRepositoryFromCwd :: E.Eff '[E.Repository, E.Logging, E.IOE] a -> IO a
+runReadonlyRepositoryFromCwd m = E.runEff $ runHandleScribeKatip $ do
   cwd <- liftIO P.getWorkingDirectory >>= Path.parseAbsDir
   config <- liftIO $ LocalCache.readConfig cwd
 
@@ -61,8 +61,8 @@ run_readonly_repo_t_from_cwd m = E.runEff $ runHandleScribeKatip $ do
   m
     & runRepository repository
 
-run_backup_repo_t_from_cwd :: E.Eff [Tmp, BackupStatistics, BackupCache, E.Repository, E.Logging, E.IOE] a -> IO a
-run_backup_repo_t_from_cwd m = do
+runRepositoryForBackupFromCwd :: E.Eff [Tmp, BackupStatistics, BackupCache, E.Repository, E.Logging, E.IOE] a -> IO a
+runRepositoryForBackupFromCwd m = do
   cwd <- P.getWorkingDirectory >>= Path.parseAbsDir
   config <- LocalCache.readConfig cwd
 

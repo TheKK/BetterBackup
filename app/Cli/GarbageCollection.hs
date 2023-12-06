@@ -15,7 +15,7 @@ import Data.Foldable (Foldable (fold))
 
 import qualified Better.Repository as Repo
 
-import Monad (run_readonly_repo_t_from_cwd)
+import Monad (runReadonlyRepositoryFromCwd)
 
 parser_info :: ParserInfo (IO ())
 parser_info = info (helper <*> parser) infoMod
@@ -28,4 +28,4 @@ parser_info = info (helper <*> parser) infoMod
     parser = pure go
 
     {-# NOINLINE go #-}
-    go = run_readonly_repo_t_from_cwd Repo.garbageCollection
+    go = runReadonlyRepositoryFromCwd Repo.garbageCollection

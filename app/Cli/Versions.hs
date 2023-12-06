@@ -11,21 +11,21 @@ import Data.Foldable (Foldable (fold), for_)
 import Data.Function ((&))
 import Data.List (sortOn)
 
-import qualified Data.Aeson as A
+import Data.Aeson qualified as A
 
-import qualified Data.ByteString.Lazy.Char8 as BL
+import Data.ByteString.Lazy.Char8 qualified as BL
 
-import qualified Data.Text as T
+import Data.Text qualified as T
 
 import Data.Time (UTCTime, defaultTimeLocale, formatTime, utc, utcToZonedTime)
 import Data.Time.LocalTime (getCurrentTimeZone)
 
-import qualified Streamly.Data.Stream.Prelude as S
+import Streamly.Data.Stream.Prelude qualified as S
 
 import Better.Hash (VersionDigest)
-import qualified Better.Repository as Repo
+import Better.Repository qualified as Repo
 
-import Monad (run_readonly_repo_t_from_cwd)
+import Monad (runReadonlyRepositoryFromCwd)
 
 parser_info :: ParserInfo (IO ())
 parser_info = info (helper <*> parser) infoMod
@@ -61,7 +61,7 @@ parser_info = info (helper <*> parser) infoMod
             then render_json display_time
             else render_normally display_time
 
-      digests_and_vs <- run_readonly_repo_t_from_cwd $ do
+      digests_and_vs <- runReadonlyRepositoryFromCwd $ do
         Repo.listVersions & S.toList
 
       -- Sort on list should be acceptible in the context of "backup version".
