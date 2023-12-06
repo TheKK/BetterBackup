@@ -166,6 +166,7 @@ executable better
       Cli.PatchBackup
       Cli.FamiliarBackup
       Cli.FamiliarRestore
+      Cli.FamiliarListShareFolders
       Cli.GarbageCollection
       Cli.IntegrityCheck
       Cli.RestoreTree
