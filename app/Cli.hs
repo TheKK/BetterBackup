@@ -94,8 +94,12 @@ cmds = info (helper <*> parser) infoMod
         ,
           [ command "backup" Cli.Backup.parser_info
           , command "patch-backup" Cli.PatchBackup.parser_info
-          , command "familiar-backup" Cli.FamiliarBackup.parser_info
-          , command "familiar-restore" Cli.FamiliarRestore.parser_info
+          , sub_commands
+              "familiar"
+              "These operations and format are familiar..."
+              [ command "backup" Cli.FamiliarBackup.parser_info
+              , command "restore" Cli.FamiliarRestore.parser_info
+              ]
           ]
         ]
 
