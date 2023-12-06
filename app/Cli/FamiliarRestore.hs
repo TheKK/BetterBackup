@@ -46,7 +46,7 @@ import Better.Hash (TreeDigest)
 import Better.Logging.Effect (logging, loggingOnSyncException)
 import Better.Repository qualified as Repo
 
-import Monad (run_backup_repo_t_from_cwd)
+import Monad (run_readonly_repo_t_from_cwd)
 import Repository.Find (searchDirInTree)
 import Repository.Restore (restoreTreeInBFS, runParallelRestore)
 import Util.Options (someBaseDirRead, treeDigestRead)
@@ -94,7 +94,7 @@ parser_info = info (helper <*> parser) infoMod
           )
 
     go :: TreeDigest -> Path.SomeBase Path.Dir -> [(String, Path.SomeBase Path.Dir)] -> IO ()
-    go tree_digest os_config_some_path list_of_share_and_filesystem_some_path = run_backup_repo_t_from_cwd $ katipAddNamespace "familiar_restore" $ do
+    go tree_digest os_config_some_path list_of_share_and_filesystem_some_path = run_readonly_repo_t_from_cwd $ katipAddNamespace "familiar_restore" $ do
       abs_pwd <- liftIO $ Path.parseAbsDir =<< P.getWorkingDirectory
 
       let
