@@ -170,7 +170,6 @@ listFolderFiles
   -> S.Stream (E.Eff es) (Path Path.Rel Path.File)
 listFolderFiles = mkListFolderFiles
 
-{-# INLINE listVersions #-}
 listVersions :: (E.Repository E.:> es) => S.Stream (E.Eff es) (VersionDigest, Version)
 listVersions =
   listFolderFiles folder_version
@@ -393,7 +392,6 @@ catFile sha = S.concatEffect $ E.reallyUnsafeUnliftIO $ \un -> do
   where
     parse_file_content :: (MonadThrow m, Applicative m) => T.Text -> m Object
     parse_file_content = fmap (Object . UnsafeMkChunkDigest) . t2d
-{-# INLINE catFile #-}
 
 catChunk
   :: (E.Repository E.:> es)
@@ -450,7 +448,6 @@ catTree tree_sha' = S.concatEffect $ E.reallyUnsafeUnliftIO $ \un -> do
         digest <- UnsafeMkFileDigest <$> t2d sha
         pure $ Right $ FFile name digest
       _ -> throwM $ userError $ "invalid dir content: " <> T.unpack buf
-{-# INLINE catTree #-}
 
 {-# INLINEABLE t2d #-}
 t2d :: MonadThrow m => T.Text -> m (Digest)
