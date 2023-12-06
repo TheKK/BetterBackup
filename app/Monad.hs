@@ -13,51 +13,53 @@ module Monad (
   run_backup_repo_t_from_cwd,
 ) where
 
-import qualified Path
-
-import Control.Monad (void)
-import Control.Monad.Catch (onException, tryJust)
+import Path qualified
 
 import Control.Exception (bracket)
+import Control.Monad (void)
+import Control.Monad.Catch (onException, tryJust)
+import Control.Monad.IO.Class (liftIO)
 
-import qualified Database.LevelDB.Base as LV
+import Data.Function ((&))
 
-import qualified Effectful as E
+import Database.LevelDB.Base qualified as LV
+
+import Effectful qualified as E
 
 import Better.Internal.Repository.LowLevel (runRepository)
 import Better.Logging.Effect (runLogging)
-import qualified Better.Logging.Effect as E
-import qualified Better.Repository as Repo
+import Better.Logging.Effect qualified as E
+import Better.Repository qualified as Repo
 import Better.Repository.BackupCache.Class (BackupCache)
 import Better.Repository.BackupCache.LevelDB (runBackupCacheLevelDB)
-import qualified Better.Repository.Class as E
+import Better.Repository.Class qualified as E
 import Better.Statistics.Backup.Class (BackupStatistics, runBackupStatistics)
 import Better.TempDir (runTmp)
 import Better.TempDir.Class (Tmp)
 
-import qualified System.IO.Error as IOE
+import System.IO.Error qualified as IOE
 import System.IO.Temp (withSystemTempDirectory)
-import qualified System.Posix as P
+import System.Posix qualified as P
 
-import qualified System.Directory as D
+import System.Directory qualified as D
 import System.IO (stdout)
 
-import qualified Katip
+import Katip qualified
 
-import qualified Config
-import qualified LocalCache
+import Config qualified
+import LocalCache qualified
 
-run_readonly_repo_t_from_cwd :: E.Eff '[E.Repository, E.IOE] a -> IO a
-run_readonly_repo_t_from_cwd m = do
-  cwd <- P.getWorkingDirectory >>= Path.parseAbsDir
-  config <- LocalCache.readConfig cwd
+run_readonly_repo_t_from_cwd :: E.Eff '[E.Repository, E.Logging, E.IOE] a -> IO a
+run_readonly_repo_t_from_cwd m = E.runEff $ runHandleScribeKatip $ do
+  cwd <- liftIO P.getWorkingDirectory >>= Path.parseAbsDir
+  config <- liftIO $ LocalCache.readConfig cwd
 
   let
     !repository = case Config.config_repoType config of
       Config.Local l -> Repo.localRepo $ Config.local_repo_path l
 
-  E.runEff $
-    runRepository repository m
+  m
+    & runRepository repository
 
 run_backup_repo_t_from_cwd :: E.Eff [Tmp, BackupStatistics, BackupCache, E.Repository, E.Logging, E.IOE] a -> IO a
 run_backup_repo_t_from_cwd m = do
