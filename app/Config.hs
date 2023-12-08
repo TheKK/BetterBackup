@@ -1,6 +1,4 @@
-{-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE Strict #-}
 
 module Config (
   parseConfig,
