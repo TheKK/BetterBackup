@@ -15,7 +15,7 @@ import Options.Applicative (
 
 import Data.Foldable (Foldable (fold))
 
-import Config (Config (Config))
+import Config (Config (Config), CipherConfig (CipherConfigNoCipher))
 import Config qualified
 import LocalCache qualified
 import Util.Options (absDirRead, someBaseDirRead)
@@ -37,7 +37,7 @@ parser_info = Options.Applicative.info (Options.Applicative.helper <*> parser) i
               , Options.Applicative.help "path to store your local cache"
               ]
           )
-        <*> (Config <$> p_local_repo_config)
+        <*> (Config <$> p_local_repo_config <*> pure CipherConfigNoCipher)
 
 p_local_repo_config :: Parser Config.RepoType
 p_local_repo_config =
