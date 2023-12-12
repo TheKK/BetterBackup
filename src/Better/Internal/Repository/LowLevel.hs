@@ -17,6 +17,9 @@ module Better.Internal.Repository.LowLevel (
   -- * Effectful
   runRepository,
 
+  -- * Getter
+  getAES,
+
   -- * Write
   removeFiles,
   addBlob',
@@ -254,6 +257,11 @@ data instance E.StaticRep E.Repository = RepositoryRep Repository AES128
 
 runRepository :: (E.IOE E.:> es, E.IOE E.:> es) => Repository -> AES128 -> E.Eff (E.Repository : es) a -> E.Eff es a
 runRepository repo cipher = E.evalStaticRep $ RepositoryRep repo cipher
+
+getAES :: (E.Repository E.:> es) => E.Eff es AES128
+getAES = do
+  RepositoryRep _ aes <- E.getStaticRep
+  pure $! aes
 
 mkPutFileFold :: (E.Repository E.:> es) => E.Eff es (Path Path.Rel Path.File -> F.Fold (E.Eff es) (Array.Array Word8) ())
 mkPutFileFold = do
