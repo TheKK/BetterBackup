@@ -184,6 +184,7 @@ executable better
       Config
       LocalCache
       Monad
+      Crypto
       Util.Options
     hs-source-dirs:   app
     default-language: GHC2021
