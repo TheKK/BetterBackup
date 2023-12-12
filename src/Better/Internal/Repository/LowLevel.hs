@@ -85,6 +85,7 @@ import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Base16 qualified as BL16
 import Data.ByteString.Short qualified as BShort
 import Data.ByteString.Short.Base16 qualified as BSS16
+import Data.Coerce (coerce)
 
 import Codec.Binary.UTF8.String qualified as UTF8
 
@@ -101,6 +102,8 @@ import Streamly.Data.Array qualified as Array
 
 import Streamly.FileSystem.File qualified as File
 import Streamly.Internal.Unicode.Stream qualified as US
+
+import Crypto.Cipher.AES (AES128)
 
 import System.IO (IOMode (..), hClose, hPutBuf, openBinaryFile)
 import System.IO.Error (isDoesNotExistError)
@@ -133,7 +136,6 @@ import Better.Internal.Streamly.Crypto.AES (decryptCtr, that_aes)
 import Better.Repository.Class qualified as E
 import Better.Repository.Types (Version (..))
 import Better.Streamly.FileSystem.Dir qualified as Dir
-import Data.Coerce (coerce)
 
 data Repository = Repository
   { _repo_putFile :: (Path Path.Rel Path.File -> F.Fold IO (Array.Array Word8) ())
@@ -248,46 +250,46 @@ localRepo root =
     {-# NOINLINE local_exist #-}
     local_exist = P.fileExist . Path.fromAbsFile . (root </>)
 
-newtype instance E.StaticRep E.Repository = RepositoryRep Repository
+data instance E.StaticRep E.Repository = RepositoryRep Repository AES128
 
-runRepository :: (E.IOE E.:> es, E.IOE E.:> es) => Repository -> E.Eff (E.Repository : es) a -> E.Eff es a
-runRepository = E.evalStaticRep . RepositoryRep
+runRepository :: (E.IOE E.:> es, E.IOE E.:> es) => Repository -> AES128 -> E.Eff (E.Repository : es) a -> E.Eff es a
+runRepository repo cipher = E.evalStaticRep $ RepositoryRep repo cipher
 
 mkPutFileFold :: (E.Repository E.:> es) => E.Eff es (Path Path.Rel Path.File -> F.Fold (E.Eff es) (Array.Array Word8) ())
 mkPutFileFold = do
-  RepositoryRep repo <- E.getStaticRep
+  RepositoryRep repo _ <- E.getStaticRep
   pure $! F.morphInner E.unsafeEff_ . _repo_putFile repo
 
 removeFiles :: (E.Repository E.:> es) => [Path Path.Rel Path.File] -> E.Eff es ()
 removeFiles files = do
-  RepositoryRep repo <- E.getStaticRep
+  RepositoryRep repo _ <- E.getStaticRep
   E.unsafeEff_ $ _repo_removeFiles repo files
 
 createDirectory :: (E.Repository E.:> es) => Path Path.Rel Path.Dir -> E.Eff es ()
 createDirectory d = do
-  RepositoryRep repo <- E.getStaticRep
+  RepositoryRep repo _ <- E.getStaticRep
   E.unsafeEff_ $ _repo_createDirectory repo d
 
 fileExists :: (E.Repository E.:> es) => Path Path.Rel Path.File -> E.Eff es Bool
 fileExists d = do
-  RepositoryRep repo <- E.getStaticRep
+  RepositoryRep repo _ <- E.getStaticRep
   E.unsafeEff_ $ _repo_fileExists repo d
 
 fileSize :: (E.Repository E.:> es) => Path Path.Rel Path.File -> E.Eff es FileOffset
 fileSize d = do
-  RepositoryRep repo <- E.getStaticRep
+  RepositoryRep repo _ <- E.getStaticRep
   E.unsafeEff_ $ _repo_fileSize repo d
 
 {-# INLINE read #-}
 read :: (E.Repository E.:> es) => Path Path.Rel Path.File -> S.Stream (E.Eff es) (Array.Array Word8)
 read f = S.concatEffect $ do
-  RepositoryRep repo <- E.getStaticRep
+  RepositoryRep repo _ <- E.getStaticRep
   pure $! S.morphInner E.unsafeEff_ $ _repo_read repo f
 
 {-# INLINE mkListFolderFiles #-}
 mkListFolderFiles :: (E.Repository E.:> es) => Path Path.Rel Path.Dir -> S.Stream (E.Eff es) (Path Path.Rel Path.File)
 mkListFolderFiles d = S.concatEffect $ do
-  RepositoryRep repo <- E.getStaticRep
+  RepositoryRep repo _ <- E.getStaticRep
   pure $! S.morphInner E.unsafeEff_ . _repo_listFolderFiles repo $ d
 
 folder_chunk :: Path Path.Rel Path.Dir

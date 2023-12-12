@@ -3,6 +3,7 @@
 {-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE TypeOperators #-}
@@ -15,19 +16,24 @@ module Monad (
 
 import Path qualified
 
-import Control.Exception (bracket)
+import Control.Exception (bracket, bracket_)
 import Control.Monad (void)
 import Control.Monad.Catch (onException, tryJust)
 import Control.Monad.IO.Class (liftIO)
 
+import Crypto.Cipher.AES (AES128)
+
+import Data.ByteString qualified as BS
 import Data.Function ((&))
+import Data.Maybe (fromMaybe)
+import Data.Text.IO qualified as T
 
 import Database.LevelDB.Base qualified as LV
 
 import Effectful qualified as E
 
 import Better.Internal.Repository.LowLevel (runRepository)
-import Better.Logging.Effect (runLogging)
+import Better.Logging.Effect (logging, runLogging)
 import Better.Logging.Effect qualified as E
 import Better.Repository qualified as Repo
 import Better.Repository.BackupCache.Class (BackupCache)
@@ -37,17 +43,38 @@ import Better.Statistics.Backup.Class (BackupStatistics, runBackupStatistics)
 import Better.TempDir (runTmp)
 import Better.TempDir.Class (Tmp)
 
+import System.Directory qualified as D
+import System.Environment.Blank (getEnv)
+import System.IO (hGetEcho, hSetEcho, stdin, stdout)
 import System.IO.Error qualified as IOE
 import System.IO.Temp (withSystemTempDirectory)
 import System.Posix qualified as P
 
-import System.Directory qualified as D
-import System.IO (stdout)
-
 import Katip qualified
 
 import Config qualified
+import Crypto qualified
 import LocalCache qualified
+
+read_passworld_from_stdin :: IO BS.ByteString
+read_passworld_from_stdin = do
+  old_echo <- hGetEcho stdin
+  bracket_ (hSetEcho stdin False) (hSetEcho stdin old_echo) BS.getLine
+
+-- TODO Support no encryption.
+extract_block_cipher :: (E.Logging E.:> es, E.IOE E.:> es) => Config.Config -> E.Eff es AES128
+extract_block_cipher config = E.withSeqEffToIO $ \un -> case Config.config_cipher config of
+  Config.CipherConfigNoCipher -> error "we don't support no encryption now"
+  Config.CipherConfigAES128 cfg -> do
+    password <-
+      getEnv "BETTER_PASS" >>= \case
+        Just passfile -> do
+          un $ logging Katip.InfoS $ Katip.ls @String "use password from $BETTER_PASS"
+          fromMaybe BS.empty . BS.stripSuffix "\10" <$> BS.readFile passfile
+        Nothing -> do
+          T.putStrLn "Please enter password:"
+          read_passworld_from_stdin
+    Crypto.decryptAndVerifyAES128Key (Config.aes128_salt cfg) password (Config.aes128_verify cfg) (Config.aes128_secret cfg)
 
 runReadonlyRepositoryFromCwd :: E.Eff '[E.Repository, E.Logging, E.IOE] a -> IO a
 runReadonlyRepositoryFromCwd m = E.runEff $ runHandleScribeKatip $ do
@@ -58,8 +85,10 @@ runReadonlyRepositoryFromCwd m = E.runEff $ runHandleScribeKatip $ do
     !repository = case Config.config_repoType config of
       Config.Local l -> Repo.localRepo $ Config.local_repo_path l
 
+  aes <- extract_block_cipher config
+
   m
-    & runRepository repository
+    & runRepository repository aes
 
 runRepositoryForBackupFromCwd :: E.Eff [Tmp, BackupStatistics, BackupCache, E.Repository, E.Logging, E.IOE] a -> IO a
 runRepositoryForBackupFromCwd m = do
@@ -88,8 +117,9 @@ runRepositoryForBackupFromCwd m = do
           withSystemTempDirectory ("better-tmp-" <> show pid <> "-") $ \raw_tmp_dir -> do
             abs_tmp_dir <- Path.parseAbsDir raw_tmp_dir
             E.runEff $
-              runHandleScribeKatip $
-                runRepository repository $
+              runHandleScribeKatip $ do
+                aes <- extract_block_cipher config
+                runRepository repository aes $
                   runBackupCacheLevelDB prev cur $
                     runBackupStatistics $
                       runTmp abs_tmp_dir m
