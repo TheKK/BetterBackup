@@ -114,7 +114,7 @@ import Better.Hash qualified as Hash
 import Better.Internal.Repository.LowLevel (addBlob', addDir', addFile', d2b, doesTreeExists)
 import Better.Internal.Repository.LowLevel qualified as Repo
 import Better.Internal.Streamly.Array (chunkReaderFromToWith)
-import Better.Internal.Streamly.Crypto.AES (encryptCtr, that_aes)
+import Better.Internal.Streamly.Crypto.AES (encryptCtr)
 import Better.Logging.Effect qualified as E
 import Better.Repository.BackupCache.Class (BackupCache)
 import Better.Repository.BackupCache.LevelDB qualified as BackupCacheLevelDB
@@ -141,10 +141,8 @@ init_iv = do
     Just iv -> pure $! iv
     Nothing -> error "failed to generate iv"
 
-init_ctr :: IO Ctr
-init_ctr = do
-  aes <- that_aes
-
+init_ctr :: Cipher.AES128 -> IO Ctr
+init_ctr aes = do
   iv <- newTVarIO =<< init_iv
   pure $! Ctr aes iv
 
@@ -196,7 +194,7 @@ runBackup m = EU.reallyUnsafeUnliftIO $ \un -> do
   unique_tree_gate <- mk_uniq_gate
   unique_file_gate <- mk_uniq_gate
 
-  ctr <- init_ctr
+  ctr <- init_ctr =<< un Repo.getAES
 
   root_digest <- Ki.scoped $ \scope -> do
     fork_fns <- do

@@ -135,7 +135,7 @@ import Effectful.Dispatch.Static.Unsafe qualified as E
 import Better.Hash (ChunkDigest (..), Digest, FileDigest (..), TreeDigest (UnsafeMkTreeDigest), VersionDigest (UnsafeMkVersionDigest), digestFromByteString, digestToBase16ByteString, digestToBase16ShortByteString, hashByteStringFoldIO)
 import Better.Internal.Streamly.Array (ArrayBA (ArrayBA, un_array_ba), fastArrayAsPtrUnsafe)
 import Better.Internal.Streamly.Array qualified as BetterArray
-import Better.Internal.Streamly.Crypto.AES (decryptCtr, that_aes)
+import Better.Internal.Streamly.Crypto.AES (decryptCtr)
 import Better.Repository.Class qualified as E
 import Better.Repository.Types (Version (..))
 import Better.Streamly.FileSystem.Dir qualified as Dir
@@ -407,17 +407,15 @@ catChunk
   :: (E.Repository E.:> es)
   => ChunkDigest
   -> S.Stream (E.Eff es) (Array.Array Word8)
-catChunk digest = S.concatEffect $ E.reallyUnsafeUnliftIO $ \un -> do
-  pure $!
-    cat_stuff_under folder_chunk digest
-      & S.morphInner un
-      & decryptCtr aes (32 * 1024)
-      & S.morphInner E.unsafeEff_
+catChunk digest = S.concatEffect $ do
+  RepositoryRep _ aes <- E.getStaticRep
+  E.reallyUnsafeUnliftIO $ \un -> do
+    pure $!
+      cat_stuff_under folder_chunk digest
+        & S.morphInner un
+        & decryptCtr aes (32 * 1024)
+        & S.morphInner E.unsafeEff_
 {-# INLINE catChunk #-}
-
-{-# NOINLINE aes #-}
--- TODO Move this to EffectRep.
-aes = unsafePerformIO that_aes
 
 getChunkSize :: (E.Repository E.:> es) => ChunkDigest -> E.Eff es FileOffset
 getChunkSize sha = do
