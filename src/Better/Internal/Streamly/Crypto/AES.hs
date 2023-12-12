@@ -11,7 +11,6 @@ module Better.Internal.Streamly.Crypto.AES (
   decryptCtr,
   unsafeEncryptCtr,
   unsafeDecryptCtr,
-  that_aes,
   compact,
 )
 where
@@ -19,59 +18,26 @@ where
 import Control.Exception (assert)
 import Control.Monad (when)
 import Control.Monad.IO.Class (liftIO)
+import Control.Monad.State.Strict qualified as ST
+
+import Data.ByteArray qualified as BA
 import Data.Function (fix)
 import Data.Word (Word8)
 
 import Foreign (plusPtr)
+
 import Fusion.Plugin.Types (Fuse (Fuse))
 
-import qualified Control.Monad.State.Strict as ST
+import Crypto.Cipher.Types (BlockCipher ())
+import Crypto.Cipher.Types qualified as Cipher
 
-import qualified Data.ByteArray as BA
-import qualified Data.ByteString as BS
-import qualified Data.ByteString.Short as SBS
-
-import Crypto.Cipher.AES (AES128)
-import qualified Crypto.Cipher.AES as AES
-import Crypto.Cipher.Types (BlockCipher (blockSize))
-import qualified Crypto.Cipher.Types as Cipher
-import Crypto.Error (CryptoFailable (CryptoFailed, CryptoPassed))
-import Crypto.Hash.Algorithms (SHA256 (SHA256))
-
-import qualified Crypto.KDF.PBKDF2 as PBKDF2
-import qualified Streamly.Data.Array as Array
-import qualified Streamly.Data.MutArray as MA
-import qualified Streamly.Internal.Data.Array as Array
-import qualified Streamly.Internal.Data.Array.Mut.Type as MA
-import qualified Streamly.Internal.Data.Stream as D
+import Streamly.Data.Array qualified as Array
+import Streamly.Data.MutArray qualified as MA
+import Streamly.Internal.Data.Array qualified as Array
+import Streamly.Internal.Data.Array.Mut.Type qualified as MA
+import Streamly.Internal.Data.Stream qualified as D
 
 import Better.Internal.Streamly.Array (ArrayBA (ArrayBA, un_array_ba), MutArrayBA (MutArrayBA))
-
-{-# DEPRECATED that_passwd "dev only variable" #-}
-that_passwd :: SBS.ShortByteString
-that_passwd = "happyMeal"
-
-{-# DEPRECATED that_salt "dev only variable" #-}
-that_salt :: SBS.ShortByteString
-that_salt = ";\t\222bK \217\241\139\"&3\221\&4\210-"
-
-{-# DEPRECATED that_aes "dev only variable" #-}
-that_aes :: IO AES.AES128
-that_aes =
-  case Cipher.cipherInit @_ @BS.ByteString (gen_key (undefined :: AES128) (SBS.fromShort that_passwd) (SBS.fromShort that_salt)) of
-    CryptoPassed aes -> pure aes
-    CryptoFailed err -> error $ show err
-
-gen_key
-  :: (BlockCipher cipher, BA.ByteArray ba, BA.ByteArrayAccess salt, BA.ByteArrayAccess password)
-  => cipher
-  -> password
-  -> salt
-  -> ba
-gen_key ~cipher = PBKDF2.generate prf params
-  where
-    prf = PBKDF2.prfHMAC SHA256
-    params = PBKDF2.Parameters{PBKDF2.outputLength = blockSize cipher, PBKDF2.iterCounts = 100000}
 
 encryptCtr :: (BlockCipher cipher) => cipher -> Cipher.IV cipher -> Int -> D.Stream IO (Array.Array Word8) -> D.Stream IO (Array.Array Word8)
 encryptCtr cipher iv0 batch_size = unsafeEncryptCtr cipher iv0 batch_size . compact batch_size
