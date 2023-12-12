@@ -28,6 +28,7 @@ import Streamly.Data.Stream.Prelude qualified as S
 
 import Data.Foldable (Foldable (fold))
 import Data.Function ((&))
+import Data.Text qualified as T
 import Data.Text.IO qualified as T
 
 import Katip qualified as Log
@@ -66,6 +67,6 @@ parser_info = info (helper <*> parser) infoMod
         & S.mapM
           ( \case
               Left (Repo.Tree name _digest) -> liftIO $ T.putStrLn name
-              Right (Repo.FFile name _digest) -> logging Log.WarningS $ "got file under folder of backuped shares: " <> Log.ls (show name)
+              Right (Repo.FFile name _digest) -> logging Log.WarningS $ Log.ls @T.Text "got file under folder of backuped shares: " <> Log.ls name
           )
         & S.fold F.drain
