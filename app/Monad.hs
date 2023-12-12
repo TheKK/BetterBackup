@@ -45,7 +45,7 @@ import Better.TempDir.Class (Tmp)
 
 import System.Directory qualified as D
 import System.Environment.Blank (getEnv)
-import System.IO (hGetEcho, hSetEcho, stdin, stdout)
+import System.IO (hGetEcho, hSetEcho, stdin, stderr)
 import System.IO.Error qualified as IOE
 import System.IO.Temp (withSystemTempDirectory)
 import System.Posix qualified as P
@@ -133,7 +133,7 @@ runRepositoryForBackupFromCwd m = do
 
 runHandleScribeKatip :: E.IOE E.:> es => E.Eff (E.Logging : es) a -> E.Eff es a
 runHandleScribeKatip m = E.withSeqEffToIO $ \un -> do
-  handleScribe <- Katip.mkHandleScribe Katip.ColorIfTerminal stdout (Katip.permitItem Katip.InfoS) Katip.V1
+  handleScribe <- Katip.mkHandleScribe Katip.ColorIfTerminal stderr (Katip.permitItem Katip.InfoS) Katip.V1
   let makeLogEnv = Katip.registerScribe "stdout" handleScribe Katip.defaultScribeSettings =<< Katip.initLogEnv "better" "prod"
   -- closeScribes will stop accepting new logs, flush existing ones and clean up resources
   bracket makeLogEnv Katip.closeScribes $ \le -> do
