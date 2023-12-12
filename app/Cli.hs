@@ -20,6 +20,7 @@ import Data.Foldable (Foldable (fold), asum)
 
 import Cli.Backup (parser_info)
 import Cli.CatChunk (parser_info)
+import Cli.CatFile (parser_info)
 import Cli.CatFileChunks (parser_info)
 import Cli.CatTree (parser_info)
 import Cli.FamiliarBackup (parser_info)
@@ -74,7 +75,7 @@ cmds = info (helper <*> parser) infoMod
           , sub_commands
               "file"
               "File related operations"
-              [ command "cat" Cli.CatTree.parser_info
+              [ command "cat" Cli.CatFile.parser_info
               , command "cat-chunk-list" Cli.CatFileChunks.parser_info
               ]
           , sub_commands

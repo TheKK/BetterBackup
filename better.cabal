@@ -173,6 +173,7 @@ executable better
       Cli.VersionFind
       Cli.Versions
       Cli.TreeList
+      Cli.CatFile
       Cli.CatTree
       Cli.CatChunk
       Cli.CatFileChunks
