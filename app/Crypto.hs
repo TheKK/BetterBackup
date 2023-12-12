@@ -1,6 +1,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Crypto (
+  generateAES128KeyFromEntropy,
+  encryptAndVerifyAES128Key,
   decryptAndVerifyAES128Key,
 )
 where
@@ -17,6 +19,7 @@ import Crypto.Cipher.Types qualified as Cipher
 import Crypto.Error (CryptoFailable (CryptoFailed, CryptoPassed))
 import Crypto.Hash.Algorithms (SHA256 (SHA256))
 import Crypto.KDF.PBKDF2 qualified as PBKDF2
+import Crypto.Random.Entropy (getEntropy)
 
 pbkdf2
   :: (BlockCipher cipher, BA.ByteArray ba, BA.ByteArrayAccess salt, BA.ByteArrayAccess password)
@@ -44,6 +47,27 @@ decryptAndVerifyAES128Key salt passwd cipher_verify secret = do
 
   decrypt_secret aes_from_user_password secret
 
+encryptAndVerifyAES128Key
+  :: BS.ByteString
+  -- ^ user salt
+  -> BS.ByteString
+  -- ^ user password
+  -> BS.ByteString
+  -- ^ plain secret
+  -> IO (BS.ByteString, BS.ByteString)
+  -- ^ (verification bytes, encrypted secret)
+encryptAndVerifyAES128Key salt passwd plain_secret = do
+  let key_from_password = pbkdf2 (undefined :: AES128) passwd salt
+  aes_from_user_password <- case Cipher.cipherInit @_ @BS.ByteString key_from_password of
+    CryptoPassed aes -> pure aes
+    CryptoFailed err -> error $ show err
+
+  let
+    !verification_bytes = generate_cipher_verification_bytes aes_from_user_password
+    !cipher_secret = encrypt_secret aes_from_user_password plain_secret
+
+  pure (verification_bytes, cipher_secret)
+
 decrypt_secret :: BlockCipher cipher => cipher -> BS.ByteString -> IO AES128
 decrypt_secret cipher cipher_secret =
   case Cipher.cipherInit (Cipher.ctrCombine cipher iv_for_secret cipher_secret) of
@@ -52,7 +76,10 @@ decrypt_secret cipher cipher_secret =
 
 -- | Use given block cipher to encrypt plain secret.
 encrypt_secret :: BlockCipher cipher => cipher -> BS.ByteString -> BS.ByteString
-encrypt_secret cipher plain_secret = Cipher.ctrCombine cipher iv_for_secret plain_secret
+encrypt_secret cipher = Cipher.ctrCombine cipher iv_for_secret
+
+generateAES128KeyFromEntropy :: IO BS.ByteString
+generateAES128KeyFromEntropy = getEntropy (blockSize (undefined :: AES128))
 
 iv_for_secret :: BlockCipher cipher => Cipher.IV cipher
 iv_for_secret = Cipher.ivAdd Cipher.nullIV 99987
