@@ -78,19 +78,13 @@ import Data.Text.Encoding qualified as TE
 
 import Data.Maybe (fromMaybe)
 
-import Data.Base16.Types qualified as Base16
-
 import Data.ByteString qualified as BS
 import Data.ByteString.Base16 qualified as BS16
 import Data.ByteString.Builder qualified as BB
 import Data.ByteString.Char8 qualified as BSC
 import Data.ByteString.Lazy qualified as BL
-import Data.ByteString.Lazy.Base16 qualified as BL16
 import Data.ByteString.Short qualified as BShort
-import Data.ByteString.Short.Base16 qualified as BSS16
 import Data.Coerce (coerce)
-
-import Codec.Binary.UTF8.String qualified as UTF8
 
 import Data.Binary qualified as Bin
 
@@ -98,12 +92,11 @@ import Data.ByteArray qualified as BA
 
 import Text.Read (readMaybe)
 
-import Control.Monad (unless, (<=<))
+import Control.Monad (unless)
 import Control.Monad.Catch (MonadThrow, handleIf, throwM)
 
 import Streamly.Data.Array qualified as Array
 
-import Streamly.FileSystem.File qualified as File
 import Streamly.Internal.Unicode.Stream qualified as US
 
 import Crypto.Cipher.AES (AES128)
@@ -111,7 +104,6 @@ import Crypto.Cipher.Types qualified as Cipher
 
 import System.IO (IOMode (..), hClose, hPutBuf, openBinaryFile)
 import System.IO.Error (isDoesNotExistError)
-import System.IO.Unsafe (unsafePerformIO)
 
 import System.Directory qualified as D
 
@@ -134,7 +126,7 @@ import Effectful.Dispatch.Static qualified as E
 import Effectful.Dispatch.Static.Unsafe qualified as E
 
 import Better.Hash (ChunkDigest (..), Digest, FileDigest (..), TreeDigest (UnsafeMkTreeDigest), VersionDigest (UnsafeMkVersionDigest), digestFromByteString, digestToBase16ByteString, digestToBase16ShortByteString, hashByteStringFoldIO)
-import Better.Internal.Streamly.Array (ArrayBA (un_array_ba), fastArrayAsPtrUnsafe)
+import Better.Internal.Streamly.Array (fastArrayAsPtrUnsafe)
 import Better.Internal.Streamly.Array qualified as BetterArray
 import Better.Internal.Streamly.Crypto.AES (decryptCtr)
 import Better.Repository.Class qualified as E
@@ -376,9 +368,10 @@ addVersion aes iv v = do
   let f = folder_version </> version_digest_filename
 
   putFileFold <- mkPutFileFold
-  ((), written_bytes) <- S.fromList [BA.convert iv, BA.convert $ Cipher.ctrCombine aes iv version_bytes]
-    & fmap BetterArray.un_array_ba
-    & S.fold (F.tee (putFileFold f) (F.lmap (fromIntegral . Array.length) F.sum))
+  ((), written_bytes) <-
+    S.fromList [BA.convert iv, BA.convert $ Cipher.ctrCombine aes iv version_bytes]
+      & fmap BetterArray.un_array_ba
+      & S.fold (F.tee (putFileFold f) (F.lmap (fromIntegral . Array.length) F.sum))
 
   pure $! written_bytes
 
