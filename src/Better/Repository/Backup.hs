@@ -66,7 +66,7 @@ import Control.Monad.IO.Class (liftIO)
 import Control.Monad.IO.Unlift (MonadUnliftIO)
 import Control.Monad.IO.Unlift qualified as Un
 
-import Control.Concurrent.STM (TBQueue, TVar, atomically, modifyTVar', newTBQueueIO, newTVarIO, readTBQueue, readTVar, writeTBQueue)
+import Control.Concurrent.STM (TBQueue, TVar, atomically, modifyTVar', newTBQueueIO, newTVarIO, readTBQueue, readTVar, readTVarIO, writeTBQueue)
 
 import Streamly.Data.Array qualified as Array
 import Streamly.External.ByteString (toArray)
@@ -244,9 +244,15 @@ runBackup m = EU.reallyUnsafeUnliftIO $ \un -> do
 
     pure root_digest
 
+  -- We don't increase iv since it's the end of ctr here.
+  iv <- readTVarIO $ _ctr_iv ctr
   now <- liftIO getCurrentTime
+
   let !v = Repo.Version now root_digest
-  un $ Repo.addVersion v
+  un $ do
+    written_bytes <- Repo.addVersion (_ctr_aes ctr) iv v
+    BackupSt.modifyStatistic' BackupSt.uploadedBytes (+ written_bytes)
+
   pure v
 
 data UploadTask

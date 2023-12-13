@@ -71,7 +71,7 @@ module Better.Internal.Repository.LowLevel (
 import Prelude hiding (read)
 
 import Data.Function ((&))
-import Data.Word (Word32, Word8)
+import Data.Word (Word32, Word64, Word8)
 
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -107,6 +107,7 @@ import Streamly.FileSystem.File qualified as File
 import Streamly.Internal.Unicode.Stream qualified as US
 
 import Crypto.Cipher.AES (AES128)
+import Crypto.Cipher.Types qualified as Cipher
 
 import System.IO (IOMode (..), hClose, hPutBuf, openBinaryFile)
 import System.IO.Error (isDoesNotExistError)
@@ -133,7 +134,7 @@ import Effectful.Dispatch.Static qualified as E
 import Effectful.Dispatch.Static.Unsafe qualified as E
 
 import Better.Hash (ChunkDigest (..), Digest, FileDigest (..), TreeDigest (UnsafeMkTreeDigest), VersionDigest (UnsafeMkVersionDigest), digestFromByteString, digestToBase16ByteString, digestToBase16ShortByteString, hashByteStringFoldIO)
-import Better.Internal.Streamly.Array (ArrayBA (ArrayBA, un_array_ba), fastArrayAsPtrUnsafe)
+import Better.Internal.Streamly.Array (ArrayBA (un_array_ba), fastArrayAsPtrUnsafe)
 import Better.Internal.Streamly.Array qualified as BetterArray
 import Better.Internal.Streamly.Crypto.AES (decryptCtr)
 import Better.Repository.Class qualified as E
@@ -361,17 +362,25 @@ addDir' digest chunks = do
 
 addVersion
   :: (E.Repository E.:> es)
-  => Version
-  -> E.Eff es ()
-addVersion v = do
+  => AES128
+  -> Cipher.IV AES128
+  -> Version
+  -> E.Eff es Word64
+  -- ^ Written bytes
+addVersion aes iv v = do
   -- It should be safe to store entire version bytes here since Version is relative small (under hundred of bytes)
   let version_bytes = BS.toStrict $ Bin.encode v
   version_digest <- E.unsafeEff_ $ S.fromPure version_bytes & S.fold hashByteStringFoldIO
   version_digest_filename <- Path.parseRelFile $ show version_digest
+
   let f = folder_version </> version_digest_filename
+
   putFileFold <- mkPutFileFold
-  S.fromPure (BetterArray.un_array_ba $ BA.convert version_bytes)
-    & S.fold (putFileFold f)
+  ((), written_bytes) <- S.fromList [BA.convert iv, BA.convert $ Cipher.ctrCombine aes iv version_bytes]
+    & fmap BetterArray.un_array_ba
+    & S.fold (F.tee (putFileFold f) (F.lmap (fromIntegral . Array.length) F.sum))
+
+  pure $! written_bytes
 
 nextBackupVersionId :: (E.Repository E.:> es) => E.Eff es Integer
 nextBackupVersionId = do
@@ -424,11 +433,24 @@ getChunkSize sha = do
 
 catVersion :: (E.Repository E.:> es) => VersionDigest -> E.Eff es Version
 catVersion digest = do
-  decode_result <-
+  RepositoryRep _ aes <- E.getStaticRep
+
+  encrypted_bytes <-
     cat_stuff_under folder_version digest
       & fmap (BB.shortByteString . BShort.pack . Array.toList)
       & S.fold F.mconcat
-      & fmap (Bin.decodeOrFail @Version . BB.toLazyByteString)
+      & fmap (BS.toStrict . BB.toLazyByteString)
+
+  let
+    -- Length of IV and block cipher are identical.
+    iv_len = Cipher.blockSize aes
+    (iv_bytes, cipher_version_bytes) = BS.splitAt iv_len encrypted_bytes
+
+  iv <- case Cipher.makeIV iv_bytes of
+    Nothing -> error "failed to read iv from raw bytes of version"
+    Just iv -> pure iv
+
+  let decode_result = Bin.decodeOrFail @Version $ BL.fromStrict $ Cipher.ctrCombine aes iv cipher_version_bytes
 
   case decode_result of
     Left (_, _, err_msg) -> throwM $ userError $ "failed to decode version " <> show digest <> ": " <> err_msg
