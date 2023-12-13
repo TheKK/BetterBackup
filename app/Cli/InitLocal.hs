@@ -15,16 +15,21 @@ import Options.Applicative (
   progDesc,
  )
 
+import Control.Exception (bracket_)
+
 import Data.Foldable (Foldable (fold))
+
+import Data.Text.Encoding qualified as TE
+import Data.Text.IO qualified as T
+
+import Data.ByteString qualified as BS
+
+import System.IO (hGetEcho, hSetEcho, stdin)
 
 import Config (AES128Config (AES128Config), CipherConfig (CipherConfigAES128), Config (Config))
 import Config qualified
-import Control.Exception (bracket_)
 import Crypto (encryptAndVerifyAES128Key, generateAES128KeyFromEntropy)
-import Data.ByteString qualified as BS
-import Data.Text.IO qualified as T
 import LocalCache qualified
-import System.IO (hGetEcho, hSetEcho, stdin)
 import Util.Options (absDirRead, someBaseDirRead)
 
 parser_info :: Options.Applicative.ParserInfo (IO ())
@@ -68,8 +73,18 @@ p_local_repo_config =
   Config.Local . Config.LocalRepoConfig
     <$> argument absDirRead (metavar "REPO_PATH" <> help "path to store your backup")
 
--- XXX Copy-paste from other place.
 read_passworld_from_stdin :: IO BS.ByteString
 read_passworld_from_stdin = do
-  old_echo <- hGetEcho stdin
-  bracket_ (hSetEcho stdin False) (hSetEcho stdin old_echo) BS.getLine
+  a <- ask_one "enter password: "
+  b <- ask_one "enter password again: "
+  if a == b
+    then pure a
+    else do
+      T.putStrLn "entered passwords are different, please enter again"
+      read_passworld_from_stdin
+  where
+    ask_one prompt = do
+      old_echo <- hGetEcho stdin
+      bracket_ (hSetEcho stdin False) (hSetEcho stdin old_echo) $ do
+        T.putStrLn prompt
+        TE.encodeUtf8 <$> T.getLine
