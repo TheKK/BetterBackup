@@ -71,12 +71,11 @@ module Better.Internal.Repository.LowLevel (
 import Prelude hiding (read)
 
 import Data.Function ((&))
+import Data.Maybe (fromMaybe)
 import Data.Word (Word32, Word64, Word8)
 
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
-
-import Data.Maybe (fromMaybe)
 
 import Data.ByteString qualified as BS
 import Data.ByteString.Base16 qualified as BS16
@@ -88,16 +87,10 @@ import Data.Coerce (coerce)
 
 import Data.Binary qualified as Bin
 
-import Data.ByteArray qualified as BA
-
 import Text.Read (readMaybe)
 
 import Control.Monad (unless)
 import Control.Monad.Catch (MonadThrow, handleIf, throwM)
-
-import Streamly.Data.Array qualified as Array
-
-import Streamly.Internal.Unicode.Stream qualified as US
 
 import Crypto.Cipher.AES (AES128)
 import Crypto.Cipher.Types qualified as Cipher
@@ -114,10 +107,14 @@ import System.Posix.Types (FileOffset)
 import Path (Path, (</>))
 import Path qualified
 
+import Streamly.Data.Array qualified as Array
 import Streamly.Data.Fold qualified as F
 import Streamly.Data.Stream.Prelude qualified as S
+import Streamly.External.ByteString (fromArray)
+import Streamly.External.ByteString.Lazy qualified as S
 import Streamly.Internal.Data.Array.Type qualified as Array
 import Streamly.Internal.Data.Fold qualified as F
+import Streamly.Internal.Unicode.Stream qualified as US
 
 import Control.Exception (mask_, onException)
 
@@ -125,10 +122,20 @@ import Effectful qualified as E
 import Effectful.Dispatch.Static qualified as E
 import Effectful.Dispatch.Static.Unsafe qualified as E
 
-import Better.Hash (ChunkDigest (..), Digest, FileDigest (..), TreeDigest (UnsafeMkTreeDigest), VersionDigest (UnsafeMkVersionDigest), digestFromByteString, digestToBase16ByteString, digestToBase16ShortByteString, hashByteStringFoldIO)
+import Better.Hash (
+  ChunkDigest (..),
+  Digest,
+  FileDigest (..),
+  TreeDigest (UnsafeMkTreeDigest),
+  VersionDigest (UnsafeMkVersionDigest),
+  digestFromByteString,
+  digestToBase16ByteString,
+  digestToBase16ShortByteString,
+  hashByteStringFoldIO,
+ )
 import Better.Internal.Streamly.Array (fastArrayAsPtrUnsafe)
 import Better.Internal.Streamly.Array qualified as BetterArray
-import Better.Internal.Streamly.Crypto.AES (decryptCtr)
+import Better.Internal.Streamly.Crypto.AES (decryptCtr, encryptCtr)
 import Better.Repository.Class qualified as E
 import Better.Repository.Types (Version (..))
 import Better.Streamly.FileSystem.Dir qualified as Dir
@@ -352,6 +359,7 @@ addDir' digest chunks = do
     chunks & S.fold (putFileFold f)
   pure $! not exist
 
+-- | Use @Binary Version@ to encode given Version into byte string, then store them.
 addVersion
   :: (E.Repository E.:> es)
   => AES128
@@ -361,17 +369,29 @@ addVersion
   -- ^ Written bytes
 addVersion aes iv v = do
   -- It should be safe to store entire version bytes here since Version is relative small (under hundred of bytes)
-  let version_bytes = BS.toStrict $ Bin.encode v
-  version_digest <- E.unsafeEff_ $ S.fromPure version_bytes & S.fold hashByteStringFoldIO
+  let version_bytes = Bin.encode v
+
+  version_digest <-
+    S.toChunks version_bytes
+      & fmap fromArray
+      & S.fold hashByteStringFoldIO
+      & E.unsafeEff_
   version_digest_filename <- Path.parseRelFile $ show version_digest
 
   let f = folder_version </> version_digest_filename
 
   putFileFold <- mkPutFileFold
-  ((), written_bytes) <-
-    S.fromList [BA.convert iv, BA.convert $ Cipher.ctrCombine aes iv version_bytes]
-      & fmap BetterArray.un_array_ba
-      & S.fold (F.tee (putFileFold f) (F.lmap (fromIntegral . Array.length) F.sum))
+
+  -- Safe to use @reallyUnsafeUnliftIO@ since:
+  --   - no fork
+  --   - no change state
+  --   - don't want (IOE :> es)
+  --   - putFileFold should run in IO in the future
+  written_bytes <- E.reallyUnsafeUnliftIO $ \un ->
+    S.toChunks version_bytes
+      & encryptCtr aes iv (1024 * 32)
+      & S.tap (F.morphInner un $ putFileFold f)
+      & S.fold (F.lmap (fromIntegral . Array.length) F.sum)
 
   pure $! written_bytes
 
