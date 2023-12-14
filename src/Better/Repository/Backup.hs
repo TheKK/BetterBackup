@@ -250,7 +250,7 @@ runBackup m = EU.reallyUnsafeUnliftIO $ \un -> do
 
   let !v = Repo.Version now root_digest
   un $ do
-    written_bytes <- Repo.addVersion (_ctr_aes ctr) iv v
+    written_bytes <- Repo.addVersion iv v
     BackupSt.modifyStatistic' BackupSt.uploadedBytes (+ written_bytes)
 
   pure v

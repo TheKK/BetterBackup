@@ -362,12 +362,13 @@ addDir' digest chunks = do
 -- | Use @Binary Version@ to encode given Version into byte string, then store them.
 addVersion
   :: (E.Repository E.:> es)
-  => AES128
-  -> Cipher.IV AES128
+  => Cipher.IV AES128
   -> Version
   -> E.Eff es Word64
   -- ^ Written bytes
-addVersion aes iv v = do
+addVersion iv v = do
+  RepositoryRep _ aes <- E.getStaticRep
+
   -- It should be safe to store entire version bytes here since Version is relative small (under hundred of bytes)
   let version_bytes = Bin.encode v
 
