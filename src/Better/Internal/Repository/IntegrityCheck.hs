@@ -27,19 +27,18 @@ import Streamly.Data.Fold qualified as F
 import Streamly.Data.Stream.Prelude qualified as S
 
 import Effectful qualified as E
+import Effectful.Dispatch.Static qualified as E
 
 import Better.Internal.Repository.LowLevel (
-  catChunk,
   folder_chunk,
   folder_file,
   folder_tree,
   folder_version,
   listFolderFiles,
-  read,
   s2d,
  )
 
-import Better.Hash (ChunkDigest (UnsafeMkChunkDigest), hashArrayFoldIO)
+import Better.Hash (hashArrayFoldIO)
 import Better.Repository.Class qualified as E
 
 import Control.Monad.IO.Class (liftIO)
@@ -47,54 +46,70 @@ import Control.Monad.IO.Class (liftIO)
 import Data.Coerce (coerce)
 import Data.Maybe (fromJust, isJust)
 
-import Effectful.Dispatch.Static qualified as E
-import Effectful.Dispatch.Static.Unsafe qualified as E
+import Better.Internal.Repository.LowLevel qualified as Repo
+import Better.Internal.Streamly.Crypto.AES (decryptCtr)
 
 checksum :: (E.Repository E.:> es) => Int -> E.Eff es ()
-checksum n = E.reallyUnsafeUnliftIO $ \un -> do
-  S.fromList [folder_version, folder_tree, folder_file]
-    & S.concatMap
-      ( \p ->
-          listFolderFiles p
-            & fmap (\f -> (Path.fromRelFile f, p </> f))
-      )
-    & S.morphInner un
-    & S.parMapM
-      (S.maxBuffer (n + 1) . S.eager True)
-      ( \(expected_sha, f) -> do
-          actual_sha <-
-            un $
-              read f
-                & S.fold (F.morphInner E.unsafeEff_ hashArrayFoldIO)
-          if show actual_sha == expected_sha
-            then pure Nothing
-            else pure $ Just (f, actual_sha)
-      )
-    & S.filter (isJust)
-    & fmap (fromJust)
-    & S.fold
-      ( F.foldMapM $ \(invalid_f, actual_sha) ->
-          liftIO $ T.putStrLn $ "invalid file: " <> T.pack (Path.fromRelFile invalid_f) <> ", " <> T.pack (show actual_sha)
-      )
+checksum n = do
+  -- TODO Use traverse & worker pipeline to reuse worker.
+  check_encrypted n folder_version
+  check_plaintext n folder_tree
+  check_encrypted n folder_file
+  check_encrypted n folder_chunk
 
-  listFolderFiles folder_chunk
+check_plaintext :: (E.Repository E.:> es) => Int -> Path.Path Path.Rel Path.Dir -> E.Eff es ()
+check_plaintext n folder = E.unsafeConcUnliftIO E.Ephemeral E.Unlimited $ \un -> do
+  listFolderFiles folder
     & S.morphInner un
     & S.parMapM
       (S.maxBuffer (n + 1) . S.eager True)
       ( \chunk_path -> do
-          expected_sha <- fmap UnsafeMkChunkDigest <$> s2d $ Path.fromRelFile chunk_path
-          actual_sha <- un $ catChunk expected_sha & S.fold (F.morphInner E.unsafeEff_ hashArrayFoldIO)
+          expected_sha <- s2d $ Path.fromRelFile chunk_path
+          actual_sha <-
+            Repo.read (folder </> chunk_path)
+              & S.morphInner un
+              & S.fold hashArrayFoldIO
           if coerce expected_sha == actual_sha
             then pure Nothing
             else
               let
                 !actual_sha_str = T.pack $ show actual_sha
               in
-                pure $ Just (folder_chunk </> chunk_path, actual_sha_str)
+                pure $ Just (folder </> chunk_path, actual_sha_str)
       )
-    & S.filter (isJust)
-    & fmap (fromJust)
+    & S.filter isJust
+    & fmap fromJust
     & S.fold
       ( F.foldMapM $ \(invalid_f, actual_sha) ->
           liftIO $ T.putStrLn $ "invalid file: " <> T.pack (Path.toFilePath invalid_f) <> ", checksum: " <> actual_sha
       )
+
+check_encrypted :: (E.Repository E.:> es) => Int -> Path.Path Path.Rel Path.Dir -> E.Eff es ()
+check_encrypted n folder = do
+  aes <- Repo.getAES
+  E.unsafeConcUnliftIO E.Ephemeral E.Unlimited $ \un -> do
+    listFolderFiles folder
+      & S.morphInner un
+      & S.parMapM
+        (S.maxBuffer (n + 1) . S.eager True)
+        ( \chunk_path -> do
+            expected_sha <- s2d $ Path.fromRelFile chunk_path
+            actual_sha <-
+              Repo.read (folder </> chunk_path)
+                & S.morphInner un
+                & decryptCtr aes (1024 * 32)
+                & S.fold hashArrayFoldIO
+            if expected_sha == actual_sha
+              then pure Nothing
+              else
+                let
+                  !actual_sha_str = T.pack $ show actual_sha
+                in
+                  pure $ Just (folder </> chunk_path, actual_sha_str)
+        )
+      & S.filter isJust
+      & fmap fromJust
+      & S.fold
+        ( F.foldMapM $ \(invalid_f, actual_sha) ->
+            liftIO $ T.putStrLn $ "invalid file: " <> T.pack (Path.toFilePath invalid_f) <> ", checksum: " <> actual_sha
+        )
