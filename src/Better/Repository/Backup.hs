@@ -697,9 +697,12 @@ retrive_iv_for_bytes :: P.FileOffset -> TVar (Cipher.IV AES128) -> IO (Cipher.IV
 retrive_iv_for_bytes chunk_length tvar_iv = do
   atomically $ do
     !iv_to_use <- readTVar tvar_iv
-    modifyTVar' tvar_iv (`ivAdd` fromIntegral chunk_length)
+    modifyTVar' tvar_iv (`ivAdd` iv_offset)
     -- TODO workaround to seq iv currently. Should be fixed by package owner in next version.
     pure $! seq (iv_to_use == iv_to_use) iv_to_use
+  where
+    iv_offset = ceiling @Double $ fromIntegral chunk_length / fromIntegral iv_length
+    iv_length = Cipher.blockSize (undefined :: AES128)
 
 -- | Run dirname or file name.
 --
