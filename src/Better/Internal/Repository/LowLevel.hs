@@ -361,19 +361,32 @@ addFile' digest file_path iv = do
         & un
   pure $! not exist
 
+-- | Add single 'tree' into repository.
+--
+-- Unsafety:
+--   - user must ensure that @Digest@ and file at @Path@ are matched
+--   - user must ensure that @Cipher.IV@ is not reused and won't be reused by other operations
 addDir'
   :: (E.Repository E.:> es)
   => Digest
-  -> S.Stream (E.Eff es) (Array.Array Word8)
+  -> Path Path.Abs Path.File
+  -> Cipher.IV AES128
   -> E.Eff es Bool
   -- ^ Dir added.
-addDir' digest chunks = do
+addDir' digest file_path iv = do
   file_name' <- Path.parseRelFile $ digest_to_base16_filepath digest
   let f = folder_tree </> file_name'
   exist <- fileExists f
   unless exist $ do
+    aes <- getAES
     putFileFold <- mkPutFileFold
-    chunks & S.fold (putFileFold f)
+    -- TODO Let putFileFold works on IO.
+    E.reallyUnsafeUnliftIO $ \un ->
+      File.readChunks (Path.toFilePath file_path)
+        & encryptCtr aes iv (1024 * 32)
+        & S.morphInner E.unsafeEff_
+        & S.fold (putFileFold f)
+        & un
   pure $! not exist
 
 -- | Use @Binary Version@ to encode given Version into byte string, then store them.
@@ -509,14 +522,17 @@ catVersion digest = do
       pure v
 
 catTree :: (E.Repository E.:> es) => TreeDigest -> S.Stream (E.Eff es) (Either Tree FFile)
-catTree tree_sha' = S.concatEffect $ E.reallyUnsafeUnliftIO $ \un -> do
-  pure $!
-    cat_stuff_under folder_tree tree_sha'
-      & S.morphInner un
-      & US.decodeUtf8Chunks
-      & US.lines (fmap T.pack F.toList)
-      & S.mapM parse_tree_content
-      & S.morphInner E.unsafeEff_
+catTree tree_sha' = S.concatEffect $ do
+  aes <- getAES
+  E.reallyUnsafeUnliftIO $ \un -> do
+    pure $!
+      cat_stuff_under folder_tree tree_sha'
+        & S.morphInner un
+        & decryptCtr aes (1024 * 32)
+        & US.decodeUtf8Chunks
+        & US.lines (fmap T.pack F.toList)
+        & S.mapM parse_tree_content
+        & S.morphInner E.unsafeEff_
   where
     {-# INLINE [0] parse_tree_content #-}
     parse_tree_content :: MonadThrow m => T.Text -> m (Either Tree FFile)

@@ -208,9 +208,11 @@ runBackup m = do
                 & S.parMapM
                   (S.maxBuffer 100 . S.eager True)
                   ( \case
-                      UploadTree dir_hash file_name' -> (`finally` E.unsafeEff_ (D.removeFile $ Path.fromAbsFile file_name')) $ do
+                      UploadTree dir_hash file_name' file_size -> (`finally` E.unsafeEff_ (D.removeFile $ Path.fromAbsFile file_name')) $ do
                         unique_tree_gate dir_hash $ do
-                          added <- addDir' dir_hash (File.readChunks (Path.fromAbsFile file_name'))
+                          added <- do
+                            iv <- E.unsafeEff_ $ retrive_iv_for_bytes file_size tvar_iv
+                            addDir' dir_hash file_name' iv
                           when added $ do
                             BackupSt.modifyStatistic' BackupSt.newDirCount (+ 1)
 
@@ -255,7 +257,8 @@ runBackup m = do
   pure v
 
 data UploadTask
-  = UploadTree !Digest !(Path Path.Abs Path.File)
+  = -- | User MUST ensure that all content matches to same tree for correct result.
+    UploadTree !Digest !(Path Path.Abs Path.File) !P.FileOffset
   | -- | User MUST ensure that all content matches to same file for correct result.
     UploadFile !Digest !(Path Path.Abs Path.File) !(Maybe P.FileStatus) !P.FileOffset
   | UploadChunk !Digest !(S.Stream IO (Array.Array Word8))
@@ -362,7 +365,7 @@ backupDirWithoutCollectingDirAndFileStatistics rel_tree_name = do
   RepositoryWriteRep _ (ForkFns file_fork_or_not dir_fork_or_not) tbq _ <- E.getStaticRep @RepositoryWrite
 
   Tmp.withEmptyTmpFile $ \file_name' -> EU.withEffToIO (E.ConcUnlift E.Ephemeral E.Unlimited) $ \conc_un -> do
-    !dir_hash <- liftIO $ withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
+    (!dir_hash, !file_size) <- liftIO $ withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
       Dir.readEither rel_tree_name
         & S.mapM
           ( \case
@@ -371,9 +374,9 @@ backupDirWithoutCollectingDirAndFileStatistics rel_tree_name = do
           )
         & S.parSequence (S.ordered True)
         & S.trace (BC.hPut fd)
-        & S.fold hashByteStringFoldIO
+        & S.fold (F.tee hashByteStringFoldIO $ F.lmap (fromIntegral . BS.length) F.sum)
 
-    liftIO $ atomically $ writeTBQueue tbq $ UploadTree dir_hash file_name'
+    liftIO $ atomically $ writeTBQueue tbq $ UploadTree dir_hash file_name' file_size
 
     pure $ UnsafeMkTreeDigest dir_hash
 
@@ -387,13 +390,13 @@ backupDirFromList inputs = Tmp.withEmptyTmpFile $ \file_name' -> do
 
   BackupSt.modifyStatistic' BackupSt.totalDirCount (+ 1)
 
-  !dir_hash <- liftIO $ withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
+  (!dir_hash, !file_size) <- liftIO $ withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
     S.fromList inputs
       & fmap tree_content_from_dir_entry
       & S.trace (BC.hPut fd)
-      & S.fold hashByteStringFoldIO
+      & S.fold (F.tee hashByteStringFoldIO $ F.lmap (fromIntegral . BS.length) F.sum)
 
-  liftIO $ atomically $ writeTBQueue tbq $ UploadTree dir_hash file_name'
+  liftIO $ atomically $ writeTBQueue tbq $ UploadTree dir_hash file_name' file_size
 
   pure $ UnsafeMkTreeDigest dir_hash
 
@@ -626,8 +629,8 @@ keep_traversing_existed_tree fsc digest_of_existed_tree rel_dir_path_in_tree pos
   BackupSt.modifyStatistic' BackupSt.totalDirCount (+ 1)
 
   fmap Just $ Tmp.withEmptyTmpFile $ \file_name' -> EU.withSeqEffToIO $ \seq_un -> do
-    !dir_hash <- withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> seq_un $ do
-      !mid_hasher <-
+    (!dir_hash, !file_size) <- withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> seq_un $ do
+      (!mid_hasher, !mid_file_size) <-
         -- Traverse existed part.
         Repo.catTree digest_of_existed_tree
           & S.mapM
@@ -642,10 +645,14 @@ keep_traversing_existed_tree fsc digest_of_existed_tree rel_dir_path_in_tree pos
           & S.catMaybes
           & fmap tree_content_from_dir_entry
           & S.trace (liftIO . BC.hPut fd)
-          & S.fold (F.morphInner (liftIO . stToIO) $ hashByteArrayAccess' $ Hash.init Nothing)
+          & S.fold
+            ( F.tee
+                (F.morphInner (liftIO . stToIO) $ hashByteArrayAccess' $ Hash.init Nothing)
+                (F.lmap (fromIntegral . BS.length) F.sum)
+            )
 
       -- Traverse added part.
-      S.fromList possible_new_entries
+      (!digest, !rest_file_size) <- S.fromList possible_new_entries
         & S.mapM
           ( \(entry_rel_path_in_tree, entry_abs_path_on_filesystem) -> do
               try_backing_up_file_or_dir entry_rel_path_in_tree entry_abs_path_on_filesystem
@@ -653,9 +660,15 @@ keep_traversing_existed_tree fsc digest_of_existed_tree rel_dir_path_in_tree pos
         & S.catMaybes
         & fmap tree_content_from_dir_entry
         & S.trace (liftIO . BC.hPut fd)
-        & S.fold (F.morphInner (liftIO . stToIO) $ F.rmapM finalize $ hashByteArrayAccess' mid_hasher)
+        & S.fold
+          ( F.tee
+              (F.morphInner (liftIO . stToIO) $ F.rmapM finalize $ hashByteArrayAccess' mid_hasher)
+              (F.lmap (fromIntegral . BS.length) F.sum)
+          )
 
-    liftIO $ atomically $ writeTBQueue tbq $ UploadTree dir_hash file_name'
+      pure (digest, mid_file_size + rest_file_size)
+
+    liftIO $ atomically $ writeTBQueue tbq $ UploadTree dir_hash file_name' file_size
 
     pure $ UnsafeMkTreeDigest dir_hash
 
