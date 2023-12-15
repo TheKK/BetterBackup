@@ -219,24 +219,20 @@ runBackup m = EU.reallyUnsafeUnliftIO $ \un -> do
               & S.parMapM
                 (S.maxBuffer 100 . S.eager True)
                 ( \case
-                    UploadTree dir_hash file_name' -> do
-                      unique_tree_gate dir_hash $
-                        do
-                          added <- un (addDir' dir_hash (File.readChunks (Path.fromAbsFile file_name'))) `finally` D.removeFile (Path.fromAbsFile file_name')
-                          when added $ do
-                            un $ BackupSt.modifyStatistic' BackupSt.newDirCount (+ 1)
+                    UploadTree dir_hash file_name' -> (`finally` D.removeFile (Path.fromAbsFile file_name')) $ do
+                      unique_tree_gate dir_hash . un $ do
+                        added <- addDir' dir_hash (File.readChunks (Path.fromAbsFile file_name'))
+                        when added $ do
+                          BackupSt.modifyStatistic' BackupSt.newDirCount (+ 1)
                       un $ BackupSt.modifyStatistic' BackupSt.processedDirCount (+ 1)
-                    UploadFile file_hash file_name' opt_st file_size -> do
-                      unique_file_gate file_hash $
-                        do
-                          -- TODO removeFile should be run outside of unique gate, otherwise the file exists until
-                          -- the end of backup.
-                          added <- (`finally` D.removeFile (Path.fromAbsFile file_name')) $ do
-                            iv <- retrive_iv_for_bytes file_size ctr
-                            un $ addFile' file_hash file_name' iv
+                    UploadFile file_hash file_name' opt_st file_size -> (`finally` D.removeFile (Path.fromAbsFile file_name')) $ do
+                      unique_file_gate file_hash . un $ do
+                        added <- do
+                          iv <- E.unsafeEff_ $ retrive_iv_for_bytes file_size ctr
+                          addFile' file_hash file_name' iv
 
-                          when added $ do
-                            un $ BackupSt.modifyStatistic' BackupSt.newFileCount (+ 1)
+                        when added $ do
+                          BackupSt.modifyStatistic' BackupSt.newFileCount (+ 1)
                       un $ do
                         BackupSt.modifyStatistic' BackupSt.processedFileCount (+ 1)
                         for_ opt_st $ \st -> BackupCacheLevelDB.saveCurrentFileHash st file_hash
