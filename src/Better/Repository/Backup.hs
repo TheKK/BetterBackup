@@ -35,6 +35,7 @@ import Prelude hiding (read)
 
 import Numeric.Natural (Natural)
 
+import Data.Coerce (coerce)
 import Data.Either (fromRight)
 import Data.Function ((&))
 import Data.List (inits, intercalate)
@@ -82,6 +83,7 @@ import System.Posix qualified as P
 import Path (Path, (</>))
 import Path qualified
 
+import Crypto.Cipher.AES (AES128)
 import Crypto.Cipher.AES qualified as Cipher
 import Crypto.Cipher.Types (ivAdd)
 import Crypto.Cipher.Types qualified as Cipher
@@ -96,9 +98,8 @@ import Control.Monad.ST.Strict (stToIO)
 import Control.Monad.Trans.Maybe (MaybeT (MaybeT, runMaybeT))
 
 import Effectful qualified as E
+import Effectful qualified as EU
 import Effectful.Dispatch.Static qualified as E
-import Effectful.Dispatch.Static.Unsafe qualified as E
-import Effectful.Dispatch.Static.Unsafe qualified as EU
 
 import Hedgehog qualified as H
 import Hedgehog.Gen qualified as Gen
@@ -132,13 +133,6 @@ import Better.Streamly.FileSystem.Chunker qualified as Chunker
 import Better.Streamly.FileSystem.Dir qualified as Dir
 import Better.TempDir qualified as Tmp
 import Better.TempDir.Class (Tmp)
-import Data.Coerce (coerce)
-import Effectful qualified as EU
-
-data Ctr = Ctr
-  { _ctr_aes :: Cipher.AES128
-  , _ctr_iv :: (TVar (Cipher.IV Cipher.AES128))
-  }
 
 init_iv :: IO (Cipher.IV Cipher.AES128)
 init_iv = do
@@ -146,11 +140,6 @@ init_iv = do
   case Cipher.makeIV ent of
     Just iv -> pure $! iv
     Nothing -> error "failed to generate iv"
-
-init_ctr :: Cipher.AES128 -> IO Ctr
-init_ctr aes = do
-  iv <- newTVarIO =<< init_iv
-  pure $! Ctr aes iv
 
 -- | Backup specified directory.
 --
@@ -174,7 +163,8 @@ backup_dir abs_dir = E.withEffToIO (E.ConcUnlift E.Ephemeral E.Unlimited) $ \con
     atomically $ Ki.await stat_async
     pure root_digest
 
-data instance E.StaticRep RepositoryWrite = RepositoryWriteRep {-# UNPACK #-} !Ki.Scope {-# UNPACK #-} !ForkFns {-# UNPACK #-} !(TBQueue UploadTask) {-# UNPACK #-} !Ctr
+data instance E.StaticRep RepositoryWrite
+  = RepositoryWriteRep {-# UNPACK #-} !Ki.Scope {-# UNPACK #-} !ForkFns {-# UNPACK #-} !(TBQueue UploadTask) {-# UNPACK #-} !(TVar (Cipher.IV Cipher.AES128))
 
 -- | Provide env to run functions which needs capability, RepositoryWrite.
 --
@@ -200,7 +190,7 @@ runBackup m = do
   unique_tree_gate <- mk_uniq_gate
   unique_file_gate <- mk_uniq_gate
 
-  ctr <- (liftIO . init_ctr) =<< Repo.getAES
+  tvar_iv <- liftIO $ newTVarIO =<< init_iv
 
   root_digest <- E.withSeqEffToIO $ \seq_un -> Ki.scoped $ \scope -> do
     fork_fns <- do
@@ -212,7 +202,7 @@ runBackup m = do
       (seq_un . E.withUnliftStrategy (E.ConcUnlift E.Ephemeral E.Unlimited)) $
         withEmitUnfoldr
           20
-          (\tbq -> E.evalStaticRep (RepositoryWriteRep scope fork_fns tbq ctr) m)
+          (\tbq -> E.evalStaticRep (RepositoryWriteRep scope fork_fns tbq tvar_iv) m)
           ( \s ->
               s
                 & S.parMapM
@@ -228,7 +218,7 @@ runBackup m = do
                       UploadFile file_hash file_name' opt_st file_size -> (`finally` E.unsafeEff_ (D.removeFile $ Path.fromAbsFile file_name')) $ do
                         unique_file_gate file_hash $ do
                           added <- do
-                            iv <- E.unsafeEff_ $ retrive_iv_for_bytes file_size ctr
+                            iv <- E.unsafeEff_ $ retrive_iv_for_bytes file_size tvar_iv
                             addFile' file_hash file_name' iv
                           when added $ do
                             BackupSt.modifyStatistic' BackupSt.newFileCount (+ 1)
@@ -254,7 +244,7 @@ runBackup m = do
     pure root_digest
 
   -- We don't increase iv since it's the end of ctr here.
-  iv <- liftIO $ readTVarIO $ _ctr_iv ctr
+  iv <- liftIO $ readTVarIO tvar_iv
   now <- liftIO getCurrentTime
 
   let !v = Repo.Version now root_digest
@@ -364,7 +354,10 @@ data ForkFns
 -- NOTE: Normally you'll only need 'backup_dir' unless you have special needs.
 --
 -- This function WON'T collect statistics of directories and files concurrently, which gives you more control.
-backupDirWithoutCollectingDirAndFileStatistics :: (RepositoryWrite E.:> es, BackupCache E.:> es, Tmp E.:> es, E.IOE E.:> es) => Path Path.Abs Path.Dir -> E.Eff es TreeDigest
+backupDirWithoutCollectingDirAndFileStatistics
+  :: (E.Repository E.:> es, RepositoryWrite E.:> es, BackupCache E.:> es, Tmp E.:> es, E.IOE E.:> es)
+  => Path Path.Abs Path.Dir
+  -> E.Eff es TreeDigest
 backupDirWithoutCollectingDirAndFileStatistics rel_tree_name = do
   RepositoryWriteRep _ (ForkFns file_fork_or_not dir_fork_or_not) tbq _ <- E.getStaticRep @RepositoryWrite
 
@@ -404,7 +397,10 @@ backupDirFromList inputs = Tmp.withEmptyTmpFile $ \file_name' -> do
 
   pure $ UnsafeMkTreeDigest dir_hash
 
-backup_file :: (RepositoryWrite E.:> es, BackupCache E.:> es, Tmp E.:> es, E.IOE E.:> es) => Path Path.Abs Path.File -> E.Eff es FileDigest
+backup_file
+  :: (E.Repository E.:> es, RepositoryWrite E.:> es, BackupCache E.:> es, Tmp E.:> es, E.IOE E.:> es)
+  => Path Path.Abs Path.File
+  -> E.Eff es FileDigest
 backup_file rel_file_name = do
   RepositoryWriteRep _ _ tbq _ <- E.getStaticRep @RepositoryWrite
 
@@ -430,7 +426,10 @@ backup_file rel_file_name = do
       atomically $ writeTBQueue tbq $ UploadFile file_hash file_name' (Just st) file_size
       pure $ UnsafeMkFileDigest file_hash
 
-backupFileFromBuilder :: (RepositoryWrite E.:> es, BackupStatistics E.:> es, Tmp E.:> es, E.IOE E.:> es) => BB.Builder -> E.Eff es Digest
+backupFileFromBuilder
+  :: (E.Repository E.:> es, RepositoryWrite E.:> es, BackupStatistics E.:> es, Tmp E.:> es, E.IOE E.:> es)
+  => BB.Builder
+  -> E.Eff es Digest
 backupFileFromBuilder builder = do
   RepositoryWriteRep _ _ tbq _ <- E.getStaticRep @RepositoryWrite
 
@@ -457,19 +456,19 @@ backupFileFromBuilder builder = do
     atomically $ writeTBQueue tbq $ UploadFile file_hash file_name' Nothing file_size
     pure file_hash
 
-backup_chunk :: (RepositoryWrite E.:> es) => [Array.Array Word8] -> E.Eff es BS.ByteString
+backup_chunk :: (E.Repository E.:> es, RepositoryWrite E.:> es) => [Array.Array Word8] -> E.Eff es BS.ByteString
 backup_chunk chunk = do
-  RepositoryWriteRep _ _ tbq ctr <- E.getStaticRep @RepositoryWrite
+  RepositoryWriteRep _ _ tbq tvar_iv <- E.getStaticRep @RepositoryWrite
 
   (!chunk_hash, !chunk_length) <-
     S.fromList chunk
       & S.fold (F.tee hashArrayFoldIO (F.lmap Array.byteLength F.sum))
       & E.unsafeEff_
 
+  aes <- Repo.getAES
+
   let
     encrypted_chunk_stream = S.concatEffect $ do
-      let (Ctr aes tvar_iv) = ctr
-
       !iv <- atomically $ do
         iv_to_use <- readTVar tvar_iv
         modifyTVar' tvar_iv (`ivAdd` chunk_length)
@@ -835,8 +834,8 @@ props_what_to_do_with_file_and_dir =
 -- The goal is to not use same @IV@ for ALL of the encrypted message during single backup session.
 --
 -- TODO: Should wornk inside RepositoryWrite
-retrive_iv_for_bytes :: P.FileOffset -> Ctr -> IO (Cipher.IV Cipher.AES128)
-retrive_iv_for_bytes chunk_length (Ctr _ tvar_iv) = do
+retrive_iv_for_bytes :: P.FileOffset -> TVar (Cipher.IV AES128) -> IO (Cipher.IV Cipher.AES128)
+retrive_iv_for_bytes chunk_length tvar_iv = do
   atomically $ do
     !iv_to_use <- readTVar tvar_iv
     modifyTVar' tvar_iv (`ivAdd` fromIntegral chunk_length)
