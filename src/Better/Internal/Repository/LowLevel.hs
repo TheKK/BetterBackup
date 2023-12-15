@@ -70,6 +70,8 @@ module Better.Internal.Repository.LowLevel (
 
 import Prelude hiding (read)
 
+import GHC.Stack (HasCallStack)
+
 import Data.Function ((&))
 import Data.Maybe (fromMaybe)
 import Data.Word (Word32, Word64, Word8)
@@ -112,6 +114,7 @@ import Streamly.Data.Fold qualified as F
 import Streamly.Data.Stream.Prelude qualified as S
 import Streamly.External.ByteString (fromArray)
 import Streamly.External.ByteString.Lazy qualified as S
+import Streamly.FileSystem.File qualified as File
 import Streamly.Internal.Data.Array.Type qualified as Array
 import Streamly.Internal.Data.Fold qualified as F
 import Streamly.Internal.Unicode.Stream qualified as US
@@ -129,13 +132,14 @@ import Better.Hash (
   TreeDigest (UnsafeMkTreeDigest),
   VersionDigest (UnsafeMkVersionDigest),
   digestFromByteString,
+  digestSize,
   digestToBase16ByteString,
   digestToBase16ShortByteString,
   hashByteStringFoldIO,
  )
 import Better.Internal.Streamly.Array (fastArrayAsPtrUnsafe)
 import Better.Internal.Streamly.Array qualified as BetterArray
-import Better.Internal.Streamly.Crypto.AES (decryptCtr, encryptCtr)
+import Better.Internal.Streamly.Crypto.AES (compact, decryptCtr, encryptCtr)
 import Better.Repository.Class qualified as E
 import Better.Repository.Types (Version (..))
 import Better.Streamly.FileSystem.Dir qualified as Dir
@@ -329,19 +333,32 @@ addBlob' digest chunks = do
       ((), !len) <- chunks & S.fold (F.tee (putFileFold f) (fromIntegral <$> F.lmap Array.byteLength F.sum))
       pure len
 
+-- | Add single 'file' into repository.
+--
+-- Unsafety:
+--   - user must ensure that @Digest@ and file at @Path@ are matched
+--   - user must ensure that @Cipher.IV@ is not reused and won't be reused by other operations
 addFile'
   :: (E.Repository E.:> es)
   => Digest
-  -> S.Stream (E.Eff es) (Array.Array Word8)
+  -> Path Path.Abs Path.File
+  -> Cipher.IV AES128
   -> E.Eff es Bool
   -- ^ Dir added.
-addFile' digest chunks = do
+addFile' digest file_path iv = do
   file_name' <- Path.parseRelFile $ digest_to_base16_filepath digest
   let f = folder_file </> file_name'
   exist <- fileExists f
   unless exist $ do
+    aes <- getAES
     putFileFold <- mkPutFileFold
-    chunks & S.fold (putFileFold f)
+    -- TODO Let putFileFold works on IO.
+    E.reallyUnsafeUnliftIO $ \un ->
+      File.readChunks (Path.toFilePath file_path)
+        & encryptCtr aes iv (1024 * 32)
+        & S.morphInner E.unsafeEff_
+        & S.fold (putFileFold f)
+        & un
   pure $! not exist
 
 addDir'
@@ -413,18 +430,32 @@ cat_stuff_under folder stuff = S.concatEffect $ do
   pure $! read (folder </> stuff_path)
 {-# INLINE cat_stuff_under #-}
 
-catFile :: (E.Repository E.:> es) => FileDigest -> S.Stream (E.Eff es) Object
-catFile sha = S.concatEffect $ E.reallyUnsafeUnliftIO $ \un -> do
-  pure $!
-    cat_stuff_under folder_file sha
-      & S.morphInner un
-      & US.decodeUtf8Chunks
-      & US.lines (fmap T.pack F.toList)
-      & S.mapM parse_file_content
-      & S.morphInner E.unsafeEff_
+assertSizeOfFile :: (HasCallStack, E.Repository E.:> es) => FileDigest -> E.Eff es ()
+assertSizeOfFile digest = do
+  aes <- getAES
+  let iv_length = Cipher.blockSize aes
+  file_size <- getFileSize digest
+  unless ((file_size - fromIntegral iv_length) `mod` fromIntegral digestSize == 0) $ do
+    error $ "size of 'file', " <> show digest <> ", is incorrect: " <> show file_size
+
+catFile :: (HasCallStack, E.Repository E.:> es) => FileDigest -> S.Stream (E.Eff es) Object
+catFile digest = S.concatEffect $ do
+  assertSizeOfFile digest
+
+  aes <- getAES
+  E.reallyUnsafeUnliftIO $ \un -> do
+    pure $!
+      cat_stuff_under folder_file digest
+        & S.morphInner un
+        & decryptCtr aes (1024 * 32)
+        & compact digestSize
+        & S.mapM (parse_file_content . fromArray)
+        & S.morphInner E.unsafeEff_
   where
-    parse_file_content :: (MonadThrow m, Applicative m) => T.Text -> m Object
-    parse_file_content = fmap (Object . UnsafeMkChunkDigest) . t2d
+    parse_file_content :: BS.ByteString -> IO Object
+    parse_file_content bs = case digestFromByteString bs of
+      Just d -> pure $! Object $ UnsafeMkChunkDigest d
+      Nothing -> error $ "failed to parse digest from bytestring: length = " <> show (BS.length bs)
 
 catChunk
   :: (E.Repository E.:> es)
@@ -444,6 +475,11 @@ getChunkSize :: (E.Repository E.:> es) => ChunkDigest -> E.Eff es FileOffset
 getChunkSize sha = do
   sha_path <- E.unsafeEff_ $ Path.parseRelFile $ show sha
   fileSize $ folder_chunk </> sha_path
+
+getFileSize :: (E.Repository E.:> es) => FileDigest -> E.Eff es FileOffset
+getFileSize sha = do
+  sha_path <- E.unsafeEff_ $ Path.parseRelFile $ show sha
+  fileSize $ folder_file </> sha_path
 
 catVersion :: (E.Repository E.:> es) => VersionDigest -> E.Eff es Version
 catVersion digest = do

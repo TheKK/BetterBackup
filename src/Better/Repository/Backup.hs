@@ -53,7 +53,6 @@ import Data.ByteString.Builder qualified as BB
 import Data.ByteString.Builder.Extra qualified as BB
 import Data.ByteString.Char8 qualified as BC
 import Data.ByteString.Lazy qualified as BL
-import Data.ByteString.Short qualified as BSS
 
 import Data.Foldable (for_)
 
@@ -109,7 +108,16 @@ import Hedgehog.Gen qualified as Gen
 import Hedgehog.Range qualified as Range
 
 import Better.Data.FileSystemChanges qualified as FSC
-import Better.Hash (Digest, FileDigest (UnsafeMkFileDigest), TreeDigest (UnsafeMkTreeDigest), digestToBase16ShortByteString, finalize, hashArrayFoldIO, hashByteArrayAccess', hashByteStringFoldIO)
+import Better.Hash (
+  Digest,
+  FileDigest (UnsafeMkFileDigest),
+  TreeDigest (UnsafeMkTreeDigest),
+  digestToByteString,
+  finalize,
+  hashArrayFoldIO,
+  hashByteArrayAccess',
+  hashByteStringFoldIO,
+ )
 import Better.Hash qualified as Hash
 import Better.Internal.Repository.LowLevel (addBlob', addDir', addFile', d2b, doesTreeExists)
 import Better.Internal.Repository.LowLevel qualified as Repo
@@ -218,10 +226,15 @@ runBackup m = EU.reallyUnsafeUnliftIO $ \un -> do
                           when added $ do
                             un $ BackupSt.modifyStatistic' BackupSt.newDirCount (+ 1)
                       un $ BackupSt.modifyStatistic' BackupSt.processedDirCount (+ 1)
-                    UploadFile file_hash file_name' opt_st -> do
+                    UploadFile file_hash file_name' opt_st file_size -> do
                       unique_file_gate file_hash $
                         do
-                          added <- un (addFile' file_hash (File.readChunks (Path.fromAbsFile file_name'))) `finally` D.removeFile (Path.fromAbsFile file_name')
+                          -- TODO removeFile should be run outside of unique gate, otherwise the file exists until
+                          -- the end of backup.
+                          added <- (`finally` D.removeFile (Path.fromAbsFile file_name')) $ do
+                            iv <- retrive_iv_for_bytes file_size ctr
+                            un $ addFile' file_hash file_name' iv
+
                           when added $ do
                             un $ BackupSt.modifyStatistic' BackupSt.newFileCount (+ 1)
                       un $ do
@@ -257,7 +270,8 @@ runBackup m = EU.reallyUnsafeUnliftIO $ \un -> do
 
 data UploadTask
   = UploadTree !Digest !(Path Path.Abs Path.File)
-  | UploadFile !Digest !(Path Path.Abs Path.File) !(Maybe P.FileStatus)
+  | -- | User MUST ensure that all content matches to same file for correct result.
+    UploadFile !Digest !(Path Path.Abs Path.File) !(Maybe P.FileStatus) !P.FileOffset
   | UploadChunk !Digest !(S.Stream IO (Array.Array Word8))
   | FindNoChangeFile !Digest !P.FileStatus
 
@@ -403,7 +417,7 @@ backup_file rel_file_name = do
       liftIO $ atomically $ writeTBQueue tbq $ FindNoChangeFile cached_digest st
       pure $! UnsafeMkFileDigest cached_digest
     Nothing -> Tmp.withEmptyTmpFile $ \file_name' -> E.reallyUnsafeUnliftIO $ \un -> do
-      !file_hash <- withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd ->
+      (!file_hash, !file_size) <- withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd ->
         withBinaryFile (Path.fromAbsFile rel_file_name) ReadMode $ \fdd ->
           Chunker.gearHash Chunker.defaultGearHashConfig (Path.fromAbsFile rel_file_name)
             & S.mapM
@@ -413,9 +427,9 @@ backup_file rel_file_name = do
               )
             & S.parMapM (S.ordered True . S.maxBuffer 8) (un . backup_chunk)
             & S.trace (BS.hPut fd)
-            & S.fold hashByteStringFoldIO
+            & S.fold (F.tee hashByteStringFoldIO $ F.lmap (fromIntegral . BS.length) F.sum)
 
-      atomically $ writeTBQueue tbq $ UploadFile file_hash file_name' (Just st)
+      atomically $ writeTBQueue tbq $ UploadFile file_hash file_name' (Just st) file_size
       pure $ UnsafeMkFileDigest file_hash
 
 backupFileFromBuilder :: (RepositoryWrite E.:> es, BackupStatistics E.:> es, Tmp E.:> es, E.IOE E.:> es) => BB.Builder -> E.Eff es Digest
@@ -428,7 +442,7 @@ backupFileFromBuilder builder = do
   lbs_tvar <- E.unsafeEff_ $ newTVarIO lbs
 
   Tmp.withEmptyTmpFile $ \file_name' -> E.reallyUnsafeUnliftIO $ \un -> do
-    !file_hash <- withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd ->
+    (!file_hash, !file_size) <- withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd ->
       S.fromList (BL.toChunks lbs)
         & Chunker.gearHashPure Chunker.defaultGearHashConfig
         & S.mapM
@@ -440,9 +454,9 @@ backupFileFromBuilder builder = do
           )
         & S.parMapM (S.ordered True . S.maxBuffer 16) (un . backup_chunk)
         & S.trace (BS.hPut fd)
-        & S.fold hashByteStringFoldIO
+        & S.fold (F.tee hashByteStringFoldIO $ F.lmap (fromIntegral . BS.length) F.sum)
 
-    atomically $ writeTBQueue tbq $ UploadFile file_hash file_name' Nothing
+    atomically $ writeTBQueue tbq $ UploadFile file_hash file_name' Nothing file_size
     pure file_hash
 
 backup_chunk :: (RepositoryWrite E.:> es, E.IOE E.:> es) => [Array.Array Word8] -> E.Eff es BS.ByteString
@@ -468,7 +482,7 @@ backup_chunk chunk = E.reallyUnsafeUnliftIO $ \un -> do
 
   atomically $ writeTBQueue tbq $ UploadChunk chunk_hash encrypted_chunk_stream
 
-  pure $! BSS.fromShort $ (digestToBase16ShortByteString chunk_hash) `BSS.snoc` 0x0a
+  pure $! digestToByteString chunk_hash -- `BS.snoc` 0x0a
 
 withEmitUnfoldr :: MonadUnliftIO m => Natural -> (TBQueue e -> m a) -> (S.Stream m e -> m b) -> m (a, b)
 withEmitUnfoldr q_size putter go = Un.withRunInIO $ \un -> do
@@ -817,3 +831,16 @@ props_what_to_do_with_file_and_dir =
     filesystem_change_gen = Gen.element [FSC.IsNew random_abs_path, FSC.NeedFreshBackup random_abs_path, FSC.IsRemoved]
       where
         random_abs_path = [Path.absfile|/aabb|]
+
+-- | Returns and increases @IV@ in a thread safe manger.
+--
+-- The goal is to not use same @IV@ for ALL of the encrypted message during single backup session.
+--
+-- TODO: Should wornk inside RepositoryWrite
+retrive_iv_for_bytes :: P.FileOffset -> Ctr -> IO (Cipher.IV Cipher.AES128)
+retrive_iv_for_bytes chunk_length (Ctr _ tvar_iv) = do
+  atomically $ do
+    !iv_to_use <- readTVar tvar_iv
+    modifyTVar' tvar_iv (`ivAdd` fromIntegral chunk_length)
+    -- TODO workaround to seq iv currently. Should be fixed by package owner in next version.
+    pure $! seq (iv_to_use == iv_to_use) iv_to_use
