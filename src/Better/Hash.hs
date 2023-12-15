@@ -18,6 +18,7 @@ module Better.Hash (
   digestToBase16ByteString,
   digestToBase16ShortByteString,
   digestFromByteString,
+  digestToByteString,
 
   -- * Pure versions
   hashByteStringFold,
@@ -110,6 +111,9 @@ digestFromByteString :: BS.ByteString -> Maybe Digest
 digestFromByteString bs
   | BS.length bs == digestSize = Just $! Digest $ BSS.toShort bs
   | otherwise = Nothing
+
+digestToByteString :: Digest -> BS.ByteString
+digestToByteString (Digest d) = BSS.fromShort d
 
 hashByteStringFold :: F.Fold (ST s) BS.ByteString Digest
 hashByteStringFold = hashByteArrayAccess $ BLAKE3.init Nothing
