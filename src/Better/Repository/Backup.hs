@@ -469,11 +469,7 @@ backup_chunk chunk = do
 
   let
     encrypted_chunk_stream = S.concatEffect $ do
-      !iv <- atomically $ do
-        iv_to_use <- readTVar tvar_iv
-        modifyTVar' tvar_iv (`ivAdd` chunk_length)
-        pure $! seq (iv_to_use == iv_to_use) iv_to_use
-
+      !iv <- retrive_iv_for_bytes (fromIntegral chunk_length) tvar_iv
       pure $!
         S.fromList chunk
           & encryptCtr aes iv (1024 * 32)
@@ -694,6 +690,17 @@ try_backing_up_file_or_dir rel_tree_path abs_filesystem_path = runMaybeT $ do
     direntry_name = rel_path_to_direntry_name rel_tree_path
     raw_abs_filesystem_path = Path.fromAbsFile abs_filesystem_path
 
+-- | Returns and increases @IV@ in a thread safe manger.
+--
+-- The goal is to not use same @IV@ for ALL of the encrypted message during single backup session.
+retrive_iv_for_bytes :: P.FileOffset -> TVar (Cipher.IV AES128) -> IO (Cipher.IV Cipher.AES128)
+retrive_iv_for_bytes chunk_length tvar_iv = do
+  atomically $ do
+    !iv_to_use <- readTVar tvar_iv
+    modifyTVar' tvar_iv (`ivAdd` fromIntegral chunk_length)
+    -- TODO workaround to seq iv currently. Should be fixed by package owner in next version.
+    pure $! seq (iv_to_use == iv_to_use) iv_to_use
+
 -- | Run dirname or file name.
 --
 -- examples:
@@ -828,16 +835,3 @@ props_what_to_do_with_file_and_dir =
     filesystem_change_gen = Gen.element [FSC.IsNew random_abs_path, FSC.NeedFreshBackup random_abs_path, FSC.IsRemoved]
       where
         random_abs_path = [Path.absfile|/aabb|]
-
--- | Returns and increases @IV@ in a thread safe manger.
---
--- The goal is to not use same @IV@ for ALL of the encrypted message during single backup session.
---
--- TODO: Should wornk inside RepositoryWrite
-retrive_iv_for_bytes :: P.FileOffset -> TVar (Cipher.IV AES128) -> IO (Cipher.IV Cipher.AES128)
-retrive_iv_for_bytes chunk_length tvar_iv = do
-  atomically $ do
-    !iv_to_use <- readTVar tvar_iv
-    modifyTVar' tvar_iv (`ivAdd` fromIntegral chunk_length)
-    -- TODO workaround to seq iv currently. Should be fixed by package owner in next version.
-    pure $! seq (iv_to_use == iv_to_use) iv_to_use
