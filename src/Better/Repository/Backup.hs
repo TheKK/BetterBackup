@@ -60,10 +60,8 @@ import Text.Read (readMaybe)
 
 import Control.Applicative ((<|>))
 import Control.Monad (guard, replicateM, unless, when)
-import Control.Monad.Catch (throwM)
+import Control.Monad.Catch (finally, mask, onException, throwM)
 import Control.Monad.IO.Class (liftIO)
-import Control.Monad.IO.Unlift (MonadUnliftIO)
-import Control.Monad.IO.Unlift qualified as Un
 
 import Control.Concurrent.STM (TBQueue, TVar, atomically, modifyTVar', newTBQueueIO, newTVarIO, readTBQueue, readTVar, readTVarIO, writeTBQueue)
 
@@ -94,7 +92,6 @@ import Streamly.Data.Stream.Prelude qualified as S
 
 import Control.Concurrent.QSem (QSem, newQSem, signalQSem, waitQSem)
 import Control.Concurrent.STM.TSem (TSem, newTSem, signalTSem, waitTSem)
-import Control.Exception (finally, mask, onException)
 import Control.Monad.ST.Strict (stToIO)
 import Control.Monad.Trans.Maybe (MaybeT (MaybeT, runMaybeT))
 
@@ -136,6 +133,7 @@ import Better.Streamly.FileSystem.Dir qualified as Dir
 import Better.TempDir qualified as Tmp
 import Better.TempDir.Class (Tmp)
 import Data.Coerce (coerce)
+import Effectful qualified as EU
 
 data Ctr = Ctr
   { _ctr_aes :: Cipher.AES128
@@ -169,10 +167,10 @@ backup_dir
      )
   => Path Path.Abs Path.Dir
   -> E.Eff es TreeDigest
-backup_dir abs_dir = E.reallyUnsafeUnliftIO $ \un -> do
+backup_dir abs_dir = E.withEffToIO (E.ConcUnlift E.Ephemeral E.Unlimited) $ \conc_un -> do
   Ki.scoped $ \scope -> do
-    stat_async <- Ki.fork scope (un $ collect_dir_and_file_statistics abs_dir)
-    !root_digest <- un $ backupDirWithoutCollectingDirAndFileStatistics abs_dir
+    stat_async <- Ki.fork scope (conc_un $ collect_dir_and_file_statistics abs_dir)
+    !root_digest <- conc_un $ backupDirWithoutCollectingDirAndFileStatistics abs_dir
     atomically $ Ki.await stat_async
     pure root_digest
 
@@ -186,79 +184,81 @@ runBackup
   :: (E.Logging E.:> es, E.Repository E.:> es, BackupCache E.:> es, Tmp E.:> es, BackupStatistics E.:> es, E.IOE E.:> es)
   => E.Eff (RepositoryWrite : es) TreeDigest
   -> E.Eff es Repo.Version
-runBackup m = EU.reallyUnsafeUnliftIO $ \un -> do
+runBackup m = do
   let
     mk_uniq_gate = do
-      running_set <- STMSet.newIO @Digest
+      running_set <- E.unsafeEff_ $ STMSet.newIO @Digest
       pure $ \ !hash' !m -> do
-        !other_is_running <- atomically $ do
+        !other_is_running <- E.unsafeEff_ $ atomically $ do
           !exist <- STMSet.lookup hash' running_set
           unless exist $ STMSet.insert hash' running_set
           pure exist
         unless other_is_running $
-          m `finally` atomically (STMSet.delete hash' running_set)
+          m `finally` E.unsafeEff_ (atomically $ STMSet.delete hash' running_set)
 
   unique_chunk_gate <- mk_uniq_gate
   unique_tree_gate <- mk_uniq_gate
   unique_file_gate <- mk_uniq_gate
 
-  ctr <- init_ctr =<< un Repo.getAES
+  ctr <- (liftIO . init_ctr) =<< Repo.getAES
 
-  root_digest <- Ki.scoped $ \scope -> do
+  root_digest <- E.withSeqEffToIO $ \seq_un -> Ki.scoped $ \scope -> do
     fork_fns <- do
       sem_for_dir <- mk_sem_for_dir
       sem_for_file <- mk_sem_for_file
       pure $ ForkFns (fork_or_wait sem_for_file scope) (fork_or_run_directly sem_for_dir scope)
 
     (root_digest, ()) <-
-      withEmitUnfoldr
-        20
-        (\tbq -> un $ E.evalStaticRep (RepositoryWriteRep scope fork_fns tbq ctr) m)
-        ( \s ->
-            s
-              & S.parMapM
-                (S.maxBuffer 100 . S.eager True)
-                ( \case
-                    UploadTree dir_hash file_name' -> (`finally` D.removeFile (Path.fromAbsFile file_name')) $ do
-                      unique_tree_gate dir_hash . un $ do
-                        added <- addDir' dir_hash (File.readChunks (Path.fromAbsFile file_name'))
-                        when added $ do
-                          BackupSt.modifyStatistic' BackupSt.newDirCount (+ 1)
-                      un $ BackupSt.modifyStatistic' BackupSt.processedDirCount (+ 1)
-                    UploadFile file_hash file_name' opt_st file_size -> (`finally` D.removeFile (Path.fromAbsFile file_name')) $ do
-                      unique_file_gate file_hash . un $ do
-                        added <- do
-                          iv <- E.unsafeEff_ $ retrive_iv_for_bytes file_size ctr
-                          addFile' file_hash file_name' iv
+      (seq_un . E.withUnliftStrategy (E.ConcUnlift E.Ephemeral E.Unlimited)) $
+        withEmitUnfoldr
+          20
+          (\tbq -> E.evalStaticRep (RepositoryWriteRep scope fork_fns tbq ctr) m)
+          ( \s ->
+              s
+                & S.parMapM
+                  (S.maxBuffer 100 . S.eager True)
+                  ( \case
+                      UploadTree dir_hash file_name' -> (`finally` E.unsafeEff_ (D.removeFile $ Path.fromAbsFile file_name')) $ do
+                        unique_tree_gate dir_hash $ do
+                          added <- addDir' dir_hash (File.readChunks (Path.fromAbsFile file_name'))
+                          when added $ do
+                            BackupSt.modifyStatistic' BackupSt.newDirCount (+ 1)
 
-                        when added $ do
-                          BackupSt.modifyStatistic' BackupSt.newFileCount (+ 1)
-                      un $ do
+                        BackupSt.modifyStatistic' BackupSt.processedDirCount (+ 1)
+                      UploadFile file_hash file_name' opt_st file_size -> (`finally` E.unsafeEff_ (D.removeFile $ Path.fromAbsFile file_name')) $ do
+                        unique_file_gate file_hash $ do
+                          added <- do
+                            iv <- E.unsafeEff_ $ retrive_iv_for_bytes file_size ctr
+                            addFile' file_hash file_name' iv
+                          when added $ do
+                            BackupSt.modifyStatistic' BackupSt.newFileCount (+ 1)
+
                         BackupSt.modifyStatistic' BackupSt.processedFileCount (+ 1)
                         for_ opt_st $ \st -> BackupCacheLevelDB.saveCurrentFileHash st file_hash
-                    FindNoChangeFile file_hash st -> un $ do
-                      BackupSt.modifyStatistic' BackupSt.processedFileCount (+ 1)
-                      BackupCacheLevelDB.saveCurrentFileHash st file_hash
-                    UploadChunk chunk_hash chunk_stream -> do
-                      unique_chunk_gate chunk_hash $ un $ do
-                        !added_bytes <- fromIntegral <$> addBlob' chunk_hash (S.morphInner liftIO chunk_stream)
-                        when (added_bytes > 0) $ do
-                          BackupSt.modifyStatistic' BackupSt.uploadedBytes (+ added_bytes)
-                          BackupSt.modifyStatistic' BackupSt.newChunkCount (+ 1)
-                      un $ BackupSt.modifyStatistic' BackupSt.processedChunkCount (+ 1)
-                )
-              & S.fold F.drain
-        )
+                      FindNoChangeFile file_hash st -> do
+                        BackupSt.modifyStatistic' BackupSt.processedFileCount (+ 1)
+                        BackupCacheLevelDB.saveCurrentFileHash st file_hash
+                      UploadChunk chunk_hash chunk_stream -> do
+                        unique_chunk_gate chunk_hash $ do
+                          !added_bytes <- fromIntegral <$> addBlob' chunk_hash (S.morphInner liftIO chunk_stream)
+                          when (added_bytes > 0) $ do
+                            BackupSt.modifyStatistic' BackupSt.uploadedBytes (+ added_bytes)
+                            BackupSt.modifyStatistic' BackupSt.newChunkCount (+ 1)
+
+                        BackupSt.modifyStatistic' BackupSt.processedChunkCount (+ 1)
+                  )
+                & S.fold F.drain
+          )
     atomically $ Ki.awaitAll scope
 
     pure root_digest
 
   -- We don't increase iv since it's the end of ctr here.
-  iv <- readTVarIO $ _ctr_iv ctr
+  iv <- liftIO $ readTVarIO $ _ctr_iv ctr
   now <- liftIO getCurrentTime
 
   let !v = Repo.Version now root_digest
-  un $ do
+  do
     written_bytes <- Repo.addVersion iv v
     BackupSt.modifyStatistic' BackupSt.uploadedBytes (+ written_bytes)
 
@@ -365,22 +365,24 @@ data ForkFns
 --
 -- This function WON'T collect statistics of directories and files concurrently, which gives you more control.
 backupDirWithoutCollectingDirAndFileStatistics :: (RepositoryWrite E.:> es, BackupCache E.:> es, Tmp E.:> es, E.IOE E.:> es) => Path Path.Abs Path.Dir -> E.Eff es TreeDigest
-backupDirWithoutCollectingDirAndFileStatistics rel_tree_name = Tmp.withEmptyTmpFile $ \file_name' -> EU.reallyUnsafeUnliftIO $ \un -> do
-  RepositoryWriteRep _ (ForkFns file_fork_or_not dir_fork_or_not) tbq _ <- un $ E.getStaticRep @RepositoryWrite
-  !dir_hash <- liftIO $ withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
-    Dir.readEither rel_tree_name
-      & S.mapM
-        ( \case
-            Left f -> file_fork_or_not $ un $ fmap (tree_content_of_file f) $ backup_file $ rel_tree_name </> f
-            Right d -> dir_fork_or_not $ un $ fmap (tree_content_of_tree d) $ backupDirWithoutCollectingDirAndFileStatistics $ rel_tree_name </> d
-        )
-      & S.parSequence (S.ordered True)
-      & S.trace (BC.hPut fd)
-      & S.fold hashByteStringFoldIO
+backupDirWithoutCollectingDirAndFileStatistics rel_tree_name = do
+  RepositoryWriteRep _ (ForkFns file_fork_or_not dir_fork_or_not) tbq _ <- E.getStaticRep @RepositoryWrite
 
-  liftIO $ atomically $ writeTBQueue tbq $ UploadTree dir_hash file_name'
+  Tmp.withEmptyTmpFile $ \file_name' -> EU.withEffToIO (E.ConcUnlift E.Ephemeral E.Unlimited) $ \conc_un -> do
+    !dir_hash <- liftIO $ withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
+      Dir.readEither rel_tree_name
+        & S.mapM
+          ( \case
+              Left f -> file_fork_or_not $ conc_un $ fmap (tree_content_of_file f) $ backup_file $ rel_tree_name </> f
+              Right d -> dir_fork_or_not $ conc_un $ fmap (tree_content_of_tree d) $ backupDirWithoutCollectingDirAndFileStatistics $ rel_tree_name </> d
+          )
+        & S.parSequence (S.ordered True)
+        & S.trace (BC.hPut fd)
+        & S.fold hashByteStringFoldIO
 
-  pure $ UnsafeMkTreeDigest dir_hash
+    liftIO $ atomically $ writeTBQueue tbq $ UploadTree dir_hash file_name'
+
+    pure $ UnsafeMkTreeDigest dir_hash
 
 data DirEntry
   = DirEntryFile {-# UNPACK #-} !FileDigest {-# UNPACK #-} !BS.ByteString
@@ -412,7 +414,7 @@ backup_file rel_file_name = do
     Just cached_digest -> do
       liftIO $ atomically $ writeTBQueue tbq $ FindNoChangeFile cached_digest st
       pure $! UnsafeMkFileDigest cached_digest
-    Nothing -> Tmp.withEmptyTmpFile $ \file_name' -> E.reallyUnsafeUnliftIO $ \un -> do
+    Nothing -> Tmp.withEmptyTmpFile $ \file_name' -> E.withEffToIO (E.ConcUnlift E.Ephemeral E.Unlimited) $ \conc_un -> do
       (!file_hash, !file_size) <- withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd ->
         withBinaryFile (Path.fromAbsFile rel_file_name) ReadMode $ \fdd ->
           Chunker.gearHash Chunker.defaultGearHashConfig (Path.fromAbsFile rel_file_name)
@@ -421,7 +423,7 @@ backup_file rel_file_name = do
                   S.unfold chunkReaderFromToWith (b, e - 1, defaultChunkSize, fdd)
                     & S.fold F.toList
               )
-            & S.parMapM (S.ordered True . S.maxBuffer 8) (un . backup_chunk)
+            & S.parMapM (S.ordered True . S.maxBuffer 8) (conc_un . backup_chunk)
             & S.trace (BS.hPut fd)
             & S.fold (F.tee hashByteStringFoldIO $ F.lmap (fromIntegral . BS.length) F.sum)
 
@@ -437,7 +439,7 @@ backupFileFromBuilder builder = do
   let lbs = BB.toLazyByteStringWith (BB.untrimmedStrategy BB.defaultChunkSize BB.defaultChunkSize) BL.empty builder
   lbs_tvar <- E.unsafeEff_ $ newTVarIO lbs
 
-  Tmp.withEmptyTmpFile $ \file_name' -> E.reallyUnsafeUnliftIO $ \un -> do
+  Tmp.withEmptyTmpFile $ \file_name' -> E.withEffToIO (E.ConcUnlift E.Ephemeral E.Unlimited) $ \conc_un -> do
     (!file_hash, !file_size) <- withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd ->
       S.fromList (BL.toChunks lbs)
         & Chunker.gearHashPure Chunker.defaultGearHashConfig
@@ -448,20 +450,21 @@ backupFileFromBuilder builder = do
               -- Keep the thunk (chunk) and let parMapM evalutes them parallelly.
               pure chunk
           )
-        & S.parMapM (S.ordered True . S.maxBuffer 16) (un . backup_chunk)
+        & S.parMapM (S.ordered True . S.maxBuffer 16) (conc_un . backup_chunk)
         & S.trace (BS.hPut fd)
         & S.fold (F.tee hashByteStringFoldIO $ F.lmap (fromIntegral . BS.length) F.sum)
 
     atomically $ writeTBQueue tbq $ UploadFile file_hash file_name' Nothing file_size
     pure file_hash
 
-backup_chunk :: (RepositoryWrite E.:> es, E.IOE E.:> es) => [Array.Array Word8] -> E.Eff es BS.ByteString
-backup_chunk chunk = E.reallyUnsafeUnliftIO $ \un -> do
-  RepositoryWriteRep _ _ tbq ctr <- un $ E.getStaticRep @RepositoryWrite
+backup_chunk :: (RepositoryWrite E.:> es) => [Array.Array Word8] -> E.Eff es BS.ByteString
+backup_chunk chunk = do
+  RepositoryWriteRep _ _ tbq ctr <- E.getStaticRep @RepositoryWrite
 
   (!chunk_hash, !chunk_length) <-
     S.fromList chunk
       & S.fold (F.tee hashArrayFoldIO (F.lmap Array.byteLength F.sum))
+      & E.unsafeEff_
 
   let
     encrypted_chunk_stream = S.concatEffect $ do
@@ -476,25 +479,25 @@ backup_chunk chunk = E.reallyUnsafeUnliftIO $ \un -> do
         S.fromList chunk
           & encryptCtr aes iv (1024 * 32)
 
-  atomically $ writeTBQueue tbq $ UploadChunk chunk_hash encrypted_chunk_stream
+  E.unsafeEff_ $ atomically $ writeTBQueue tbq $ UploadChunk chunk_hash encrypted_chunk_stream
 
   pure $! digestToByteString chunk_hash -- `BS.snoc` 0x0a
 
-withEmitUnfoldr :: MonadUnliftIO m => Natural -> (TBQueue e -> m a) -> (S.Stream m e -> m b) -> m (a, b)
-withEmitUnfoldr q_size putter go = Un.withRunInIO $ \un -> do
-  tbq <- newTBQueueIO q_size
+withEmitUnfoldr :: Natural -> (TBQueue e -> E.Eff es a) -> (S.Stream (E.Eff es) e -> E.Eff es b) -> E.Eff es (a, b)
+withEmitUnfoldr q_size putter go = do
+  tbq <- E.unsafeEff_ $ newTBQueueIO q_size
 
-  Ki.scoped $ \scope -> do
-    thread_putter <- Ki.fork scope $ un $ putter tbq
+  E.unsafeConcUnliftIO E.Ephemeral E.Unlimited $ \conc_un -> Ki.scoped $ \scope -> do
+    thread_putter <- Ki.fork scope $ conc_un $ putter tbq
 
     let
-      f = do
+      f = E.unsafeEff_ $ do
         e <- atomically $ (Just <$> readTBQueue tbq) <|> (Nothing <$ Ki.await thread_putter)
         case e of
           Just v -> pure (Just (v, ()))
           Nothing -> pure Nothing
 
-    thread_solver <- Ki.fork scope $ un $ go $ S.morphInner liftIO $ S.unfoldrM (\() -> f) ()
+    thread_solver <- Ki.fork scope $ conc_un $ go $ S.unfoldrM (\() -> f) ()
 
     ret_putter <- atomically $ Ki.await thread_putter
     ret_solver <- atomically $ Ki.await thread_solver
@@ -627,36 +630,35 @@ keep_traversing_existed_tree fsc digest_of_existed_tree rel_dir_path_in_tree pos
   -- Pair with UploadTree.
   BackupSt.modifyStatistic' BackupSt.totalDirCount (+ 1)
 
-  fmap Just $ Tmp.withEmptyTmpFile $ \file_name' -> EU.reallyUnsafeUnliftIO $ \un -> do
-    !dir_hash <- liftIO $ withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
+  fmap Just $ Tmp.withEmptyTmpFile $ \file_name' -> EU.withSeqEffToIO $ \seq_un -> do
+    !dir_hash <- withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> seq_un $ do
       !mid_hasher <-
         -- Traverse existed part.
         Repo.catTree digest_of_existed_tree
-          & S.morphInner un
           & S.mapM
             ( \case
                 Left d -> do
                   rel_dir <- Path.parseRelDir $ T.unpack $ Repo.tree_name d
-                  un $ backupDirFromExistedTree sub_fsc (Repo.tree_sha d) (rel_dir_path_in_tree </> rel_dir)
+                  backupDirFromExistedTree sub_fsc (Repo.tree_sha d) (rel_dir_path_in_tree </> rel_dir)
                 Right f -> do
                   rel_file <- Path.parseRelFile $ T.unpack $ Repo.file_name f
-                  un $ backup_file_from_existed_tree sub_fsc (Repo.file_sha f) (rel_dir_path_in_tree </> rel_file)
+                  backup_file_from_existed_tree sub_fsc (Repo.file_sha f) (rel_dir_path_in_tree </> rel_file)
             )
           & S.catMaybes
           & fmap tree_content_from_dir_entry
-          & S.trace (BC.hPut fd)
-          & S.fold (F.morphInner stToIO $ hashByteArrayAccess' $ Hash.init Nothing)
+          & S.trace (liftIO . BC.hPut fd)
+          & S.fold (F.morphInner (liftIO . stToIO) $ hashByteArrayAccess' $ Hash.init Nothing)
 
       -- Traverse added part.
       S.fromList possible_new_entries
         & S.mapM
           ( \(entry_rel_path_in_tree, entry_abs_path_on_filesystem) -> do
-              un $ try_backing_up_file_or_dir entry_rel_path_in_tree entry_abs_path_on_filesystem
+              try_backing_up_file_or_dir entry_rel_path_in_tree entry_abs_path_on_filesystem
           )
         & S.catMaybes
         & fmap tree_content_from_dir_entry
-        & S.trace (BC.hPut fd)
-        & S.fold (F.morphInner stToIO $ F.rmapM finalize $ hashByteArrayAccess' mid_hasher)
+        & S.trace (liftIO . BC.hPut fd)
+        & S.fold (F.morphInner (liftIO . stToIO) $ F.rmapM finalize $ hashByteArrayAccess' mid_hasher)
 
     liftIO $ atomically $ writeTBQueue tbq $ UploadTree dir_hash file_name'
 
