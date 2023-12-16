@@ -652,19 +652,20 @@ keep_traversing_existed_tree fsc digest_of_existed_tree rel_dir_path_in_tree pos
             )
 
       -- Traverse added part.
-      (!digest, !rest_file_size) <- S.fromList possible_new_entries
-        & S.mapM
-          ( \(entry_rel_path_in_tree, entry_abs_path_on_filesystem) -> do
-              try_backing_up_file_or_dir entry_rel_path_in_tree entry_abs_path_on_filesystem
-          )
-        & S.catMaybes
-        & fmap tree_content_from_dir_entry
-        & S.trace (liftIO . BC.hPut fd)
-        & S.fold
-          ( F.tee
-              (F.morphInner (liftIO . stToIO) $ F.rmapM finalize $ hashByteArrayAccess' mid_hasher)
-              (F.lmap (fromIntegral . BS.length) F.sum)
-          )
+      (!digest, !rest_file_size) <-
+        S.fromList possible_new_entries
+          & S.mapM
+            ( \(entry_rel_path_in_tree, entry_abs_path_on_filesystem) -> do
+                try_backing_up_file_or_dir entry_rel_path_in_tree entry_abs_path_on_filesystem
+            )
+          & S.catMaybes
+          & fmap tree_content_from_dir_entry
+          & S.trace (liftIO . BC.hPut fd)
+          & S.fold
+            ( F.tee
+                (F.morphInner (liftIO . stToIO) $ F.rmapM finalize $ hashByteArrayAccess' mid_hasher)
+                (F.lmap (fromIntegral . BS.length) F.sum)
+            )
 
       pure (digest, mid_file_size + rest_file_size)
 
