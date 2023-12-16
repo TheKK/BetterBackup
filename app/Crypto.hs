@@ -4,6 +4,7 @@ module Crypto (
   generateAES128KeyFromEntropy,
   encryptAndVerifyAES128Key,
   decryptAndVerifyAES128Key,
+  renewVerificationBytesAndAES128Key,
 )
 where
 
@@ -67,6 +68,24 @@ encryptAndVerifyAES128Key salt passwd plain_secret = do
     !cipher_secret = encrypt_secret aes_from_user_password plain_secret
 
   pure (verification_bytes, cipher_secret)
+
+renewVerificationBytesAndAES128Key
+  :: (BS.ByteString, BS.ByteString)
+  -- ^ old user salt and password
+  -> (BS.ByteString, BS.ByteString)
+  -- ^ new user salt and password
+  -> BS.ByteString
+  -- ^ encrypted secret
+  -> IO (BS.ByteString, BS.ByteString)
+  -- ^ new verification bytes and encrypted secret
+renewVerificationBytesAndAES128Key (old_salt, old_pass) (new_salt, new_pass) old_cipher_secret = do
+  let key_from_old_password = pbkdf2 (undefined :: AES128) old_pass old_salt
+  aes_from_old_user_password <- case Cipher.cipherInit @AES128 @BS.ByteString key_from_old_password of
+    CryptoPassed aes -> pure aes
+    CryptoFailed err -> error $ show err
+
+  let plain_secret = Cipher.ctrCombine aes_from_old_user_password iv_for_secret old_cipher_secret
+  encryptAndVerifyAES128Key new_salt new_pass plain_secret
 
 decrypt_secret :: BlockCipher cipher => cipher -> BS.ByteString -> IO AES128
 decrypt_secret cipher cipher_secret =
