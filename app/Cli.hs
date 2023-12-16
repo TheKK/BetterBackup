@@ -23,6 +23,7 @@ import Cli.CatChunk (parser_info)
 import Cli.CatFile (parser_info)
 import Cli.CatFileChunks (parser_info)
 import Cli.CatTree (parser_info)
+import Cli.ChangePassword (parser_info)
 import Cli.FamiliarBackup (parser_info)
 import Cli.FamiliarListShareFolders (parser_info)
 import Cli.FamiliarRestore (parser_info)
@@ -57,6 +58,7 @@ cmds = info (helper <*> parser) infoMod
               ]
           , command "gc" Cli.GarbageCollection.parser_info
           , command "integrity-check" Cli.IntegrityCheck.parser_info
+          , command "change-password" Cli.ChangePassword.parser_info
           ]
         ,
           [ commandGroup "Inspection commands"

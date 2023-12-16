@@ -163,6 +163,7 @@ executable better
     other-modules:
       Cli
       Cli.Backup
+      Cli.ChangePassword
       Cli.PatchBackup
       Cli.FamiliarBackup
       Cli.FamiliarRestore
