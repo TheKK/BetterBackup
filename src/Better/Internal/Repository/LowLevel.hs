@@ -352,13 +352,10 @@ addFile' digest file_path iv = do
   unless exist $ do
     aes <- getAES
     putFileFold <- mkPutFileFold
-    -- TODO Let putFileFold works on IO.
-    E.reallyUnsafeUnliftIO $ \un ->
-      File.readChunks (Path.toFilePath file_path)
-        & encryptCtr aes iv (1024 * 32)
-        & S.morphInner E.unsafeEff_
-        & S.fold (putFileFold f)
-        & un
+    File.readChunks (Path.toFilePath file_path)
+      & encryptCtr aes iv (1024 * 32)
+      & S.morphInner E.unsafeEff_
+      & S.fold (putFileFold f)
   pure $! not exist
 
 -- | Add single 'tree' into repository.
@@ -380,13 +377,10 @@ addDir' digest file_path iv = do
   unless exist $ do
     aes <- getAES
     putFileFold <- mkPutFileFold
-    -- TODO Let putFileFold works on IO.
-    E.reallyUnsafeUnliftIO $ \un ->
-      File.readChunks (Path.toFilePath file_path)
-        & encryptCtr aes iv (1024 * 32)
-        & S.morphInner E.unsafeEff_
-        & S.fold (putFileFold f)
-        & un
+    File.readChunks (Path.toFilePath file_path)
+      & encryptCtr aes iv (1024 * 32)
+      & S.morphInner E.unsafeEff_
+      & S.fold (putFileFold f)
   pure $! not exist
 
 -- | Use @Binary Version@ to encode given Version into byte string, then store them.
@@ -413,15 +407,11 @@ addVersion iv v = do
 
   putFileFold <- mkPutFileFold
 
-  -- Safe to use @reallyUnsafeUnliftIO@ since:
-  --   - no fork
-  --   - no change state
-  --   - don't want (IOE :> es)
-  --   - putFileFold should run in IO in the future
-  written_bytes <- E.reallyUnsafeUnliftIO $ \un ->
+  written_bytes <- do
     S.toChunks version_bytes
       & encryptCtr aes iv (1024 * 32)
-      & S.tap (F.morphInner un $ putFileFold f)
+      & S.morphInner E.unsafeEff_
+      & S.tap (putFileFold f)
       & S.fold (F.lmap (fromIntegral . Array.length) F.sum)
 
   pure $! written_bytes
@@ -456,7 +446,7 @@ catFile digest = S.concatEffect $ do
   assertSizeOfFile digest
 
   aes <- getAES
-  E.reallyUnsafeUnliftIO $ \un -> do
+  E.unsafeSeqUnliftIO $ \un -> do
     pure $!
       cat_stuff_under folder_file digest
         & S.morphInner un
@@ -476,7 +466,7 @@ catChunk
   -> S.Stream (E.Eff es) (Array.Array Word8)
 catChunk digest = S.concatEffect $ do
   RepositoryRep _ aes <- E.getStaticRep
-  E.reallyUnsafeUnliftIO $ \un -> do
+  E.unsafeSeqUnliftIO $ \un -> do
     pure $!
       cat_stuff_under folder_chunk digest
         & S.morphInner un
@@ -524,7 +514,7 @@ catVersion digest = do
 catTree :: (E.Repository E.:> es) => TreeDigest -> S.Stream (E.Eff es) (Either Tree FFile)
 catTree tree_sha' = S.concatEffect $ do
   aes <- getAES
-  E.reallyUnsafeUnliftIO $ \un -> do
+  E.unsafeSeqUnliftIO $ \un -> do
     pure $!
       cat_stuff_under folder_tree tree_sha'
         & S.morphInner un
