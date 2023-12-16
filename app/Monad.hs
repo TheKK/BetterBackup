@@ -32,7 +32,7 @@ import Database.LevelDB.Base qualified as LV
 
 import Effectful qualified as E
 
-import Better.Internal.Repository.LowLevel (runRepository)
+import Better.Internal.Repository.LowLevel (Version, runRepository)
 import Better.Logging.Effect (logging, runLogging)
 import Better.Logging.Effect qualified as E
 import Better.Repository qualified as Repo
@@ -45,7 +45,7 @@ import Better.TempDir.Class (Tmp)
 
 import System.Directory qualified as D
 import System.Environment.Blank (getEnv)
-import System.IO (hGetEcho, hSetEcho, stdin, stderr)
+import System.IO (hGetEcho, hSetEcho, stderr, stdin)
 import System.IO.Error qualified as IOE
 import System.IO.Temp (withSystemTempDirectory)
 import System.Posix qualified as P
@@ -90,7 +90,7 @@ runReadonlyRepositoryFromCwd m = E.runEff $ runHandleScribeKatip $ do
   m
     & runRepository repository aes
 
-runRepositoryForBackupFromCwd :: E.Eff [Tmp, BackupStatistics, BackupCache, E.Repository, E.Logging, E.IOE] a -> IO a
+runRepositoryForBackupFromCwd :: E.Eff [Tmp, BackupStatistics, BackupCache, E.Repository, E.Logging, E.IOE] Version -> IO Version
 runRepositoryForBackupFromCwd m = do
   cwd <- P.getWorkingDirectory >>= Path.parseAbsDir
   config <- LocalCache.readConfig cwd
@@ -116,13 +116,13 @@ runRepositoryForBackupFromCwd m = do
         (`onException` try_removing "cur") $
           withSystemTempDirectory ("better-tmp-" <> show pid <> "-") $ \raw_tmp_dir -> do
             abs_tmp_dir <- Path.parseAbsDir raw_tmp_dir
-            E.runEff $
-              runHandleScribeKatip $ do
-                aes <- extract_block_cipher config
-                runRepository repository aes $
-                  runBackupCacheLevelDB prev cur $
-                    runBackupStatistics $
-                      runTmp abs_tmp_dir m
+            E.runEff . runHandleScribeKatip $ do
+              aes <- extract_block_cipher config
+              m
+                & runTmp abs_tmp_dir
+                & runBackupStatistics
+                & runBackupCacheLevelDB prev cur
+                & runRepository repository aes
 
   try_removing "prev.bac"
   D.renameDirectory "prev" "prev.bac"
