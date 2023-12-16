@@ -20,14 +20,16 @@ module Better.Logging.Effect (
   runLogging,
 ) where
 
-import Control.Exception (Exception (), SomeAsyncException (SomeAsyncException), SomeException, catch, fromException, throwIO, toException)
+import Control.Exception (Exception (), SomeAsyncException (SomeAsyncException), SomeException, fromException, toException)
 
-import qualified Effectful as E
-import qualified Effectful.Dispatch.Static as ES
+import Effectful qualified as E
+import Effectful.Dispatch.Static qualified as E
+import Effectful.Dispatch.Static qualified as ES
 
-import qualified Effectful.Dispatch.Static as E
-import qualified Effectful.Dispatch.Static.Unsafe as E
-import qualified Katip
+import Katip qualified
+
+import Control.Monad (when)
+import Control.Monad.Catch (MonadThrow (throwM), catch)
 
 import GHC.Stack (withFrozenCallStack)
 
@@ -52,15 +54,13 @@ loggingWithoutLoc s msg = withFrozenCallStack $ do
   E.unsafeEff_ $ Katip.runKatipContextT env ctx ns $ Katip.logItemM Nothing s msg
 
 loggingOnSyncException :: (E.HasCallStack, Logging E.:> es) => Katip.Severity -> Katip.LogStr -> E.Eff es a -> E.Eff es a
-loggingOnSyncException s msg eff = withFrozenCallStack $ E.reallyUnsafeUnliftIO $ \un -> do
-  LoggingRep env ns ctx <- un ES.getStaticRep
-  un eff `catch` \(e :: SomeException) ->
-    let
-      logStr = mconcat [msg, ": exception raised: ", Katip.ls (show e)]
-    in
-      if is_sync_exception e
-        then Katip.runKatipContextT env ctx ns (Katip.logLocM s logStr) >> throwIO e
-        else throwIO e
+loggingOnSyncException s msg eff = withFrozenCallStack $ do
+  LoggingRep env ns ctx <- ES.getStaticRep
+  eff `catch` \(e :: SomeException) -> do
+    let logStr = mconcat [msg, ": exception raised: ", Katip.ls (show e)]
+    when (is_sync_exception e) $ do
+      E.unsafeEff_ $ Katip.runKatipContextT env ctx ns $ Katip.logLocM s logStr
+    throwM e
 
 is_sync_exception :: Exception e => e -> Bool
 is_sync_exception e = case fromException (toException e) of
