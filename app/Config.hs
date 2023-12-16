@@ -45,9 +45,9 @@ data CipherConfig
   | CipherConfigAES128 AES128Config
 
 data AES128Config = AES128Config
-  { aes128_salt :: BS.ByteString
-  , aes128_secret :: BS.ByteString
-  , aes128_verify :: BS.ByteString
+  { aes128_salt :: !BS.ByteString
+  , aes128_secret :: !BS.ByteString
+  , aes128_verify :: !BS.ByteString
   }
 
 config_toml_codec :: TomlCodec Config
