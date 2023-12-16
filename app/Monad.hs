@@ -124,7 +124,7 @@ runRepositoryForBackupFromCwd m = do
                     runBackupStatistics $
                       runTmp abs_tmp_dir m
 
-  try_removing "prev_bac"
+  try_removing "prev.bac"
   D.renameDirectory "prev" "prev.bac"
   D.renameDirectory "cur" "prev"
   D.removeDirectoryRecursive "prev.bac"
