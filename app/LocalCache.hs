@@ -1,40 +1,56 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE Strict #-}
 {-# LANGUAGE QuasiQuotes #-}
+{-# LANGUAGE Strict #-}
 
-module LocalCache
-  ( initialize
-  , readConfig
-  ) where
+module LocalCache (
+  initialize,
+  overwrite,
+  readConfig,
+) where
 
-import Control.Monad (when, unless)
+import GHC.Stack (HasCallStack)
 
-import qualified Data.Text as T
-import qualified Data.Text.IO as T
+import Control.Monad (unless, when)
 
-import Path (Path, Abs, Rel, File, Dir, (</>), relfile)
-import qualified Path
+import Data.Text qualified as T
+import Data.Text.IO qualified as T
 
-import qualified System.Directory as D
+import Path (Abs, Dir, File, Path, Rel, relfile, (</>))
+import Path qualified
 
-import Config(Config(..))
-import qualified Config
+import System.Directory qualified as D
 
+import Config (Config (..))
+import Config qualified
+
+-- | Initialize @Config@ to given path. It's an error if the file have already existed.
 initialize :: Path.SomeBase Dir -> Config -> IO ()
 initialize cache_p config = do
-    repo_path <- render_to_abs_dir cache_p
+  repo_path <- render_to_abs_dir cache_p
 
-    repo_exists <- D.doesDirectoryExist $ Path.toFilePath repo_path
-    unless repo_exists $ do
-      error $ "path '" <> Path.toFilePath repo_path <> "' does not exist, please construct it properly first"
+  repo_exists <- D.doesDirectoryExist $ Path.toFilePath repo_path
+  unless repo_exists $ do
+    error $ "path '" <> Path.toFilePath repo_path <> "' does not exist, please construct it properly first"
 
-    let config_path = Path.toFilePath $ repo_path </> config_filename
-    config_exists <- D.doesFileExist config_path
-    when config_exists $ do
-      error $ "config file '" <> config_path <> "' has already existed"
+  let config_path = Path.toFilePath $ repo_path </> config_filename
+  config_exists <- D.doesFileExist config_path
+  when config_exists $ do
+    error $ "config file '" <> config_path <> "' has already existed"
 
-    initialize_config repo_path config
+  initialize_config repo_path config
+
+-- | Overwrite @Config@ to given path. It's an error if the file have not existed yet.
+overwrite :: HasCallStack => Path.SomeBase Dir -> Config -> IO ()
+overwrite cache_p config = do
+  repo_path <- render_to_abs_dir cache_p
+
+  let config_path = Path.toFilePath $ repo_path </> config_filename
+  config_exists <- D.doesFileExist config_path
+  unless config_exists $ do
+    error $ "failed to overwrite config file: '" <> config_path <> "' does not exist"
+
+  initialize_config repo_path config
 
 readConfig :: Path Abs Dir -> IO Config
 readConfig cwd = do
@@ -44,8 +60,14 @@ readConfig cwd = do
     Left err -> error $ T.unpack err
     Right config -> pure config
 
+-- | Put @Config@ to given path. The old one WOULD be overwritten.
 initialize_config :: Path Abs Dir -> Config -> IO ()
-initialize_config repo_path = T.writeFile (Path.toFilePath $ repo_path </> config_filename) . Config.renderConfig
+initialize_config repo_path config = do
+  tmp_config_path <- Path.addExtension ".tmp" config_path
+  T.writeFile (Path.toFilePath tmp_config_path) $ Config.renderConfig config
+  D.renameFile (Path.toFilePath tmp_config_path) (Path.toFilePath config_path)
+  where
+    config_path = repo_path </> config_filename
 
 config_filename :: Path Rel File
 config_filename = [relfile|config.toml|]
