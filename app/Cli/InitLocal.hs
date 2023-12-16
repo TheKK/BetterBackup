@@ -5,7 +5,6 @@ module Cli.InitLocal (
 ) where
 
 import Options.Applicative (
-  Parser,
   ParserInfo,
   argument,
   help,
@@ -17,6 +16,8 @@ import Options.Applicative (
 
 import Control.Exception (bracket_)
 
+import Path qualified
+
 import Data.Foldable (Foldable (fold))
 
 import Data.Text.Encoding qualified as TE
@@ -24,13 +25,14 @@ import Data.Text.IO qualified as T
 
 import Data.ByteString qualified as BS
 
+import System.Directory qualified as D
 import System.IO (hGetEcho, hSetEcho, stdin)
 
 import Config (AES128Config (AES128Config), CipherConfig (CipherConfigAES128), Config (Config))
 import Config qualified
 import Crypto (encryptAndVerifyAES128Key, generateAES128KeyFromEntropy)
 import LocalCache qualified
-import Util.Options (absDirRead, someBaseDirRead)
+import Util.Options (absDirRead)
 
 parser_info :: Options.Applicative.ParserInfo (IO ())
 parser_info = Options.Applicative.info (Options.Applicative.helper <*> parser) infoMod
@@ -42,16 +44,17 @@ parser_info = Options.Applicative.info (Options.Applicative.helper <*> parser) i
 
     parser =
       go
-        <$> Options.Applicative.argument
-          someBaseDirRead
+        <$> argument
+          absDirRead
           ( fold
-              [ Options.Applicative.metavar "CACHE_PATH"
-              , Options.Applicative.help "path to store your local cache"
+              [ metavar "REPO_PATH"
+              , help "path to store your backup"
               ]
           )
-        <*> p_local_repo_config
 
-    go cache_path local_repo_config = do
+    go repo_path = do
+      cache_path <- fmap Path.Abs . Path.parseAbsDir =<< D.getCurrentDirectory
+
       T.putStrLn "Please enter your password:"
       user_passwd <- read_passworld_from_stdin
       user_salt <- generateAES128KeyFromEntropy
@@ -60,18 +63,11 @@ parser_info = Options.Applicative.info (Options.Applicative.helper <*> parser) i
 
       (verification_bytes, cipher_secret) <- encryptAndVerifyAES128Key user_salt user_passwd plain_secret
 
-      LocalCache.initialize cache_path $
-        Config local_repo_config $
-          CipherConfigAES128 $
-            AES128Config
-              user_salt
-              cipher_secret
-              verification_bytes
+      let
+        local_repo_config = Config.Local $ Config.LocalRepoConfig repo_path
+        aes_cipher_config = CipherConfigAES128 (AES128Config user_salt cipher_secret verification_bytes)
 
-p_local_repo_config :: Parser Config.RepoType
-p_local_repo_config =
-  Config.Local . Config.LocalRepoConfig
-    <$> argument absDirRead (metavar "REPO_PATH" <> help "path to store your backup")
+      LocalCache.initialize cache_path $ Config local_repo_config aes_cipher_config
 
 read_passworld_from_stdin :: IO BS.ByteString
 read_passworld_from_stdin = do
