@@ -18,12 +18,12 @@ import Options.Applicative (
   progDesc,
  )
 
-import qualified Ki
+import Ki qualified
 
 import Control.Applicative ((<|>))
 import Control.Concurrent (threadDelay)
 import Control.Exception (displayException, mask_)
-import Control.Monad (forever)
+import Control.Monad (forever, void)
 import Control.Monad.IO.Class (MonadIO (liftIO))
 
 import Data.Char (chr, isPrint, isSpace)
@@ -31,26 +31,26 @@ import Data.Foldable (Foldable (fold))
 import Data.Function ((&))
 import Data.Void (Void)
 
-import qualified Streamly.Console.Stdio as Stdio
-import qualified Streamly.Data.Fold as F
-import qualified Streamly.Data.Stream as S
+import Streamly.Console.Stdio qualified as Stdio
+import Streamly.Data.Fold qualified as F
+import Streamly.Data.Stream qualified as S
 
 import Path (Path)
-import qualified Path
+import Path qualified
 
-import qualified Text.Megaparsec as Mega
-import qualified Text.Megaparsec.Byte as Byte
-import qualified Text.Megaparsec.Byte.Lexer as Lex
+import Text.Megaparsec qualified as Mega
+import Text.Megaparsec.Byte qualified as Byte
+import Text.Megaparsec.Byte.Lexer qualified as Lex
 
-import qualified Data.ByteString as BS
-import qualified Data.ByteString.Char8 as BC
+import Data.ByteString qualified as BS
+import Data.ByteString.Char8 qualified as BC
 
-import qualified Effectful as E
-import qualified Effectful.Dispatch.Static.Unsafe as EU
+import Effectful qualified as E
+import Effectful.Dispatch.Static.Unsafe qualified as EU
 
-import qualified Better.Data.FileSystemChanges as FSC
-import qualified Better.Repository.Backup as Repo
-import qualified Better.Statistics.Backup as BackupSt
+import Better.Data.FileSystemChanges qualified as FSC
+import Better.Repository.Backup qualified as Repo
+import Better.Statistics.Backup qualified as BackupSt
 import Better.Statistics.Backup.Class (
   BackupStatistics,
   newChunkCount,
@@ -66,7 +66,7 @@ import Better.Statistics.Backup.Class (
 
 import Monad (runRepositoryForBackupFromCwd)
 import Streamly.External.ByteString (fromArray)
-import qualified Streamly.Internal.Data.Stream.Chunked as Chunked
+import Streamly.Internal.Data.Stream.Chunked qualified as Chunked
 import Util.Options (treeDigestRead)
 
 parser_info :: ParserInfo (IO ())
@@ -90,13 +90,13 @@ parser_info = info (helper <*> parser) infoMod
     go tree_digest = do
       fsc <- read_filesystem_chagnes_from_stdin
 
-      runRepositoryForBackupFromCwd $ EU.reallyUnsafeUnliftIO $ \un -> do
+      void $ runRepositoryForBackupFromCwd $ EU.reallyUnsafeUnliftIO $ \un -> do
         let
           process_reporter = forever $ do
             mask_ $ un report_backup_stat
             threadDelay (1000 * 1000)
 
-        v <- Ki.scoped $ \scope -> do
+        (v_digest, v) <- Ki.scoped $ \scope -> do
           Ki.fork_ scope process_reporter
 
           un $ do
@@ -108,6 +108,8 @@ parser_info = info (helper <*> parser) infoMod
                 Nothing -> Repo.backupDirFromList [] -- Empty dir
         putStrLn "result:" >> un report_backup_stat
         print v
+
+        pure (v_digest, v)
 
 {-# NOINLINE read_filesystem_chagnes_from_stdin #-}
 read_filesystem_chagnes_from_stdin :: IO FSC.FileSystemChanges

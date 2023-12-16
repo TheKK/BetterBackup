@@ -123,7 +123,6 @@ import Control.Exception (mask_, onException)
 
 import Effectful qualified as E
 import Effectful.Dispatch.Static qualified as E
-import Effectful.Dispatch.Static.Unsafe qualified as E
 
 import Better.Hash (
   ChunkDigest (..),
@@ -137,6 +136,7 @@ import Better.Hash (
   digestToBase16ShortByteString,
   hashByteStringFoldIO,
  )
+import Better.Hash qualified as Hash
 import Better.Internal.Streamly.Array (fastArrayAsPtrUnsafe)
 import Better.Internal.Streamly.Array qualified as BetterArray
 import Better.Internal.Streamly.Crypto.AES (compact, decryptCtr, encryptCtr)
@@ -388,8 +388,8 @@ addVersion
   :: (E.Repository E.:> es)
   => Cipher.IV AES128
   -> Version
-  -> E.Eff es Word64
-  -- ^ Written bytes
+  -> E.Eff es (Word64, Hash.VersionDigest)
+  -- ^ Written bytes and digest of created version
 addVersion iv v = do
   RepositoryRep _ aes <- E.getStaticRep
 
@@ -414,7 +414,7 @@ addVersion iv v = do
       & S.tap (putFileFold f)
       & S.fold (F.lmap (fromIntegral . Array.length) F.sum)
 
-  pure $! written_bytes
+  pure (written_bytes, Hash.UnsafeMkVersionDigest version_digest)
 
 nextBackupVersionId :: (E.Repository E.:> es) => E.Eff es Integer
 nextBackupVersionId = do

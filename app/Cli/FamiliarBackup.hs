@@ -19,26 +19,26 @@ import Options.Applicative (
   str,
  )
 
-import qualified Ki
+import Ki qualified
 
 import Control.Concurrent (threadDelay)
-import Control.Monad (forever, unless)
+import Control.Monad (forever, unless, void)
 import Control.Monad.IO.Class (MonadIO (liftIO))
 
 import Data.Foldable (Foldable (fold), for_)
 import Data.Traversable (for)
 
-import qualified System.Posix as P
+import System.Posix qualified as P
 
-import qualified Path
+import Path qualified
 
-import qualified Data.ByteString.Char8 as BC
+import Data.ByteString.Char8 qualified as BC
 
-import qualified Effectful as E
+import Effectful qualified as E
 
 import Better.Repository.Backup (DirEntry (DirEntryDir))
-import qualified Better.Repository.Backup as Repo
-import qualified Better.Statistics.Backup as BackupSt
+import Better.Repository.Backup qualified as Repo
+import Better.Statistics.Backup qualified as BackupSt
 import Better.Statistics.Backup.Class (
   BackupStatistics,
   newChunkCount,
@@ -55,9 +55,9 @@ import Better.Statistics.Backup.Class (
 import Better.Logging.Effect (logging, loggingOnSyncException)
 import Control.Monad.Catch (MonadThrow (throwM), mask_)
 import Katip (katipAddNamespace)
-import qualified Katip as Log
+import Katip qualified as Log
 import Monad (runRepositoryForBackupFromCwd)
-import qualified System.Directory as D
+import System.Directory qualified as D
 import Util.Options (someBaseDirRead)
 
 parser_info :: ParserInfo (IO ())
@@ -96,7 +96,7 @@ parser_info = info (helper <*> parser) infoMod
           )
 
     go :: Path.SomeBase Path.Dir -> [(String, Path.SomeBase Path.Dir)] -> IO ()
-    go os_config_some_path list_of_share_and_filesystem_some_path = do
+    go os_config_some_path list_of_share_and_filesystem_some_path = void $ do
       runRepositoryForBackupFromCwd $ katipAddNamespace "familiar_backup" $ do
         abs_pwd <- liftIO $ Path.parseAbsDir =<< P.getWorkingDirectory
 
@@ -123,7 +123,7 @@ parser_info = info (helper <*> parser) infoMod
             unless (all snd required_permissions) $ do
               throwM $ userError $ abs_path <> ": permissions are not enough: " <> show required_permissions
 
-        v <- E.withEffToIO (E.ConcUnlift E.Ephemeral E.Unlimited) $ \un -> Ki.scoped $ \scope -> do
+        (v_digest, v) <- E.withEffToIO (E.ConcUnlift E.Ephemeral E.Unlimited) $ \un -> Ki.scoped $ \scope -> do
           Ki.fork_ scope $ un process_reporter
 
           un $ do
@@ -148,6 +148,8 @@ parser_info = info (helper <*> parser) infoMod
         liftIO $ putStrLn "result:"
         report_backup_stat
         liftIO $ print v
+
+        pure (v_digest, v)
 
 report_backup_stat :: (BackupStatistics E.:> es, E.IOE E.:> es) => E.Eff es ()
 report_backup_stat = do

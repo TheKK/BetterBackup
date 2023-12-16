@@ -72,8 +72,6 @@ import Streamly.Internal.Data.Array.Type qualified as Array (byteLength)
 
 import Streamly.Internal.System.IO (defaultChunkSize)
 
-import Streamly.FileSystem.File qualified as File
-
 import System.Directory qualified as D
 import System.Environment (lookupEnv)
 import System.FilePath qualified as FP
@@ -173,7 +171,7 @@ data instance E.StaticRep RepositoryWrite
 runBackup
   :: (E.Logging E.:> es, E.Repository E.:> es, BackupCache E.:> es, Tmp E.:> es, BackupStatistics E.:> es, E.IOE E.:> es)
   => E.Eff (RepositoryWrite : es) TreeDigest
-  -> E.Eff es Repo.Version
+  -> E.Eff es (Hash.VersionDigest, Repo.Version)
 runBackup m = do
   let
     mk_uniq_gate = do
@@ -250,11 +248,11 @@ runBackup m = do
   now <- liftIO getCurrentTime
 
   let !v = Repo.Version now root_digest
-  do
-    written_bytes <- Repo.addVersion iv v
-    BackupSt.modifyStatistic' BackupSt.uploadedBytes (+ written_bytes)
 
-  pure v
+  (written_bytes, v_digest) <- Repo.addVersion iv v
+  BackupSt.modifyStatistic' BackupSt.uploadedBytes (+ written_bytes)
+
+  pure (v_digest, v)
 
 data UploadTask
   = -- | User MUST ensure that all content matches to same tree for correct result.

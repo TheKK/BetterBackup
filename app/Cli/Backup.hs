@@ -16,25 +16,36 @@ import Options.Applicative (
   progDesc,
  )
 
-import qualified Ki
+import Ki qualified
 
 import Control.Concurrent (threadDelay)
 import Control.Exception (mask_)
-import Control.Monad (forever)
+import Control.Monad (forever, void)
 import Control.Monad.IO.Class (MonadIO (liftIO))
 
 import Data.Foldable (Foldable (fold))
 
-import qualified System.Posix as P
+import System.Posix qualified as P
 
-import qualified Path
+import Path qualified
 
-import qualified Effectful as E
-import qualified Effectful.Dispatch.Static.Unsafe as EU
+import Effectful qualified as E
+import Effectful.Dispatch.Static.Unsafe qualified as EU
 
-import qualified Better.Repository.Backup as Repo
-import qualified Better.Statistics.Backup as BackupSt
-import Better.Statistics.Backup.Class (BackupStatistics, newChunkCount, newDirCount, newFileCount, processedChunkCount, processedDirCount, processedFileCount, totalDirCount, totalFileCount, uploadedBytes)
+import Better.Repository.Backup qualified as Repo
+import Better.Statistics.Backup qualified as BackupSt
+import Better.Statistics.Backup.Class (
+  BackupStatistics,
+  newChunkCount,
+  newDirCount,
+  newFileCount,
+  processedChunkCount,
+  processedDirCount,
+  processedFileCount,
+  totalDirCount,
+  totalFileCount,
+  uploadedBytes,
+ )
 
 import Monad (runRepositoryForBackupFromCwd)
 import Util.Options (someBaseDirRead)
@@ -57,7 +68,7 @@ parser_info = info (helper <*> parser) infoMod
               ]
           )
 
-    go dir_to_backup = runRepositoryForBackupFromCwd $ EU.reallyUnsafeUnliftIO $ \un -> do
+    go dir_to_backup = void $ runRepositoryForBackupFromCwd $ EU.reallyUnsafeUnliftIO $ \un -> do
       let
         process_reporter = forever $ do
           mask_ $ un report_backup_stat
@@ -69,7 +80,7 @@ parser_info = info (helper <*> parser) infoMod
           Path.Abs dir -> dir
           Path.Rel dir -> abs_pwd Path.</> dir
 
-      v <- Ki.scoped $ \scope -> do
+      (v_digest, v) <- Ki.scoped $ \scope -> do
         Ki.fork_ scope process_reporter
         un $ do
           Repo.runBackup $ do
@@ -77,6 +88,8 @@ parser_info = info (helper <*> parser) infoMod
 
       putStrLn "result:" >> un report_backup_stat
       print v
+
+      pure (v_digest, v)
 
 report_backup_stat :: (BackupStatistics E.:> es, E.IOE E.:> es) => E.Eff es ()
 report_backup_stat = do

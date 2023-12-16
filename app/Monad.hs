@@ -17,25 +17,30 @@ module Monad (
 import Path qualified
 
 import Control.Exception (bracket, bracket_)
-import Control.Monad (void)
+import Control.Monad (unless, void)
 import Control.Monad.Catch (onException, tryJust)
 import Control.Monad.IO.Class (liftIO)
 
 import Crypto.Cipher.AES (AES128)
 
 import Data.ByteString qualified as BS
+import Data.Coerce (coerce)
+import Data.Foldable (fold)
 import Data.Function ((&))
 import Data.Maybe (fromMaybe)
+import Data.Text qualified as T
 import Data.Text.IO qualified as T
 
 import Database.LevelDB.Base qualified as LV
 
 import Effectful qualified as E
 
+import Better.Hash (VersionDigest)
+import Better.Hash qualified as Hash
 import Better.Internal.Repository.LowLevel (Version, runRepository)
+import Better.Internal.Repository.LowLevel qualified as Repo
 import Better.Logging.Effect (logging, runLogging)
 import Better.Logging.Effect qualified as E
-import Better.Repository qualified as Repo
 import Better.Repository.BackupCache.Class (BackupCache)
 import Better.Repository.BackupCache.LevelDB (runBackupCacheLevelDB)
 import Better.Repository.Class qualified as E
@@ -90,7 +95,7 @@ runReadonlyRepositoryFromCwd m = E.runEff $ runHandleScribeKatip $ do
   m
     & runRepository repository aes
 
-runRepositoryForBackupFromCwd :: E.Eff [Tmp, BackupStatistics, BackupCache, E.Repository, E.Logging, E.IOE] Version -> IO Version
+runRepositoryForBackupFromCwd :: E.Eff [Tmp, BackupStatistics, BackupCache, E.Repository, E.Logging, E.IOE] (VersionDigest, Version) -> IO (VersionDigest, Version)
 runRepositoryForBackupFromCwd m = do
   cwd <- P.getWorkingDirectory >>= Path.parseAbsDir
   config <- LocalCache.readConfig cwd
@@ -109,20 +114,45 @@ runRepositoryForBackupFromCwd m = do
   -- Remove cur before using it to prevent dirty env.
   try_removing "cur"
 
-  ret <-
-    LV.withDB "prev" (LV.defaultOptions{LV.createIfMissing = True}) $ \prev ->
-      LV.withDB "cur" (LV.defaultOptions{LV.createIfMissing = True, LV.errorIfExists = True}) $ \cur ->
-        -- Remove cur if failed to backup and keep prev intact.
-        (`onException` try_removing "cur") $
-          withSystemTempDirectory ("better-tmp-" <> show pid <> "-") $ \raw_tmp_dir -> do
-            abs_tmp_dir <- Path.parseAbsDir raw_tmp_dir
-            E.runEff . runHandleScribeKatip $ do
-              aes <- extract_block_cipher config
-              m
-                & runTmp abs_tmp_dir
-                & runBackupStatistics
-                & runBackupCacheLevelDB prev cur
-                & runRepository repository aes
+  let version_tag = "version_base16_digest" :: BS.ByteString
+
+  ret <- E.runEff . runHandleScribeKatip $ do
+    aes <- extract_block_cipher config
+    runRepository repository aes $
+      E.withSeqEffToIO $ \seq_un -> do
+        -- Prev DB is invalid if we can't find corresponding version. In that case we can't tell if the 'file'
+        -- is DB still exists in repository.
+        prev_db_is_valid <- LV.withDB "prev" (LV.defaultOptions{LV.createIfMissing = True}) $ \prev -> do
+          opt_v <- LV.get prev LV.defaultReadOptions version_tag
+          case opt_v >>= Hash.digestFromByteString of
+            Just raw_digest -> seq_un $ do
+              exists <- Repo.doesVersionExists $ Hash.UnsafeMkVersionDigest raw_digest
+              logging Katip.DebugS . fold $
+                [ Katip.ls @T.Text "version digest from prev DB, "
+                , Katip.showLS raw_digest
+                , Katip.ls @T.Text $ if exists then ", exists" else ", doesn't exist"
+                ]
+              pure $! exists
+            Nothing -> pure False
+
+        unless prev_db_is_valid $ do
+          seq_un $ logging Katip.InfoS $ Katip.ls @T.Text "remove prev DB since it's invalid"
+          try_removing "prev"
+
+        withSystemTempDirectory ("better-tmp-" <> show pid <> "-") $ \raw_tmp_dir -> do
+          LV.withDB "prev" (LV.defaultOptions{LV.createIfMissing = True}) $ \prev -> do
+            LV.withDB "cur" (LV.defaultOptions{LV.createIfMissing = True, LV.errorIfExists = True}) $ \cur -> do
+              -- Remove cur if failed to backup and keep prev intact.
+              (`onException` try_removing "cur") $ do
+                abs_tmp_dir <- Path.parseAbsDir raw_tmp_dir
+                (v_digest, v) <-
+                  m
+                    & runTmp abs_tmp_dir
+                    & runBackupStatistics
+                    & runBackupCacheLevelDB prev cur
+                    & seq_un
+                LV.put cur LV.defaultWriteOptions version_tag (Hash.digestToByteString $ coerce v_digest)
+                pure (v_digest, v)
 
   try_removing "prev.bac"
   D.renameDirectory "prev" "prev.bac"
