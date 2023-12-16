@@ -446,7 +446,7 @@ catFile digest = S.concatEffect $ do
   assertSizeOfFile digest
 
   aes <- getAES
-  E.unsafeSeqUnliftIO $ \un -> do
+  E.unsafeConcUnliftIO E.Ephemeral E.Unlimited $ \un -> do
     pure $!
       cat_stuff_under folder_file digest
         & S.morphInner un
@@ -466,7 +466,7 @@ catChunk
   -> S.Stream (E.Eff es) (Array.Array Word8)
 catChunk digest = S.concatEffect $ do
   RepositoryRep _ aes <- E.getStaticRep
-  E.unsafeSeqUnliftIO $ \un -> do
+  E.unsafeConcUnliftIO E.Ephemeral E.Unlimited $ \un -> do
     pure $!
       cat_stuff_under folder_chunk digest
         & S.morphInner un
@@ -514,7 +514,7 @@ catVersion digest = do
 catTree :: (E.Repository E.:> es) => TreeDigest -> S.Stream (E.Eff es) (Either Tree FFile)
 catTree tree_sha' = S.concatEffect $ do
   aes <- getAES
-  E.unsafeSeqUnliftIO $ \un -> do
+  E.unsafeConcUnliftIO E.Ephemeral E.Unlimited $ \un -> do
     pure $!
       cat_stuff_under folder_tree tree_sha'
         & S.morphInner un
