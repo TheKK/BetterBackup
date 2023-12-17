@@ -19,8 +19,6 @@ import Options.Applicative (
   str,
  )
 
-import Ki qualified
-
 import Control.Concurrent (threadDelay)
 import Control.Monad (forever, unless, void)
 import Control.Monad.IO.Class (MonadIO (liftIO))
@@ -35,6 +33,7 @@ import Path qualified
 import Data.ByteString.Char8 qualified as BC
 
 import Effectful qualified as E
+import Effectful.Ki qualified as EKi
 
 import Better.Repository.Backup (DirEntry (DirEntryDir))
 import Better.Repository.Backup qualified as Repo
@@ -123,27 +122,26 @@ parser_info = info (helper <*> parser) infoMod
             unless (all snd required_permissions) $ do
               throwM $ userError $ abs_path <> ": permissions are not enough: " <> show required_permissions
 
-        (v_digest, v) <- E.withEffToIO (E.ConcUnlift E.Ephemeral E.Unlimited) $ \un -> Ki.scoped $ \scope -> do
-          Ki.fork_ scope $ un process_reporter
+        (v_digest, v) <- EKi.scoped $ \scope -> do
+          EKi.fork_ scope process_reporter
 
-          un $ do
-            logging Log.InfoS "start familiar backup"
-            Repo.runBackup $ do
-              logging Log.InfoS $ Log.ls $ "backup os config from " <> Path.toFilePath (to_abs os_config_some_path)
-              os_dir_digest <- Repo.backup_dir $ to_abs os_config_some_path
+          logging Log.InfoS "start familiar backup"
+          Repo.runBackup $ do
+            logging Log.InfoS $ Log.ls $ "backup os config from " <> Path.toFilePath (to_abs os_config_some_path)
+            os_dir_digest <- Repo.backup_dir $ to_abs os_config_some_path
 
-              logging Log.InfoS $ Log.ls $ "backup shares" <> show list_of_share_and_filesystem_some_path
-              share_dir_digest <- do
-                dir_entry_of_shares <- for list_of_share_and_filesystem_some_path $ \(share_name, share_some_path) -> do
-                  logging Log.InfoS $ Log.ls $ "backup share from " <> Path.toFilePath (to_abs share_some_path)
-                  !digest <- Repo.backup_dir $ to_abs share_some_path
-                  pure $! Repo.DirEntryDir digest (BC.pack share_name)
-                Repo.backupDirFromList dir_entry_of_shares
+            logging Log.InfoS $ Log.ls $ "backup shares" <> show list_of_share_and_filesystem_some_path
+            share_dir_digest <- do
+              dir_entry_of_shares <- for list_of_share_and_filesystem_some_path $ \(share_name, share_some_path) -> do
+                logging Log.InfoS $ Log.ls $ "backup share from " <> Path.toFilePath (to_abs share_some_path)
+                !digest <- Repo.backup_dir $ to_abs share_some_path
+                pure $! Repo.DirEntryDir digest (BC.pack share_name)
+              Repo.backupDirFromList dir_entry_of_shares
 
-              Repo.backupDirFromList
-                [ DirEntryDir os_dir_digest "@OS_CONFIG"
-                , DirEntryDir share_dir_digest "@SHARES"
-                ]
+            Repo.backupDirFromList
+              [ DirEntryDir os_dir_digest "@OS_CONFIG"
+              , DirEntryDir share_dir_digest "@SHARES"
+              ]
 
         liftIO $ putStrLn "result:"
         report_backup_stat
