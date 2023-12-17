@@ -29,7 +29,7 @@ import Better.Hash (TreeDigest)
 
 import Monad (runReadonlyRepositoryFromCwd)
 import Repository.Restore (restoreTreeInBFS, restoreTreeInDFS, runParallelRestore)
-import Util.Options (treeDigestRead, someBaseDirRead)
+import Util.Options (someBaseDirRead, treeDigestRead)
 
 parser_info :: ParserInfo (IO ())
 parser_info = info (helper <*> parser) infoMod
