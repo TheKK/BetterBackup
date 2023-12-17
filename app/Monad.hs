@@ -141,9 +141,9 @@ runRepositoryForBackupFromCwd m = do
 
         withSystemTempDirectory ("better-tmp-" <> show pid <> "-") $ \raw_tmp_dir -> do
           LV.withDB "prev" (LV.defaultOptions{LV.createIfMissing = True}) $ \prev -> do
-            LV.withDB "cur" (LV.defaultOptions{LV.createIfMissing = True, LV.errorIfExists = True}) $ \cur -> do
-              -- Remove cur if failed to backup and keep prev intact.
-              (`onException` try_removing "cur") $ do
+            -- Remove cur if failed to backup and keep prev intact.
+            (`onException` try_removing "cur") $
+              LV.withDB "cur" (LV.defaultOptions{LV.createIfMissing = True, LV.errorIfExists = True}) $ \cur -> do
                 abs_tmp_dir <- Path.parseAbsDir raw_tmp_dir
                 (v_digest, v) <-
                   m
