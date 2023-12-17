@@ -16,11 +16,9 @@ import Options.Applicative (
   progDesc,
  )
 
-import Ki qualified
-
 import Control.Concurrent (threadDelay)
-import Control.Exception (mask_)
 import Control.Monad (forever, void)
+import Control.Monad.Catch (mask_)
 import Control.Monad.IO.Class (MonadIO (liftIO))
 
 import Data.Foldable (Foldable (fold))
@@ -30,7 +28,7 @@ import System.Posix qualified as P
 import Path qualified
 
 import Effectful qualified as E
-import Effectful.Dispatch.Static.Unsafe qualified as EU
+import Effectful.Ki qualified as EKi
 
 import Better.Repository.Backup qualified as Repo
 import Better.Statistics.Backup qualified as BackupSt
@@ -68,11 +66,11 @@ parser_info = info (helper <*> parser) infoMod
               ]
           )
 
-    go dir_to_backup = void $ runRepositoryForBackupFromCwd $ EU.reallyUnsafeUnliftIO $ \un -> do
+    go dir_to_backup = void $ runRepositoryForBackupFromCwd $ EKi.runStructuredConcurrency $ do
       let
         process_reporter = forever $ do
-          mask_ $ un report_backup_stat
-          threadDelay (1000 * 1000)
+          mask_ report_backup_stat
+          liftIO $ threadDelay (1000 * 1000)
 
       abs_pwd <- liftIO $ Path.parseAbsDir =<< P.getWorkingDirectory
       let
@@ -80,14 +78,13 @@ parser_info = info (helper <*> parser) infoMod
           Path.Abs dir -> dir
           Path.Rel dir -> abs_pwd Path.</> dir
 
-      (v_digest, v) <- Ki.scoped $ \scope -> do
-        Ki.fork_ scope process_reporter
-        un $ do
-          Repo.runBackup $ do
-            Repo.backup_dir abs_dir
+      (v_digest, v) <- EKi.scoped $ \scope -> do
+        EKi.fork_ scope process_reporter
+        Repo.runBackup $ do
+          Repo.backup_dir abs_dir
 
-      putStrLn "result:" >> un report_backup_stat
-      print v
+      liftIO (putStrLn "result:") >> report_backup_stat
+      liftIO $ print v
 
       pure (v_digest, v)
 
