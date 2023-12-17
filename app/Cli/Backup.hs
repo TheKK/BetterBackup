@@ -66,7 +66,7 @@ parser_info = info (helper <*> parser) infoMod
               ]
           )
 
-    go dir_to_backup = void $ runRepositoryForBackupFromCwd $ EKi.runStructuredConcurrency $ do
+    go dir_to_backup = void $ runRepositoryForBackupFromCwd $ do
       let
         process_reporter = forever $ do
           mask_ report_backup_stat

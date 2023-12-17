@@ -34,6 +34,8 @@ import Data.Text.IO qualified as T
 import Database.LevelDB.Base qualified as LV
 
 import Effectful qualified as E
+import Effectful.Ki (StructuredConcurrency)
+import Effectful.Ki qualified as EKi
 
 import Better.Hash (VersionDigest)
 import Better.Hash qualified as Hash
@@ -81,7 +83,7 @@ extract_block_cipher config = E.withSeqEffToIO $ \un -> case Config.config_ciphe
           read_passworld_from_stdin
     Crypto.decryptAndVerifyAES128Key (Config.aes128_salt cfg) password (Config.aes128_verify cfg) (Config.aes128_secret cfg)
 
-runReadonlyRepositoryFromCwd :: E.Eff '[E.Repository, E.Logging, E.IOE] a -> IO a
+runReadonlyRepositoryFromCwd :: E.Eff '[StructuredConcurrency, E.Repository, E.Logging, E.IOE] a -> IO a
 runReadonlyRepositoryFromCwd m = E.runEff $ runHandleScribeKatip $ do
   cwd <- liftIO P.getWorkingDirectory >>= Path.parseAbsDir
   config <- liftIO $ LocalCache.readConfig cwd
@@ -93,9 +95,10 @@ runReadonlyRepositoryFromCwd m = E.runEff $ runHandleScribeKatip $ do
   aes <- extract_block_cipher config
 
   m
+    & EKi.runStructuredConcurrency
     & runRepository repository aes
 
-runRepositoryForBackupFromCwd :: E.Eff [Tmp, BackupStatistics, BackupCache, E.Repository, E.Logging, E.IOE] (VersionDigest, Version) -> IO (VersionDigest, Version)
+runRepositoryForBackupFromCwd :: E.Eff [StructuredConcurrency, Tmp, BackupStatistics, BackupCache, E.Repository, E.Logging, E.IOE] (VersionDigest, Version) -> IO (VersionDigest, Version)
 runRepositoryForBackupFromCwd m = do
   cwd <- P.getWorkingDirectory >>= Path.parseAbsDir
   config <- LocalCache.readConfig cwd
@@ -147,6 +150,7 @@ runRepositoryForBackupFromCwd m = do
                 abs_tmp_dir <- Path.parseAbsDir raw_tmp_dir
                 (v_digest, v) <-
                   m
+                    & EKi.runStructuredConcurrency
                     & runTmp abs_tmp_dir
                     & runBackupStatistics
                     & runBackupCacheLevelDB prev cur
