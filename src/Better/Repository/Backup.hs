@@ -45,8 +45,6 @@ import Data.Word (Word8)
 
 import StmContainers.Set qualified as STMSet
 
-import Ki qualified
-
 import Data.Text qualified as T
 
 import Data.ByteString qualified as BS
@@ -153,25 +151,33 @@ backup_dir
      , Tmp E.:> es
      , BackupStatistics E.:> es
      , E.IOE E.:> es
+     , StructuredConcurrency E.:> es
      )
   => Path Path.Abs Path.Dir
   -> E.Eff es TreeDigest
-backup_dir abs_dir = E.withEffToIO (E.ConcUnlift E.Ephemeral E.Unlimited) $ \conc_un -> do
-  Ki.scoped $ \scope -> do
-    stat_async <- Ki.fork scope (conc_un $ collect_dir_and_file_statistics abs_dir)
-    !root_digest <- conc_un $ backupDirWithoutCollectingDirAndFileStatistics abs_dir
-    atomically $ Ki.await stat_async
-    pure root_digest
+backup_dir abs_dir = EKi.scoped $ \scope -> do
+  stat_async <- EKi.fork scope $ collect_dir_and_file_statistics abs_dir
+  !root_digest <- backupDirWithoutCollectingDirAndFileStatistics abs_dir
+  E.unsafeEff_ $ atomically $ EKi.await stat_async
+  pure root_digest
 
 data instance E.StaticRep RepositoryWrite
-  = RepositoryWriteRep {-# UNPACK #-} !Ki.Scope {-# UNPACK #-} !ForkFns {-# UNPACK #-} !(TBQueue UploadTask) {-# UNPACK #-} !(TVar (Cipher.IV Cipher.AES128))
+  = RepositoryWriteRep {-# UNPACK #-} !EKi.Scope {-# UNPACK #-} !ForkFns {-# UNPACK #-} !(TBQueue UploadTask) {-# UNPACK #-} !(TVar (Cipher.IV Cipher.AES128))
 
 -- | Provide env to run functions which needs capability, RepositoryWrite.
 --
 -- TODO Extract part of this function into a separated effect.
 -- TODO We can't force Digest to be "digest of tree" now, this is bad for users of this API and harms correctness.
 runBackup
-  :: (StructuredConcurrency E.:> es, E.Logging E.:> es, E.Repository E.:> es, BackupCache E.:> es, Tmp E.:> es, BackupStatistics E.:> es, E.IOE E.:> es)
+  :: ( StructuredConcurrency E.:> es
+     , E.Logging E.:> es
+     , E.Repository E.:> es
+     , BackupCache E.:> es
+     , Tmp E.:> es
+     , BackupStatistics E.:> es
+     , E.IOE E.:> es
+     , StructuredConcurrency E.:> es
+     )
   => E.Eff (RepositoryWrite : es) TreeDigest
   -> E.Eff es (Hash.VersionDigest, Repo.Version)
 runBackup m = do
@@ -192,51 +198,50 @@ runBackup m = do
 
   tvar_iv <- liftIO $ newTVarIO =<< init_iv
 
-  root_digest <- E.withSeqEffToIO $ \seq_un -> Ki.scoped $ \scope -> do
+  root_digest <- EKi.scoped $ \scope -> do
     fork_fns <- do
-      sem_for_dir <- mk_sem_for_dir
-      sem_for_file <- mk_sem_for_file
+      sem_for_dir <- E.unsafeEff_ mk_sem_for_dir
+      sem_for_file <- E.unsafeEff_ mk_sem_for_file
       pure $ ForkFns (fork_or_wait sem_for_file scope) (fork_or_run_directly sem_for_dir scope)
 
     root_digest <-
-      seq_un $
-        connectProducerAndComsumers
-          40
-          4 {- num of cores-}
-          (\tbq -> E.evalStaticRep (RepositoryWriteRep scope fork_fns tbq tvar_iv) m)
-          ( \case
-              UploadTree dir_hash file_name' file_size -> (`finally` E.unsafeEff_ (D.removeFile $ Path.fromAbsFile file_name')) $ do
-                unique_tree_gate dir_hash $ do
-                  added <- do
-                    iv <- E.unsafeEff_ $ retrive_iv_for_bytes file_size tvar_iv
-                    addDir' dir_hash file_name' iv
-                  when added $ do
-                    BackupSt.modifyStatistic' BackupSt.newDirCount (+ 1)
+      connectProducerAndComsumers
+        40
+        4 {- num of cores-}
+        (\tbq -> E.evalStaticRep (RepositoryWriteRep scope fork_fns tbq tvar_iv) m)
+        ( \case
+            UploadTree dir_hash file_name' file_size -> (`finally` E.unsafeEff_ (D.removeFile $ Path.fromAbsFile file_name')) $ do
+              unique_tree_gate dir_hash $ do
+                added <- do
+                  iv <- E.unsafeEff_ $ retrive_iv_for_bytes file_size tvar_iv
+                  addDir' dir_hash file_name' iv
+                when added $ do
+                  BackupSt.modifyStatistic' BackupSt.newDirCount (+ 1)
 
-                BackupSt.modifyStatistic' BackupSt.processedDirCount (+ 1)
-              UploadFile file_hash file_name' opt_st file_size -> (`finally` E.unsafeEff_ (D.removeFile $ Path.fromAbsFile file_name')) $ do
-                unique_file_gate file_hash $ do
-                  added <- do
-                    iv <- E.unsafeEff_ $ retrive_iv_for_bytes file_size tvar_iv
-                    addFile' file_hash file_name' iv
-                  when added $ do
-                    BackupSt.modifyStatistic' BackupSt.newFileCount (+ 1)
+              BackupSt.modifyStatistic' BackupSt.processedDirCount (+ 1)
+            UploadFile file_hash file_name' opt_st file_size -> (`finally` E.unsafeEff_ (D.removeFile $ Path.fromAbsFile file_name')) $ do
+              unique_file_gate file_hash $ do
+                added <- do
+                  iv <- E.unsafeEff_ $ retrive_iv_for_bytes file_size tvar_iv
+                  addFile' file_hash file_name' iv
+                when added $ do
+                  BackupSt.modifyStatistic' BackupSt.newFileCount (+ 1)
 
-                BackupSt.modifyStatistic' BackupSt.processedFileCount (+ 1)
-                for_ opt_st $ \st -> BackupCacheLevelDB.saveCurrentFileHash st file_hash
-              FindNoChangeFile file_hash st -> do
-                BackupSt.modifyStatistic' BackupSt.processedFileCount (+ 1)
-                BackupCacheLevelDB.saveCurrentFileHash st file_hash
-              UploadChunk chunk_hash chunk_stream -> do
-                unique_chunk_gate chunk_hash $ do
-                  !added_bytes <- fromIntegral <$> addBlob' chunk_hash (S.morphInner liftIO chunk_stream)
-                  when (added_bytes > 0) $ do
-                    BackupSt.modifyStatistic' BackupSt.uploadedBytes (+ added_bytes)
-                    BackupSt.modifyStatistic' BackupSt.newChunkCount (+ 1)
+              BackupSt.modifyStatistic' BackupSt.processedFileCount (+ 1)
+              for_ opt_st $ \st -> BackupCacheLevelDB.saveCurrentFileHash st file_hash
+            FindNoChangeFile file_hash st -> do
+              BackupSt.modifyStatistic' BackupSt.processedFileCount (+ 1)
+              BackupCacheLevelDB.saveCurrentFileHash st file_hash
+            UploadChunk chunk_hash chunk_stream -> do
+              unique_chunk_gate chunk_hash $ do
+                !added_bytes <- fromIntegral <$> addBlob' chunk_hash (S.morphInner liftIO chunk_stream)
+                when (added_bytes > 0) $ do
+                  BackupSt.modifyStatistic' BackupSt.uploadedBytes (+ added_bytes)
+                  BackupSt.modifyStatistic' BackupSt.newChunkCount (+ 1)
 
-                BackupSt.modifyStatistic' BackupSt.processedChunkCount (+ 1)
-          )
-    atomically $ Ki.awaitAll scope
+              BackupSt.modifyStatistic' BackupSt.processedChunkCount (+ 1)
+        )
+    E.unsafeEff_ $ atomically $ EKi.awaitAll scope
 
     pure root_digest
 
@@ -322,30 +327,32 @@ mk_sem_for_dir = atomically . newTSem . fromMaybe 4 . (readMaybe =<<) =<< lookup
 mk_sem_for_file :: IO QSem
 mk_sem_for_file = newQSem . fromMaybe 4 . (readMaybe =<<) =<< lookupEnv "CORE2"
 
-fork_or_wait :: QSem -> Ki.Scope -> IO a -> IO (IO a)
-fork_or_wait s = \scope io -> do
+fork_or_wait :: (StructuredConcurrency E.:> es) => QSem -> EKi.Scope -> E.Eff es a -> E.Eff es (E.Eff es a)
+fork_or_wait s scope io = do
   a <- mask $ \restore -> do
-    waitQSem s
-    Ki.fork scope (restore io `finally` signalQSem s) `onException` signalQSem s
-  pure $! atomically $ Ki.await a
+    E.unsafeEff_ $ waitQSem s
+    EKi.fork scope (restore io `finally` E.unsafeEff_ (signalQSem s)) `onException` E.unsafeEff_ (signalQSem s)
+  pure $! E.unsafeEff_ $ atomically $ EKi.await a
 
-fork_or_run_directly :: TSem -> Ki.Scope -> IO a -> IO (IO a)
+fork_or_run_directly :: (StructuredConcurrency E.:> es) => TSem -> EKi.Scope -> E.Eff es a -> E.Eff es (E.Eff es a)
 fork_or_run_directly s = \scope io -> mask $ \restore -> do
-  to_fork <- atomically $ (True <$ waitTSem s) <|> pure False
+  to_fork <- E.unsafeEff_ $ atomically $ (True <$ waitTSem s) <|> pure False
   if to_fork
     then do
       -- XXX We never know if we should call `signalTSem` for Ki.fork since we don't know if `finally` on
       -- `io` would be run or not when exception (both sync and async) was thrown.
-      a <- Ki.fork scope (restore io `finally` atomically (signalTSem s)) `onException` atomically (signalTSem s)
-      pure $! restore $ atomically $ Ki.await a
+      a <-
+        EKi.fork scope (restore io `finally` E.unsafeEff_ (atomically $ signalTSem s))
+          `onException` E.unsafeEff_ (atomically $ signalTSem s)
+      pure $! restore $ E.unsafeEff_ $ atomically $ EKi.await a
     else do
       r <- restore io
       pure $! pure r
 
 data ForkFns
   = ForkFns
-      (forall a. IO a -> IO (IO a))
-      (forall a. IO a -> IO (IO a))
+      (forall es a. StructuredConcurrency E.:> es => E.Eff es a -> E.Eff es (E.Eff es a))
+      (forall es a. StructuredConcurrency E.:> es => E.Eff es a -> E.Eff es (E.Eff es a))
 
 -- | Backup specified directory, and only do backup.
 --
@@ -353,23 +360,30 @@ data ForkFns
 --
 -- This function WON'T collect statistics of directories and files concurrently, which gives you more control.
 backupDirWithoutCollectingDirAndFileStatistics
-  :: (E.Repository E.:> es, RepositoryWrite E.:> es, BackupCache E.:> es, Tmp E.:> es, E.IOE E.:> es)
+  :: (E.Repository E.:> es, RepositoryWrite E.:> es, BackupCache E.:> es, Tmp E.:> es, E.IOE E.:> es, StructuredConcurrency E.:> es)
   => Path Path.Abs Path.Dir
   -> E.Eff es TreeDigest
 backupDirWithoutCollectingDirAndFileStatistics rel_tree_name = do
   RepositoryWriteRep _ (ForkFns file_fork_or_not dir_fork_or_not) tbq _ <- E.getStaticRep @RepositoryWrite
 
-  Tmp.withEmptyTmpFile $ \file_name' -> EU.withEffToIO (E.ConcUnlift E.Ephemeral E.Unlimited) $ \conc_un -> do
-    (!dir_hash, !file_size) <- liftIO $ withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
+  Tmp.withEmptyTmpFile $ \file_name' -> EU.withSeqEffToIO $ \seq_un -> do
+    (!dir_hash, !file_size) <- withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
       Dir.readEither rel_tree_name
+        & S.morphInner (E.unsafeEff_)
         & S.mapM
           ( \case
-              Left f -> file_fork_or_not $ conc_un $ fmap (tree_content_of_file f) $ backup_file $ rel_tree_name </> f
-              Right d -> dir_fork_or_not $ conc_un $ fmap (tree_content_of_tree d) $ backupDirWithoutCollectingDirAndFileStatistics $ rel_tree_name </> d
+              Left f -> file_fork_or_not $ fmap (tree_content_of_file f) $ backup_file $ rel_tree_name </> f
+              Right d -> dir_fork_or_not $ fmap (tree_content_of_tree d) $ backupDirWithoutCollectingDirAndFileStatistics $ rel_tree_name </> d
           )
         & S.parSequence (S.ordered True)
-        & S.trace (BC.hPut fd)
-        & S.fold (F.tee hashByteStringFoldIO $ F.lmap (fromIntegral . BS.length) F.sum)
+        & S.trace (E.unsafeEff_ . BC.hPut fd)
+        & S.fold
+          ( F.tee
+              (F.morphInner E.unsafeEff_ hashByteStringFoldIO)
+              $ F.lmap (fromIntegral . BS.length) F.sum
+          )
+        & E.withUnliftStrategy (E.ConcUnlift E.Ephemeral E.Unlimited)
+        & seq_un
 
     liftIO $ atomically $ writeTBQueue tbq $ UploadTree dir_hash file_name' file_size
 
@@ -491,7 +505,7 @@ connectProducerAndComsumers q_size worker_num putter go = do
   EKi.scoped $ \scope -> do
     thread_putter <- EKi.fork scope $ putter tbq
     thread_solvers <- replicateM worker_num $ EKi.fork scope $ fix $ \rec -> do
-      e <- E.unsafeEff_ $ atomically $ (Just <$> readTBQueue tbq) <|> (Nothing <$ Ki.await thread_putter)
+      e <- E.unsafeEff_ $ atomically $ (Just <$> readTBQueue tbq) <|> (Nothing <$ EKi.await thread_putter)
       case e of
         Just v -> go v >> rec
         Nothing -> pure ()
@@ -556,6 +570,7 @@ backupDirFromExistedTree
      , Tmp E.:> es
      , BackupStatistics E.:> es
      , E.IOE E.:> es
+     , StructuredConcurrency E.:> es
      )
   => FSC.FileSystemChanges
   -> TreeDigest
@@ -584,6 +599,7 @@ backup_file_from_existed_tree
      , Tmp E.:> es
      , BackupStatistics E.:> es
      , E.IOE E.:> es
+     , StructuredConcurrency E.:> es
      )
   => FSC.FileSystemChanges
   -> FileDigest
@@ -606,6 +622,7 @@ keep_traversing_existed_tree
      , Tmp E.:> es
      , BackupStatistics E.:> es
      , E.IOE E.:> es
+     , StructuredConcurrency E.:> es
      )
   => FSC.FileSystemChanges
   -> TreeDigest
@@ -680,6 +697,7 @@ try_backing_up_file_or_dir
      , Tmp E.:> es
      , BackupStatistics E.:> es
      , E.IOE E.:> es
+     , StructuredConcurrency E.:> es
      )
   => Path Path.Rel t
   -> Path Path.Abs Path.File
