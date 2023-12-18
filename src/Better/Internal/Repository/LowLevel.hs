@@ -22,7 +22,7 @@ module Better.Internal.Repository.LowLevel (
 
   -- * Write
   removeFiles,
-  addBlob',
+  addChunk',
   addFile',
   addDir',
   addVersion,
@@ -74,7 +74,7 @@ import GHC.Stack (HasCallStack)
 
 import Data.Function ((&))
 import Data.Maybe (fromMaybe)
-import Data.Word (Word32, Word64, Word8)
+import Data.Word (Word64, Word8)
 
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -316,21 +316,31 @@ folder_tree = [Path.reldir|tree|]
 folder_version :: Path Path.Rel Path.Dir
 folder_version = [Path.reldir|version|]
 
-addBlob'
+addChunk'
   :: (E.Repository E.:> es)
   => Digest
-  -> S.Stream (E.Eff es) (Array.Array Word8)
-  -> E.Eff es Word32
+  -> [Array.Array Word8]
+  -> Cipher.IV AES128
+  -> E.Eff es Word64
   -- ^ Bytes written
-addBlob' digest chunks = do
+addChunk' digest chunks iv = do
   file_name' <- Path.parseRelFile $ digest_to_base16_filepath digest
   let f = folder_chunk </> file_name'
   exist <- fileExists f
   if exist
     then pure 0
     else do
+      aes <- getAES
       putFileFold <- mkPutFileFold
-      ((), !len) <- chunks & S.fold (F.tee (putFileFold f) (fromIntegral <$> F.lmap Array.byteLength F.sum))
+      ((), !len) <-
+        S.fromList chunks
+          & encryptCtr aes iv (1024 * 32)
+          & S.morphInner E.unsafeEff_
+          & S.fold
+            ( F.tee
+                (putFileFold f)
+                (fromIntegral <$> F.lmap Array.byteLength F.sum)
+            )
       pure len
 
 -- | Add single 'file' into repository.

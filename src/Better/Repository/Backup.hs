@@ -115,10 +115,9 @@ import Better.Hash (
   hashByteStringFoldIO,
  )
 import Better.Hash qualified as Hash
-import Better.Internal.Repository.LowLevel (addBlob', addDir', addFile', d2b, doesTreeExists)
+import Better.Internal.Repository.LowLevel (addChunk', addDir', addFile', d2b, doesTreeExists)
 import Better.Internal.Repository.LowLevel qualified as Repo
 import Better.Internal.Streamly.Array (chunkReaderFromToWith)
-import Better.Internal.Streamly.Crypto.AES (encryptCtr)
 import Better.Logging.Effect qualified as E
 import Better.Repository.BackupCache.Class (BackupCache)
 import Better.Repository.BackupCache.LevelDB qualified as BackupCacheLevelDB
@@ -232,9 +231,10 @@ runBackup m = do
             FindNoChangeFile file_hash st -> do
               BackupSt.modifyStatistic' BackupSt.processedFileCount (+ 1)
               BackupCacheLevelDB.saveCurrentFileHash st file_hash
-            UploadChunk chunk_hash chunk_stream -> do
+            UploadChunk chunk_hash chunks chunk_size -> do
               unique_chunk_gate chunk_hash $ do
-                !added_bytes <- fromIntegral <$> addBlob' chunk_hash (S.morphInner liftIO chunk_stream)
+                iv <- E.unsafeEff_ $ retrive_iv_for_bytes chunk_size tvar_iv
+                !added_bytes <- addChunk' chunk_hash chunks iv
                 when (added_bytes > 0) $ do
                   BackupSt.modifyStatistic' BackupSt.uploadedBytes (+ added_bytes)
                   BackupSt.modifyStatistic' BackupSt.newChunkCount (+ 1)
@@ -261,7 +261,7 @@ data UploadTask
     UploadTree !Digest !(Path Path.Abs Path.File) !P.FileOffset
   | -- | User MUST ensure that all content matches to same file for correct result.
     UploadFile !Digest !(Path Path.Abs Path.File) !(Maybe P.FileStatus) !P.FileOffset
-  | UploadChunk !Digest !(S.Stream IO (Array.Array Word8))
+  | UploadChunk !Digest ![Array.Array Word8] !P.FileOffset
   | FindNoChangeFile !Digest !P.FileStatus
 
 tree_content_from_dir_entry :: DirEntry -> BS.ByteString
@@ -469,26 +469,17 @@ backupFileFromBuilder builder = do
     pure file_hash
 
 backup_chunk :: (E.Repository E.:> es, RepositoryWrite E.:> es) => [Array.Array Word8] -> E.Eff es BS.ByteString
-backup_chunk chunk = do
+backup_chunk chunks = do
   RepositoryWriteRep _ _ tbq tvar_iv <- E.getStaticRep @RepositoryWrite
 
-  (!chunk_hash, !chunk_length) <-
-    S.fromList chunk
-      & S.fold (F.tee hashArrayFoldIO (F.lmap Array.byteLength F.sum))
-      & E.unsafeEff_
+  E.unsafeEff_ $ do
+    (!chunk_hash, !chunk_length) <-
+      S.fromList chunks
+        & S.fold (F.tee hashArrayFoldIO (fromIntegral <$> F.lmap Array.byteLength F.sum))
 
-  aes <- Repo.getAES
+    atomically $ writeTBQueue tbq $ UploadChunk chunk_hash chunks chunk_length
 
-  let
-    encrypted_chunk_stream = S.concatEffect $ do
-      !iv <- retrive_iv_for_bytes (fromIntegral chunk_length) tvar_iv
-      pure $!
-        S.fromList chunk
-          & encryptCtr aes iv (1024 * 32)
-
-  E.unsafeEff_ $ atomically $ writeTBQueue tbq $ UploadChunk chunk_hash encrypted_chunk_stream
-
-  pure $! digestToByteString chunk_hash -- `BS.snoc` 0x0a
+    pure $! digestToByteString chunk_hash
 
 connectProducerAndComsumers
   :: (StructuredConcurrency E.:> es)
