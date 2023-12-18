@@ -369,7 +369,7 @@ backupDirWithoutCollectingDirAndFileStatistics rel_tree_name = do
   Tmp.withEmptyTmpFile $ \file_name' -> EU.withSeqEffToIO $ \seq_un -> do
     (!dir_hash, !file_size) <- withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
       Dir.readEither rel_tree_name
-        & S.morphInner (E.unsafeEff_)
+        & S.morphInner E.unsafeEff_
         & S.mapM
           ( \case
               Left f -> file_fork_or_not $ fmap (tree_content_of_file f) $ backup_file $ rel_tree_name </> f
