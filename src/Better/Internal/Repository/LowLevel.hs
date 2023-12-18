@@ -257,7 +257,7 @@ localRepo root =
     {-# NOINLINE local_exist #-}
     local_exist = P.fileExist . Path.fromAbsFile . (root </>)
 
-data instance E.StaticRep E.Repository = RepositoryRep Repository AES128
+data instance E.StaticRep E.Repository = RepositoryRep {-# UNPACK #-} !Repository {-# UNPACK #-} !AES128
 
 runRepository :: (E.IOE E.:> es, E.IOE E.:> es) => Repository -> AES128 -> E.Eff (E.Repository : es) a -> E.Eff es a
 runRepository repo cipher = E.evalStaticRep $ RepositoryRep repo cipher
