@@ -161,7 +161,7 @@ backup_dir abs_dir = EKi.scoped $ \scope -> do
   pure root_digest
 
 data instance E.StaticRep RepositoryWrite
-  = RepositoryWriteRep {-# UNPACK #-} !EKi.Scope {-# UNPACK #-} !ForkFns {-# UNPACK #-} !(TBQueue UploadTask) {-# UNPACK #-} !(TVar (Cipher.IV Cipher.AES128))
+  = RepositoryWriteRep {-# UNPACK #-} !EKi.Scope {-# UNPACK #-} !ForkFns {-# UNPACK #-} !(TBQueue UploadTask)
 
 -- | Provide env to run functions which needs capability, RepositoryWrite.
 --
@@ -207,7 +207,7 @@ runBackup m = do
       connectProducerAndComsumers
         40
         4 {- num of cores-}
-        (\tbq -> E.evalStaticRep (RepositoryWriteRep scope fork_fns tbq tvar_iv) m)
+        (\tbq -> E.evalStaticRep (RepositoryWriteRep scope fork_fns tbq) m)
         ( \case
             UploadTree dir_hash file_name' file_size -> (`finally` E.unsafeEff_ (D.removeFile $ Path.fromAbsFile file_name')) $ do
               unique_tree_gate dir_hash $ do
@@ -364,7 +364,7 @@ backupDirWithoutCollectingDirAndFileStatistics
   => Path Path.Abs Path.Dir
   -> E.Eff es TreeDigest
 backupDirWithoutCollectingDirAndFileStatistics rel_tree_name = do
-  RepositoryWriteRep _ (ForkFns file_fork_or_not dir_fork_or_not) tbq _ <- E.getStaticRep @RepositoryWrite
+  RepositoryWriteRep _ (ForkFns file_fork_or_not dir_fork_or_not) tbq <- E.getStaticRep @RepositoryWrite
 
   Tmp.withEmptyTmpFile $ \file_name' -> EU.withSeqEffToIO $ \seq_un -> do
     (!dir_hash, !file_size) <- withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
@@ -395,7 +395,7 @@ data DirEntry
 
 backupDirFromList :: (RepositoryWrite E.:> es, BackupStatistics E.:> es, Tmp E.:> es, E.IOE E.:> es) => [DirEntry] -> E.Eff es TreeDigest
 backupDirFromList inputs = Tmp.withEmptyTmpFile $ \file_name' -> do
-  RepositoryWriteRep _ _ tbq _ <- E.getStaticRep @RepositoryWrite
+  RepositoryWriteRep _ _ tbq <- E.getStaticRep @RepositoryWrite
 
   BackupSt.modifyStatistic' BackupSt.totalDirCount (+ 1)
 
@@ -414,7 +414,7 @@ backup_file
   => Path Path.Abs Path.File
   -> E.Eff es FileDigest
 backup_file rel_file_name = do
-  RepositoryWriteRep _ _ tbq _ <- E.getStaticRep @RepositoryWrite
+  RepositoryWriteRep _ _ tbq <- E.getStaticRep @RepositoryWrite
 
   st <- liftIO $ P.getFileStatus $ Path.fromAbsFile rel_file_name
   to_scan <- BackupCacheLevelDB.tryReadingCacheHash st
@@ -443,7 +443,7 @@ backupFileFromBuilder
   => BB.Builder
   -> E.Eff es Digest
 backupFileFromBuilder builder = do
-  RepositoryWriteRep _ _ tbq _ <- E.getStaticRep @RepositoryWrite
+  RepositoryWriteRep _ _ tbq <- E.getStaticRep @RepositoryWrite
 
   BackupSt.modifyStatistic' BackupSt.totalFileCount (+ 1)
 
@@ -470,7 +470,7 @@ backupFileFromBuilder builder = do
 
 backup_chunk :: (E.Repository E.:> es, RepositoryWrite E.:> es) => [Array.Array Word8] -> E.Eff es BS.ByteString
 backup_chunk chunks = do
-  RepositoryWriteRep _ _ tbq tvar_iv <- E.getStaticRep @RepositoryWrite
+  RepositoryWriteRep _ _ tbq <- E.getStaticRep @RepositoryWrite
 
   E.unsafeEff_ $ do
     (!chunk_hash, !chunk_length) <-
@@ -621,7 +621,7 @@ keep_traversing_existed_tree
   -> [(Path Path.Rel Path.File, Path Path.Abs Path.File)]
   -> E.Eff es (Maybe TreeDigest)
 keep_traversing_existed_tree fsc digest_of_existed_tree rel_dir_path_in_tree possible_new_entries = do
-  RepositoryWriteRep _ _ tbq _ <- E.getStaticRep @RepositoryWrite
+  RepositoryWriteRep _ _ tbq <- E.getStaticRep @RepositoryWrite
 
   let
     -- It's fine to use origin fsc, but using submap should makes lookup faster to traverse down.
