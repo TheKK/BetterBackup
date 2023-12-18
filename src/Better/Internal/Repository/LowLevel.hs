@@ -21,6 +21,7 @@ module Better.Internal.Repository.LowLevel (
   getAES,
 
   -- * Write
+  createDirectory,
   removeFiles,
   addChunk',
   addFile',
