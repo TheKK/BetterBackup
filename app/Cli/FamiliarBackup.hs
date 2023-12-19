@@ -126,7 +126,7 @@ parser_info = info (helper <*> parser) infoMod
           EKi.fork_ scope process_reporter
 
           logging Log.InfoS "start familiar backup"
-          Repo.runBackup $ do
+          Repo.runRepositoryBackup $ Repo.runBackupWorkersWithTBQueue 40 8 $ do
             logging Log.InfoS $ Log.ls $ "backup os config from " <> Path.toFilePath (to_abs os_config_some_path)
             os_dir_digest <- Repo.backup_dir $ to_abs os_config_some_path
 

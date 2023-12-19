@@ -100,7 +100,7 @@ parser_info = info (helper <*> parser) infoMod
           Ki.fork_ scope process_reporter
 
           un $ do
-            Repo.runBackup $ do
+            Repo.runRepositoryBackup $ Repo.runBackupWorkersWithTBQueue 40 8 $ do
               ret <- Repo.backupDirFromExistedTree fsc tree_digest [Path.reldir|.|]
               case ret of
                 Just (Repo.DirEntryDir new_tree_digest _) -> pure new_tree_digest
