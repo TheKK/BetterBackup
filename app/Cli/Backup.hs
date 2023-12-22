@@ -1,4 +1,5 @@
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeOperators #-}
 
@@ -17,15 +18,21 @@ import Options.Applicative (
  )
 
 import Control.Concurrent (threadDelay)
-import Control.Monad (forever, void)
+import Control.Monad (forever, replicateM_, void)
 import Control.Monad.Catch (mask_)
 import Control.Monad.IO.Class (MonadIO (liftIO))
 
 import Data.Foldable (Foldable (fold))
+import Data.Text.Lazy qualified as TL
 
+import System.Console.ANSI qualified as Ansi
+import System.Console.Terminal.Size qualified as Console
 import System.Posix qualified as P
 
 import Path qualified
+
+import Prettyprinter qualified as PP
+import Prettyprinter.Render.Text qualified as PP
 
 import Effectful qualified as E
 import Effectful.Ki qualified as EKi
@@ -45,6 +52,7 @@ import Better.Statistics.Backup.Class (
   uploadedBytes,
  )
 
+import Data.Text.Lazy.IO qualified as TL
 import Monad (runRepositoryForBackupFromCwd)
 import Util.Options (someBaseDirRead)
 
@@ -89,7 +97,23 @@ parser_info = info (helper <*> parser) infoMod
       pure (v_digest, v)
 
 report_backup_stat :: (BackupStatistics E.:> es, E.IOE E.:> es) => E.Eff es ()
-report_backup_stat = do
+report_backup_stat =
+  liftIO Console.size >>= \case
+    Nothing -> pure ()
+    Just (Console.Window _h w) -> do
+      doc_lazy_text <- PP.renderLazy . PP.layoutPretty (PP.LayoutOptions $ PP.AvailablePerLine w 1) <$> mk_backup_stat_doc "Backup"
+      let !doc_height = TL.foldl' (\(!acc) c -> if c == '\n' then acc + 1 else acc) 1 doc_lazy_text
+
+      liftIO $ do
+        -- TODO Maybe there's better way to do this.
+        Ansi.clearLine >> TL.putStrLn ""
+        TL.putStrLn doc_lazy_text
+        replicateM_ (doc_height + 1) $ do
+          Ansi.clearLine
+          Ansi.cursorUpLine 1
+
+mk_backup_stat_doc :: (BackupStatistics E.:> es, E.IOE E.:> es) => String -> E.Eff es (PP.Doc ann)
+mk_backup_stat_doc name = do
   process_file_count <- BackupSt.readStatistics processedFileCount
   new_file_count <- BackupSt.readStatistics newFileCount
   total_file_count <- BackupSt.readStatistics totalFileCount
@@ -99,26 +123,16 @@ report_backup_stat = do
   process_chunk_count <- BackupSt.readStatistics processedChunkCount
   new_chunk_count <- BackupSt.readStatistics newChunkCount
   upload_bytes <- BackupSt.readStatistics uploadedBytes
-  liftIO $
-    putStrLn $
-      fold
-        [ "(new "
-        , show new_file_count
-        , ") "
-        , show process_file_count
-        , "/"
-        , show total_file_count
-        , " processed files, (new "
-        , show new_dir_count
-        , ") "
-        , show process_dir_count
-        , "/"
-        , show total_dir_count
-        , " processed dirs, (new "
-        , show new_chunk_count
-        , ") "
-        , show process_chunk_count
-        , " processed chunks, "
-        , show upload_bytes
-        , " uploaded/transfered bytes"
+
+  pure $
+    PP.hang 2 $
+      PP.sep
+        [ PP.brackets $ PP.pretty name
+        , PP.concatWith
+            (PP.surround $ PP.flatAlt PP.line (PP.comma PP.<> PP.space))
+            [ fold ["(new ", PP.pretty new_file_count, ") ", PP.pretty process_file_count, "/", PP.pretty total_file_count, " processed files"]
+            , fold ["(new ", PP.pretty new_dir_count, ") ", PP.pretty process_dir_count, "/", PP.pretty total_dir_count, " processed dirs"]
+            , fold ["(new ", PP.pretty new_chunk_count, ") ", PP.pretty process_chunk_count, " processed chunks"]
+            , fold [PP.pretty upload_bytes PP.<> " uploaded/tranfered bytes"]
+            ]
         ]
