@@ -82,17 +82,17 @@ runBackupStatistics eff = do
   rep <- mkBackupStatisticsRep
   ES.evalStaticRep (BackupStatisticsRep' rep) eff
 
-runBackupStatisticsWithRep :: (E.IOE E.:> es) => E.StaticRep BackupStatistics -> E.Eff (BackupStatistics : es) a -> E.Eff es a
+runBackupStatisticsWithRep :: (E.IOE E.:> es) => BackupStatisticsRep -> E.Eff (BackupStatistics : es) a -> E.Eff es a
 runBackupStatisticsWithRep rep eff = do
-  ES.evalStaticRep rep eff
+  ES.evalStaticRep (BackupStatisticsRep' rep) eff
 
 localBackupStatistics :: (BackupStatistics E.:> es) => E.Eff es a -> E.Eff es a
 localBackupStatistics eff = do
   rep <- mkBackupStatisticsRep
   ES.localStaticRep (const (BackupStatisticsRep' rep)) eff
 
-localBackupStatisticsWithRep :: (BackupStatistics E.:> es) => E.StaticRep BackupStatistics -> E.Eff es a -> E.Eff es a
-localBackupStatisticsWithRep rep = ES.localStaticRep (const rep)
+localBackupStatisticsWithRep :: (BackupStatistics E.:> es) => BackupStatisticsRep -> E.Eff es a -> E.Eff es a
+localBackupStatisticsWithRep rep = ES.localStaticRep (const $ BackupStatisticsRep' rep)
 
 processedFileCount :: BackupStatistics E.:> es => E.Eff es (TVar Word64)
 processedFileCount = _backup_stat_processedFileCount . coerce <$> ES.getStaticRep @BackupStatistics
