@@ -23,7 +23,9 @@ import Control.Monad.Catch (mask_)
 import Control.Monad.IO.Class (MonadIO (liftIO))
 
 import Data.Foldable (Foldable (fold))
+
 import Data.Text.Lazy qualified as TL
+import Data.Text.Lazy.IO qualified as TL
 
 import System.Console.ANSI qualified as Ansi
 import System.Console.Terminal.Size qualified as Console
@@ -37,22 +39,10 @@ import Prettyprinter.Render.Text qualified as PP
 import Effectful qualified as E
 import Effectful.Ki qualified as EKi
 
+import Better.Bin.Pretty (mkBackupStatisticsDoc)
 import Better.Repository.Backup qualified as Repo
-import Better.Statistics.Backup qualified as BackupSt
-import Better.Statistics.Backup.Class (
-  BackupStatistics,
-  newChunkCount,
-  newDirCount,
-  newFileCount,
-  processedChunkCount,
-  processedDirCount,
-  processedFileCount,
-  totalDirCount,
-  totalFileCount,
-  uploadedBytes,
- )
+import Better.Statistics.Backup.Class (BackupStatistics)
 
-import Data.Text.Lazy.IO qualified as TL
 import Monad (runRepositoryForBackupFromCwd)
 import Util.Options (someBaseDirRead)
 
@@ -101,7 +91,7 @@ report_backup_stat =
   liftIO Console.size >>= \case
     Nothing -> pure ()
     Just (Console.Window _h w) -> do
-      doc_lazy_text <- PP.renderLazy . PP.layoutPretty (PP.LayoutOptions $ PP.AvailablePerLine w 1) <$> mk_backup_stat_doc "Backup"
+      doc_lazy_text <- render_lazy w <$> mkBackupStatisticsDoc (Just "Backup")
       let !doc_height = TL.foldl' (\(!acc) c -> if c == '\n' then acc + 1 else acc) 1 doc_lazy_text
 
       liftIO $ do
@@ -111,28 +101,5 @@ report_backup_stat =
         replicateM_ (doc_height + 1) $ do
           Ansi.clearLine
           Ansi.cursorUpLine 1
-
-mk_backup_stat_doc :: (BackupStatistics E.:> es, E.IOE E.:> es) => String -> E.Eff es (PP.Doc ann)
-mk_backup_stat_doc name = do
-  process_file_count <- BackupSt.readStatistics processedFileCount
-  new_file_count <- BackupSt.readStatistics newFileCount
-  total_file_count <- BackupSt.readStatistics totalFileCount
-  process_dir_count <- BackupSt.readStatistics processedDirCount
-  new_dir_count <- BackupSt.readStatistics newDirCount
-  total_dir_count <- BackupSt.readStatistics totalDirCount
-  process_chunk_count <- BackupSt.readStatistics processedChunkCount
-  new_chunk_count <- BackupSt.readStatistics newChunkCount
-  upload_bytes <- BackupSt.readStatistics uploadedBytes
-
-  pure $
-    PP.hang 2 $
-      PP.sep
-        [ PP.brackets $ PP.pretty name
-        , PP.concatWith
-            (PP.surround $ PP.flatAlt PP.line (PP.comma PP.<> PP.space))
-            [ fold ["(new ", PP.pretty new_file_count, ") ", PP.pretty process_file_count, "/", PP.pretty total_file_count, " processed files"]
-            , fold ["(new ", PP.pretty new_dir_count, ") ", PP.pretty process_dir_count, "/", PP.pretty total_dir_count, " processed dirs"]
-            , fold ["(new ", PP.pretty new_chunk_count, ") ", PP.pretty process_chunk_count, " processed chunks"]
-            , fold [PP.pretty upload_bytes PP.<> " uploaded/tranfered bytes"]
-            ]
-        ]
+  where
+    render_lazy w = PP.renderLazy . PP.layoutPretty (PP.LayoutOptions $ PP.AvailablePerLine w 1)
