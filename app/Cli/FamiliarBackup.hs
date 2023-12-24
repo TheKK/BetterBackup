@@ -1,5 +1,6 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeOperators #-}
 
@@ -20,26 +21,45 @@ import Options.Applicative (
  )
 
 import Control.Concurrent (threadDelay)
-import Control.Monad (forever, unless, void)
+import Control.Concurrent.STM (TVar, atomically, modifyTVar', newTVarIO, readTVarIO)
+import Control.Monad (forever, replicateM_, unless, void)
+import Control.Monad.Catch (MonadThrow (throwM), mask_)
 import Control.Monad.IO.Class (MonadIO (liftIO))
 
-import Data.Foldable (Foldable (fold), for_)
+import Data.ByteString.Char8 qualified as BC
+import Data.Foldable (Foldable (fold, toList), for_)
+import Data.Sequence (Seq)
+import Data.Sequence qualified as Seq
+import Data.Text.Lazy qualified as TL
+import Data.Text.Lazy.IO qualified as TL
 import Data.Traversable (for)
 
+import Prettyprinter (LayoutOptions (LayoutOptions), PageWidth (AvailablePerLine), layoutPretty, vsep)
+import Prettyprinter.Render.Text (renderLazy)
+
+import System.Console.ANSI qualified as Ansi
+import System.Console.Terminal.Size qualified as Console
+import System.Directory qualified as D
 import System.Posix qualified as P
 
 import Path qualified
 
-import Data.ByteString.Char8 qualified as BC
+import Katip (katipAddNamespace)
+import Katip qualified as Log
 
 import Effectful qualified as E
+import Effectful.Concurrent.Async (pooledForConcurrentlyN, runConcurrent)
+import Effectful.Dispatch.Static qualified as E
 import Effectful.Ki qualified as EKi
 
+import Better.Bin.Pretty (mkBackupStatisticsDoc)
+import Better.Logging.Effect (logging, loggingOnSyncException)
 import Better.Repository.Backup (DirEntry (DirEntryDir))
 import Better.Repository.Backup qualified as Repo
 import Better.Statistics.Backup qualified as BackupSt
 import Better.Statistics.Backup.Class (
   BackupStatistics,
+  BackupStatisticsRep,
   newChunkCount,
   newDirCount,
   newFileCount,
@@ -50,13 +70,9 @@ import Better.Statistics.Backup.Class (
   totalFileCount,
   uploadedBytes,
  )
+import Better.Statistics.Backup.Class qualified as BackupSt
 
-import Better.Logging.Effect (logging, loggingOnSyncException)
-import Control.Monad.Catch (MonadThrow (throwM), mask_)
-import Katip (katipAddNamespace)
-import Katip qualified as Log
 import Monad (runRepositoryForBackupFromCwd)
-import System.Directory qualified as D
 import Util.Options (someBaseDirRead)
 
 parser_info :: ParserInfo (IO ())
@@ -104,9 +120,9 @@ parser_info = info (helper <*> parser) infoMod
             Path.Abs dir -> dir
             Path.Rel dir -> abs_pwd Path.</> dir
 
-          process_reporter = forever $ do
-            mask_ report_backup_stat
-            liftIO $ threadDelay (1000 * 1000)
+          process_reporter stat_map_tvar = forever $ do
+            mask_ $ report_backup_stat stat_map_tvar
+            liftIO $ threadDelay (300 * 1000)
 
         logging Log.InfoS "checking permission of pathes"
         loggingOnSyncException Log.ErrorS "checking permission of pathes failed" $
@@ -122,21 +138,34 @@ parser_info = info (helper <*> parser) infoMod
             unless (all snd required_permissions) $ do
               throwM $ userError $ abs_path <> ": permissions are not enough: " <> show required_permissions
 
+        stat_map_tvar <- liftIO $ newTVarIO $ Seq.empty
+        let
+          gen_statistic_rep_for name = do
+            !rep <- BackupSt.mkBackupStatisticsRep
+            liftIO $ atomically $ modifyTVar' stat_map_tvar (Seq.|> (name, rep))
+            pure rep
+
+        stat_os_config <- gen_statistic_rep_for "OS CONFIG"
+        list_of_share <- for list_of_share_and_filesystem_some_path $ \(name, some_path) -> do
+          rep <- gen_statistic_rep_for name
+          pure (name, some_path, rep)
+
         (v_digest, v) <- EKi.scoped $ \scope -> do
-          EKi.fork_ scope process_reporter
+          EKi.fork_ scope $ process_reporter stat_map_tvar
 
           logging Log.InfoS "start familiar backup"
-          Repo.runRepositoryBackup $ Repo.runBackupWorkersWithTBQueue 40 8 $ do
+          Repo.runRepositoryBackup $ Repo.runBackupWorkersWithTBQueue 10 1 $ do
             logging Log.InfoS $ Log.ls $ "backup os config from " <> Path.toFilePath (to_abs os_config_some_path)
-            os_dir_digest <- Repo.backup_dir $ to_abs os_config_some_path
+            os_dir_digest <- BackupSt.localBackupStatisticsWithRep stat_os_config $ Repo.runBackupWorkersWithTBQueue 40 8 $ do
+              Repo.backup_dir $ to_abs os_config_some_path
 
             logging Log.InfoS $ Log.ls $ "backup shares" <> show list_of_share_and_filesystem_some_path
-            share_dir_digest <- do
-              dir_entry_of_shares <- for list_of_share_and_filesystem_some_path $ \(share_name, share_some_path) -> do
+            share_dir_digest <- (Repo.backupDirFromList =<<) $ runConcurrent $ do
+              pooledForConcurrentlyN 2 list_of_share $ \(share_name, share_some_path, stat_rep) -> do
                 logging Log.InfoS $ Log.ls $ "backup share from " <> Path.toFilePath (to_abs share_some_path)
-                !digest <- Repo.backup_dir $ to_abs share_some_path
-                pure $! Repo.DirEntryDir digest (BC.pack share_name)
-              Repo.backupDirFromList dir_entry_of_shares
+                BackupSt.localBackupStatisticsWithRep stat_rep $ Repo.runBackupWorkersWithTBQueue 40 4 $ do
+                  !digest <- Repo.backup_dir $ to_abs share_some_path
+                  pure $! Repo.DirEntryDir digest (BC.pack share_name)
 
             Repo.backupDirFromList
               [ DirEntryDir os_dir_digest "@OS_CONFIG"
@@ -144,42 +173,25 @@ parser_info = info (helper <*> parser) infoMod
               ]
 
         liftIO $ putStrLn "result:"
-        report_backup_stat
+        report_backup_stat stat_map_tvar
         liftIO $ print v
 
         pure (v_digest, v)
 
-report_backup_stat :: (BackupStatistics E.:> es, E.IOE E.:> es) => E.Eff es ()
-report_backup_stat = do
-  process_file_count <- BackupSt.readStatistics processedFileCount
-  new_file_count <- BackupSt.readStatistics newFileCount
-  total_file_count <- BackupSt.readStatistics totalFileCount
-  process_dir_count <- BackupSt.readStatistics processedDirCount
-  new_dir_count <- BackupSt.readStatistics newDirCount
-  total_dir_count <- BackupSt.readStatistics totalDirCount
-  process_chunk_count <- BackupSt.readStatistics processedChunkCount
-  new_chunk_count <- BackupSt.readStatistics newChunkCount
-  upload_bytes <- BackupSt.readStatistics uploadedBytes
-  liftIO $
-    putStrLn $
-      fold
-        [ "(new "
-        , show new_file_count
-        , ") "
-        , show process_file_count
-        , "/"
-        , show total_file_count
-        , " processed files, (new "
-        , show new_dir_count
-        , ") "
-        , show process_dir_count
-        , "/"
-        , show total_dir_count
-        , " processed dirs, (new "
-        , show new_chunk_count
-        , ") "
-        , show process_chunk_count
-        , " processed chunks, "
-        , show upload_bytes
-        , " uploaded/transfered bytes"
-        ]
+report_backup_stat :: (BackupStatistics E.:> es, E.IOE E.:> es) => TVar (Seq (String, BackupStatisticsRep)) -> E.Eff es ()
+report_backup_stat tvar_stat_map =
+  E.unsafeEff_ Console.size >>= \case
+    Nothing -> pure ()
+    Just (Console.Window _h w) -> do
+      doc_lazy_text <-
+        renderLazy . layoutPretty (LayoutOptions $ AvailablePerLine w 1) <$> do
+          stat_map <- liftIO $ readTVarIO tvar_stat_map
+          docs <- for (toList stat_map) $ \(name, rep) -> BackupSt.runBackupStatisticsWithRep rep $ mkBackupStatisticsDoc $ Just name
+          pure $ vsep docs
+      let !doc_height = TL.foldl' (\(!acc) c -> if c == '\n' then acc + 1 else acc) 1 doc_lazy_text
+      E.unsafeEff_ $ do
+        Ansi.clearLine >> TL.putStrLn ""
+        TL.putStrLn doc_lazy_text
+        replicateM_ (doc_height + 1) $ do
+          Ansi.clearLine
+          Ansi.cursorUpLine 1
