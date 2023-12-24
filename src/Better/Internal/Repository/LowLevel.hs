@@ -243,7 +243,7 @@ localRepo root =
   Repository
     local_write
     local_remove_file
-    (flip P.createDirectory 700 . Path.fromAbsDir . (root </>))
+    (flip P.createDirectory 0o777 . Path.fromAbsDir . (root </>))
     local_exist
     (fmap P.fileSize . P.getFileStatus . Path.fromAbsFile . (root </>))
     (BetterArray.readChunks . Path.fromAbsFile . (root </>))
