@@ -78,7 +78,7 @@ parser_info = info (helper <*> parser) infoMod
 
       (v_digest, v) <- EKi.scoped $ \scope -> do
         EKi.fork_ scope process_reporter
-        Repo.runRepositoryBackup $ Repo.runBackupWorkersWithTBQueue 40 8 $ do
+        Repo.runRepositoryBackup $ Repo.runBackupWorkersWithTBQueue 20 8 $ do
           Repo.backup_dir abs_dir
 
       liftIO (putStrLn "result:") >> report_backup_stat
