@@ -3,6 +3,7 @@
 {-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE MagicHash #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
@@ -36,6 +37,9 @@ module Better.Hash (
   hashByteArrayAccess',
 ) where
 
+import GHC.Prim (indexWord64Array#)
+import GHC.Word (Word64 (..))
+
 import Data.Word (Word8)
 
 import Data.Base16.Types qualified as B16
@@ -46,7 +50,7 @@ import Data.ByteString.Short qualified as BSS
 import Data.ByteString.Short.Base16 qualified as BSS16
 import Data.ByteString.Short.Internal qualified as BSS
 
-import Data.Hashable (Hashable)
+import Data.Hashable (Hashable, hash, hashWithSalt)
 
 import Data.Binary qualified as Bin
 import Data.Binary.Get qualified as Bin
@@ -82,7 +86,23 @@ newtype ChunkDigest = UnsafeMkChunkDigest Digest
   deriving newtype (Ord, Eq, NFData, Hashable, Show, Bin.Binary)
 
 newtype Digest = Digest BSS.ShortByteString
-  deriving (Ord, Eq, NFData, Hashable)
+  deriving (Ord, Eq, NFData)
+
+instance Hashable Digest where
+  hash (Digest (BSS.SBS ba)) = fromIntegral $! v1 + v2 + v3 + v4
+    where
+      !v1 = W64# (indexWord64Array# ba 0#)
+      !v2 = W64# (indexWord64Array# ba 1#)
+      !v3 = W64# (indexWord64Array# ba 2#)
+      !v4 = W64# (indexWord64Array# ba 3#)
+
+  hashWithSalt s (Digest (BSS.SBS ba)) =
+    s `hashWithSalt` v1 `hashWithSalt` v2 `hashWithSalt` v3 `hashWithSalt` v4
+    where
+      !v1 = W64# (indexWord64Array# ba 0#)
+      !v2 = W64# (indexWord64Array# ba 1#)
+      !v3 = W64# (indexWord64Array# ba 2#)
+      !v4 = W64# (indexWord64Array# ba 3#)
 
 instance Show Digest where
   {-# INLINE show #-}
