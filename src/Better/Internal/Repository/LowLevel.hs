@@ -226,7 +226,9 @@ write_chunk path = F.Fold step initial extract
   where
     {-# INLINE [0] initial #-}
     initial = mask_ $ do
-      hd <- openBinaryFile path WriteMode
+      -- Using AppendMode to remove ftruncate syscall and makes the behaviour suites
+      -- its name, write.
+      hd <- openBinaryFile path AppendMode
       pure $! F.Partial hd
 
     {-# INLINE [0] step #-}
