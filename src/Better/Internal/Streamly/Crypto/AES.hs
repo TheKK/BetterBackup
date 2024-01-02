@@ -41,7 +41,7 @@ import Better.Internal.Streamly.Array (ArrayBA (ArrayBA, un_array_ba), MutArrayB
 
 encryptCtr :: (BlockCipher cipher) => cipher -> Cipher.IV cipher -> Int -> D.Stream IO (Array.Array Word8) -> D.Stream IO (Array.Array Word8)
 encryptCtr cipher iv0 batch_size = unsafeEncryptCtr cipher iv0 batch_size . compact batch_size
-{-# NOINLINE encryptCtr #-}
+{-# INLINE encryptCtr #-}
 
 -- | Unsafe: size of input @ba@ should always has size of @batch_size@ except that last chunk.
 unsafeEncryptCtr :: (BlockCipher cipher) => cipher -> Cipher.IV cipher -> Int -> D.Stream IO (Array.Array Word8) -> D.Stream IO (Array.Array Word8)
@@ -61,7 +61,7 @@ unsafeEncryptCtr cipher iv0 batch_size (D.Stream inner_step inner_s0) = D.Stream
 
 decryptCtr :: (BlockCipher cipher) => cipher -> Int -> D.Stream IO (Array.Array Word8) -> D.Stream IO (Array.Array Word8)
 decryptCtr cipher batch_size = unsafeDecryptCtr cipher batch_size . compact batch_size
-{-# NOINLINE decryptCtr #-}
+{-# INLINE decryptCtr #-}
 
 {-# ANN type DecStage Fuse #-}
 data DecStage cipher = DecReadIV | DecDec !(Cipher.IV cipher)
