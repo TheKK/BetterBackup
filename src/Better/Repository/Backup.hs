@@ -276,11 +276,11 @@ backup_dir abs_dir = EKi.scoped $ \scope -> do
 
 data UploadTask
   = -- | User MUST ensure that all content matches to same tree for correct result.
-    UploadTree !Digest !(Path Path.Abs Path.File) !P.FileOffset
+    UploadTree {-# UNPACK #-} !Digest !(Path Path.Abs Path.File) !P.FileOffset
   | -- | User MUST ensure that all content matches to same file for correct result.
-    UploadFile !Digest !(Path Path.Abs Path.File) !(Maybe P.FileStatus) !P.FileOffset
-  | UploadChunk !Digest ![Array.Array Word8] !P.FileOffset
-  | FindNoChangeFile !Digest !P.FileStatus
+    UploadFile {-# UNPACK #-} !Digest !(Path Path.Abs Path.File) !(Maybe P.FileStatus) !P.FileOffset
+  | UploadChunk {-# UNPACK #-} !Digest ![Array.Array Word8] !P.FileOffset
+  | FindNoChangeFile {-# UNPACK #-} !Digest !P.FileStatus
 
 tree_content_from_dir_entry :: DirEntry -> BS.ByteString
 tree_content_from_dir_entry file_or_dir =
