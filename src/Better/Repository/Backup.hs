@@ -12,6 +12,7 @@ module Better.Repository.Backup (
   -- * Effect handlers
   runRepositoryBackup,
   runBackupWorkersWithTBQueue,
+  runBackupWorkersWithUnagiChan,
 
   -- * Backup functions
   backup_dir,
@@ -54,11 +55,23 @@ import Data.Foldable (for_)
 import Text.Read (readMaybe)
 
 import Control.Applicative ((<|>))
-import Control.Monad (guard, replicateM, unless, when)
-import Control.Monad.Catch (finally, mask, onException, throwM)
+import Control.Monad (guard, replicateM, replicateM_, unless, when)
+import Control.Monad.Catch (bracket, finally, mask, onException, throwM)
 import Control.Monad.IO.Class (liftIO)
 
-import Control.Concurrent.STM (TBQueue, TVar, atomically, modifyTVar', newTBQueueIO, newTVarIO, readTBQueue, readTVar, readTVarIO, writeTBQueue)
+import Control.Concurrent (QSem, newQSem, signalQSem, threadDelay, waitQSem)
+import Control.Concurrent.Chan.Unagi.Bounded qualified as Una
+import Control.Concurrent.STM (
+  TVar,
+  atomically,
+  modifyTVar',
+  newTBQueueIO,
+  newTVarIO,
+  readTBQueue,
+  readTVar,
+  readTVarIO,
+  writeTBQueue,
+ )
 
 import Streamly.Data.Array qualified as Array
 import Streamly.External.ByteString (toArray)
@@ -69,7 +82,7 @@ import Streamly.Internal.System.IO (defaultChunkSize)
 import System.Directory qualified as D
 import System.Environment (lookupEnv)
 import System.FilePath qualified as FP
-import System.IO (IOMode (ReadMode, WriteMode), withBinaryFile)
+import System.IO (IOMode (WriteMode), withBinaryFile)
 import System.Posix qualified as P
 
 import Path (Path, (</>))
@@ -84,7 +97,6 @@ import Crypto.Random.Entropy qualified as CRE
 import Streamly.Data.Fold qualified as F
 import Streamly.Data.Stream.Prelude qualified as S
 
-import Control.Concurrent.QSem (QSem, newQSem, signalQSem, waitQSem)
 import Control.Concurrent.STM.TSem (TSem, newTSem, signalTSem, waitTSem)
 import Control.Monad.ST.Strict (stToIO)
 import Control.Monad.Trans.Maybe (MaybeT (MaybeT, runMaybeT))
@@ -92,6 +104,7 @@ import Control.Monad.Trans.Maybe (MaybeT (MaybeT, runMaybeT))
 import Effectful qualified as E
 import Effectful qualified as EU
 import Effectful.Dispatch.Static qualified as E
+import Effectful.Dispatch.Static.Unsafe qualified as E
 import Effectful.Ki (StructuredConcurrency)
 import Effectful.Ki qualified as EKi
 
@@ -208,6 +221,24 @@ runBackupWorkersWithTBQueue q_buffer = run_backup_workers_with mk_q write_q read
     mk_q = newTBQueueIO q_buffer
     write_q !q = atomically . writeTBQueue q
     read_q !q = atomically $ readTBQueue q
+
+runBackupWorkersWithUnagiChan
+  :: ( RepositoryBackup E.:> es
+     , BackupStatistics E.:> es
+     , BackupCache E.:> es
+     , StructuredConcurrency E.:> es
+     , E.IOE E.:> es
+     , E.Repository E.:> es
+     )
+  => Int
+  -> Int
+  -> E.Eff (BackupWorkers : es) a
+  -> E.Eff es a
+runBackupWorkersWithUnagiChan q_buffer = run_backup_workers_with mk_q write_q read_q
+  where
+    mk_q = Una.newChan q_buffer
+    write_q (!una_in, _) = Una.writeChan una_in
+    read_q (_, !una_out) = Una.readChan una_out
 
 init_iv :: IO (Cipher.IV Cipher.AES128)
 init_iv = do
