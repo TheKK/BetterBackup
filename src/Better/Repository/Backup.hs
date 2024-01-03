@@ -203,46 +203,11 @@ runBackupWorkersWithTBQueue
   -> Int
   -> E.Eff (BackupWorkers : es) a
   -> E.Eff es a
-runBackupWorkersWithTBQueue q_buffer worker_num m = do
-  RepositoryBackupRep unique_tree_gate unique_file_gate unique_chunk_gate tvar_iv _ _ <- E.getStaticRep
-
-  connectProducerAndComsumers
-    q_buffer
-    worker_num
-    (\push -> E.evalStaticRep (BackupWorkersRep push) m)
-    ( \case
-        UploadTree dir_hash file_name' file_size -> (`finally` E.unsafeEff_ (D.removeFile $ Path.fromAbsFile file_name')) $ do
-          unique_tree_gate dir_hash $ do
-            added <- do
-              iv <- E.unsafeEff_ $ retrive_iv_for_bytes file_size tvar_iv
-              addDir' dir_hash file_name' iv
-            when added $ do
-              BackupSt.modifyStatistic' BackupSt.newDirCount (+ 1)
-
-          BackupSt.modifyStatistic' BackupSt.processedDirCount (+ 1)
-        UploadFile file_hash file_name' opt_st file_size -> (`finally` E.unsafeEff_ (D.removeFile $ Path.fromAbsFile file_name')) $ do
-          unique_file_gate file_hash $ do
-            added <- do
-              iv <- E.unsafeEff_ $ retrive_iv_for_bytes file_size tvar_iv
-              addFile' file_hash file_name' iv
-            when added $ do
-              BackupSt.modifyStatistic' BackupSt.newFileCount (+ 1)
-
-          BackupSt.modifyStatistic' BackupSt.processedFileCount (+ 1)
-          for_ opt_st $ \st -> BackupCacheLevelDB.saveCurrentFileHash st file_hash
-        FindNoChangeFile file_hash st -> do
-          BackupSt.modifyStatistic' BackupSt.processedFileCount (+ 1)
-          BackupCacheLevelDB.saveCurrentFileHash st file_hash
-        UploadChunk chunk_hash chunks chunk_size -> do
-          unique_chunk_gate chunk_hash $ do
-            iv <- E.unsafeEff_ $ retrive_iv_for_bytes chunk_size tvar_iv
-            !added_bytes <- addChunk' chunk_hash chunks iv
-            when (added_bytes > 0) $ do
-              BackupSt.modifyStatistic' BackupSt.uploadedBytes (+ added_bytes)
-              BackupSt.modifyStatistic' BackupSt.newChunkCount (+ 1)
-
-          BackupSt.modifyStatistic' BackupSt.processedChunkCount (+ 1)
-    )
+runBackupWorkersWithTBQueue q_buffer = run_backup_workers_with mk_q write_q read_q
+  where
+    mk_q = newTBQueueIO q_buffer
+    write_q !q = atomically . writeTBQueue q
+    read_q !q = atomically $ readTBQueue q
 
 init_iv :: IO (Cipher.IV Cipher.AES128)
 init_iv = do
@@ -509,34 +474,74 @@ backup_chunk chunks = do
 
     pure $! digestToByteString chunk_hash
 
-connectProducerAndComsumers
-  :: (StructuredConcurrency E.:> es)
-  => Natural
-  -- ^ buffer size of bounded queue
+run_backup_workers_with
+  :: ( StructuredConcurrency EU.:> es
+     , RepositoryBackup EU.:> es
+     , E.Repository EU.:> es
+     , EU.IOE EU.:> es
+     , BackupStatistics EU.:> es
+     , BackupCache EU.:> es
+     )
+  => IO q
+  -> (q -> Maybe UploadTask -> IO ())
+  -> (q -> IO (Maybe UploadTask))
   -> Int
-  -- ^ number of workers
-  -> ((e -> IO ()) -> E.Eff es a)
-  -> (e -> E.Eff es ())
-  -> E.Eff es a
-connectProducerAndComsumers q_size worker_num putter go = do
-  tbq <- E.unsafeEff_ $ newTBQueueIO q_size
+  -> EU.Eff (BackupWorkers : es) a
+  -> EU.Eff es a
+run_backup_workers_with mk_q write_q read_q worker_num m = do
+  q <- E.unsafeEff_ $ mk_q
 
   EKi.scoped $ \scope -> do
-    thread_putter <- EKi.fork scope $ putter $ atomically . writeTBQueue tbq . Just
+    thread_putter <- EKi.fork scope $ E.evalStaticRep (BackupWorkersRep $ write_q q . Just) m
     -- TODO make worker immortal (againsts sync excetpions).
     thread_solvers <- replicateM worker_num $ EKi.fork scope $ fix $ \rec -> do
-      e <- E.unsafeEff_ $ atomically $ readTBQueue tbq
+      e <- E.unsafeEff_ $ read_q q
       case e of
-        Just v -> go v >> rec
+        Just v -> backup_worker v >> rec
         Nothing -> pure ()
 
     ret_putter <- E.unsafeEff_ $ atomically $ EKi.await thread_putter
 
-    E.unsafeEff_ $ replicateM_ worker_num $ do
-      atomically $ writeTBQueue tbq Nothing
+    E.unsafeEff_ $ replicateM_ worker_num $ write_q q Nothing
     E.unsafeEff_ $ mapM_ (atomically . EKi.await) thread_solvers
 
     pure ret_putter
+  where
+    backup_worker task = do
+      RepositoryBackupRep unique_tree_gate unique_file_gate unique_chunk_gate tvar_iv _ _ <- E.getStaticRep
+
+      case task of
+        UploadTree dir_hash file_name' file_size -> (`finally` E.unsafeEff_ (D.removeFile $ Path.fromAbsFile file_name')) $ do
+          unique_tree_gate dir_hash $ do
+            added <- do
+              iv <- E.unsafeEff_ $ retrive_iv_for_bytes file_size tvar_iv
+              addDir' dir_hash file_name' iv
+            when added $ do
+              BackupSt.modifyStatistic' BackupSt.newDirCount (+ 1)
+
+          BackupSt.modifyStatistic' BackupSt.processedDirCount (+ 1)
+        UploadFile file_hash file_name' opt_st file_size -> (`finally` E.unsafeEff_ (D.removeFile $ Path.fromAbsFile file_name')) $ do
+          unique_file_gate file_hash $ do
+            added <- do
+              iv <- E.unsafeEff_ $ retrive_iv_for_bytes file_size tvar_iv
+              addFile' file_hash file_name' iv
+            when added $ do
+              BackupSt.modifyStatistic' BackupSt.newFileCount (+ 1)
+
+          BackupSt.modifyStatistic' BackupSt.processedFileCount (+ 1)
+          for_ opt_st $ \st -> BackupCacheLevelDB.saveCurrentFileHash st file_hash
+        FindNoChangeFile file_hash st -> do
+          BackupSt.modifyStatistic' BackupSt.processedFileCount (+ 1)
+          BackupCacheLevelDB.saveCurrentFileHash st file_hash
+        UploadChunk chunk_hash chunks chunk_size -> do
+          unique_chunk_gate chunk_hash $ do
+            iv <- E.unsafeEff_ $ retrive_iv_for_bytes chunk_size tvar_iv
+            !added_bytes <- addChunk' chunk_hash chunks iv
+            when (added_bytes > 0) $ do
+              BackupSt.modifyStatistic' BackupSt.uploadedBytes (+ added_bytes)
+              BackupSt.modifyStatistic' BackupSt.newChunkCount (+ 1)
+
+          BackupSt.modifyStatistic' BackupSt.processedChunkCount (+ 1)
 
 data TreeWhatNow
   = TreeIsIntact
