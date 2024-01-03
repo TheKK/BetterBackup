@@ -209,7 +209,7 @@ runBackupWorkersWithTBQueue q_buffer worker_num m = do
   connectProducerAndComsumers
     q_buffer
     worker_num
-    (\tbq -> E.evalStaticRep (BackupWorkersRep (atomically . writeTBQueue tbq)) m)
+    (\push -> E.evalStaticRep (BackupWorkersRep push) m)
     ( \case
         UploadTree dir_hash file_name' file_size -> (`finally` E.unsafeEff_ (D.removeFile $ Path.fromAbsFile file_name')) $ do
           unique_tree_gate dir_hash $ do
@@ -515,21 +515,25 @@ connectProducerAndComsumers
   -- ^ buffer size of bounded queue
   -> Int
   -- ^ number of workers
-  -> (TBQueue e -> E.Eff es a)
+  -> ((e -> IO ()) -> E.Eff es a)
   -> (e -> E.Eff es ())
   -> E.Eff es a
 connectProducerAndComsumers q_size worker_num putter go = do
   tbq <- E.unsafeEff_ $ newTBQueueIO q_size
 
   EKi.scoped $ \scope -> do
-    thread_putter <- EKi.fork scope $ putter tbq
+    thread_putter <- EKi.fork scope $ putter $ atomically . writeTBQueue tbq . Just
+    -- TODO make worker immortal (againsts sync excetpions).
     thread_solvers <- replicateM worker_num $ EKi.fork scope $ fix $ \rec -> do
-      e <- E.unsafeEff_ $ atomically $ (Just <$> readTBQueue tbq) <|> (Nothing <$ EKi.await thread_putter)
+      e <- E.unsafeEff_ $ atomically $ readTBQueue tbq
       case e of
         Just v -> go v >> rec
         Nothing -> pure ()
 
     ret_putter <- E.unsafeEff_ $ atomically $ EKi.await thread_putter
+
+    E.unsafeEff_ $ replicateM_ worker_num $ do
+      atomically $ writeTBQueue tbq Nothing
     E.unsafeEff_ $ mapM_ (atomically . EKi.await) thread_solvers
 
     pure ret_putter
