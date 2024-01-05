@@ -321,6 +321,9 @@ addChunk' digest chunks iv = do
       ((), !len) <-
         S.fromList chunks
           & encryptCtr aes iv (1024 * 32)
+          -- Do compact here so that impl of Repository doesn't need to care about buffering.
+          -- TODO In the other hand, they can't do desired buffering.
+          & compact (1024 * 32)
           & S.morphInner E.unsafeEff_
           & S.fold
             ( F.tee
@@ -350,6 +353,9 @@ addFile' digest file_path iv = do
     putFileFold <- mkPutFileFold
     File.readChunks (Path.toFilePath file_path)
       & encryptCtr aes iv (1024 * 32)
+      -- Do compact here so that impl of Repository doesn't need to care about buffering.
+      -- TODO In the other hand, they can't do desired buffering.
+      & compact (1024 * 32)
       & S.morphInner E.unsafeEff_
       & S.fold (putFileFold f)
   pure $! not exist
@@ -375,6 +381,9 @@ addDir' digest file_path iv = do
     putFileFold <- mkPutFileFold
     File.readChunks (Path.toFilePath file_path)
       & encryptCtr aes iv (1024 * 32)
+      -- Do compact here so that impl of Repository doesn't need to care about buffering.
+      -- TODO In the other hand, they can't do desired buffering.
+      & compact (1024 * 32)
       & S.morphInner E.unsafeEff_
       & S.fold (putFileFold f)
   pure $! not exist
@@ -406,6 +415,9 @@ addVersion iv v = do
   written_bytes <- do
     S.toChunks version_bytes
       & encryptCtr aes iv (1024 * 32)
+      -- Do compact here so that impl of Repository doesn't need to care about buffering.
+      -- TODO In the other hand, they can't do desired buffering.
+      & compact (1024 * 32)
       & S.morphInner E.unsafeEff_
       & S.tap (putFileFold f)
       & S.fold (F.lmap (fromIntegral . Array.length) F.sum)
