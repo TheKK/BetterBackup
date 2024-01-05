@@ -157,11 +157,10 @@ readChunksWith size h = S.Stream step ()
   where
     {-# INLINE [0] step #-}
     step _ _ = do
-        arr <- getChunk size h
-        return $
-            case Array.byteLength arr of
-                0 -> S.Stop
-                _ -> S.Yield arr ()
+      arr <- getChunk size h
+      case Array.byteLength arr of
+        0 -> pure S.Stop
+        _ -> pure $ S.Yield arr ()
 
 -- Copy from streamly-core.
 getChunk :: Int -> Handle -> IO (Array.Array Word8)
