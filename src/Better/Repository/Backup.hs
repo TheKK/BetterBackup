@@ -28,90 +28,6 @@ module Better.Repository.Backup (
   props_what_to_do_with_file_and_dir,
 ) where
 
-import Prelude hiding (read)
-
-import Numeric.Natural (Natural)
-
-import Data.Coerce (coerce)
-import Data.Either (fromRight)
-import Data.Function (fix, (&))
-import Data.List (inits, intercalate)
-import Data.Maybe (fromMaybe)
-import Data.Time (getCurrentTime)
-import Data.Word (Word8)
-
-import StmContainers.Set qualified as STMSet
-
-import Data.Text qualified as T
-
-import Data.ByteString qualified as BS
-import Data.ByteString.Builder qualified as BB
-import Data.ByteString.Builder.Extra qualified as BB
-import Data.ByteString.Char8 qualified as BC
-import Data.ByteString.Lazy qualified as BL
-
-import Data.Foldable (for_)
-
-import Text.Read (readMaybe)
-
-import Control.Applicative ((<|>))
-import Control.Monad (guard, replicateM, replicateM_, unless, when)
-import Control.Monad.Catch (bracket, finally, mask, onException, throwM)
-import Control.Monad.IO.Class (liftIO)
-
-import Control.Concurrent (QSem, newQSem, signalQSem, threadDelay, waitQSem)
-import Control.Concurrent.Chan.Unagi.Bounded qualified as Una
-import Control.Concurrent.STM (
-  TVar,
-  atomically,
-  modifyTVar',
-  newTBQueueIO,
-  newTVarIO,
-  readTBQueue,
-  readTVar,
-  readTVarIO,
-  writeTBQueue,
- )
-
-import Streamly.Data.Array qualified as Array
-import Streamly.External.ByteString (toArray)
-import Streamly.Internal.Data.Array.Type qualified as Array (byteLength)
-
-import Streamly.Internal.System.IO (defaultChunkSize)
-
-import System.Directory qualified as D
-import System.Environment (lookupEnv)
-import System.FilePath qualified as FP
-import System.IO (IOMode (WriteMode), withBinaryFile)
-import System.Posix qualified as P
-
-import Path (Path, (</>))
-import Path qualified
-
-import Crypto.Cipher.AES (AES128)
-import Crypto.Cipher.AES qualified as Cipher
-import Crypto.Cipher.Types (ivAdd)
-import Crypto.Cipher.Types qualified as Cipher
-import Crypto.Random.Entropy qualified as CRE
-
-import Streamly.Data.Fold qualified as F
-import Streamly.Data.Stream.Prelude qualified as S
-
-import Control.Concurrent.STM.TSem (TSem, newTSem, signalTSem, waitTSem)
-import Control.Monad.ST.Strict (stToIO)
-import Control.Monad.Trans.Maybe (MaybeT (MaybeT, runMaybeT))
-
-import Effectful qualified as E
-import Effectful qualified as EU
-import Effectful.Dispatch.Static qualified as E
-import Effectful.Dispatch.Static.Unsafe qualified as E
-import Effectful.Ki (StructuredConcurrency)
-import Effectful.Ki qualified as EKi
-
-import Hedgehog qualified as H
-import Hedgehog.Gen qualified as Gen
-import Hedgehog.Range qualified as Range
-
 import Better.Data.FileSystemChanges qualified as FSC
 import Better.Hash (
   Digest,
@@ -126,8 +42,9 @@ import Better.Hash (
 import Better.Hash qualified as Hash
 import Better.Internal.Repository.LowLevel (addChunk', addDir', addFile', d2b, doesTreeExists)
 import Better.Internal.Repository.LowLevel qualified as Repo
-import Better.Internal.Streamly.Array (chunkReaderFromToWith)
+import Better.Internal.Streamly.Array (chunkReaderFromToWithFdPread)
 import Better.Logging.Effect qualified as E
+import Better.Posix.File qualified as PosixFile
 import Better.Repository.BackupCache.Class (BackupCache)
 import Better.Repository.BackupCache.LevelDB qualified as BackupCacheLevelDB
 import Better.Repository.Class qualified as E
@@ -138,6 +55,74 @@ import Better.Streamly.FileSystem.Chunker qualified as Chunker
 import Better.Streamly.FileSystem.Dir qualified as Dir
 import Better.TempDir qualified as Tmp
 import Better.TempDir.Class (Tmp)
+import Control.Applicative ((<|>))
+import Control.Concurrent (QSem, newQSem, signalQSem, threadDelay, waitQSem)
+import Control.Concurrent.Async (withAsync)
+import Control.Concurrent.Chan.Unagi.Bounded qualified as Una
+import Control.Concurrent.STM (
+  TVar,
+  atomically,
+  modifyTVar',
+  newTBQueueIO,
+  newTVarIO,
+  readTBQueue,
+  readTVar,
+  readTVarIO,
+  writeTBQueue,
+ )
+import Control.Concurrent.STM.TSem (TSem, newTSem, signalTSem, waitTSem)
+import Control.Monad (guard, replicateM, replicateM_, unless, when)
+import Control.Monad.Catch (finally, mask, onException, throwM)
+import Control.Monad.IO.Class (liftIO)
+import Control.Monad.ST.Strict (stToIO)
+import Control.Monad.Trans.Maybe (MaybeT (MaybeT, runMaybeT))
+import Crypto.Cipher.AES (AES128)
+import Crypto.Cipher.AES qualified as Cipher
+import Crypto.Cipher.Types (ivAdd)
+import Crypto.Cipher.Types qualified as Cipher
+import Crypto.Random.Entropy qualified as CRE
+import Data.ByteString qualified as BS
+import Data.ByteString.Builder qualified as BB
+import Data.ByteString.Builder.Extra qualified as BB
+import Data.ByteString.Char8 qualified as BC
+import Data.ByteString.Lazy qualified as BL
+import Data.Coerce (coerce)
+import Data.Either (fromRight)
+import Data.Foldable (for_)
+import Data.Function (fix, (&))
+import Data.IORef (atomicModifyIORef', newIORef, readIORef)
+import Data.List (inits, intercalate)
+import Data.Maybe (fromMaybe)
+import Data.Text qualified as T
+import Data.Time (getCurrentTime)
+import Data.Word (Word8)
+import Effectful qualified as E
+import Effectful qualified as EU
+import Effectful.Dispatch.Static qualified as E
+import Effectful.Dispatch.Static.Unsafe qualified as E
+import Effectful.Ki (StructuredConcurrency)
+import Effectful.Ki qualified as EKi
+import Hedgehog qualified as H
+import Hedgehog.Gen qualified as Gen
+import Hedgehog.Range qualified as Range
+import Numeric.Natural (Natural)
+import Path (Path, (</>))
+import Path qualified
+import StmContainers.Set qualified as STMSet
+import Streamly.Data.Array qualified as Array
+import Streamly.Data.Fold qualified as F
+import Streamly.Data.Stream.Prelude qualified as S
+import Streamly.External.ByteString (toArray)
+import Streamly.Internal.Data.Array.Type qualified as Array (byteLength)
+import Streamly.Internal.System.IO (defaultChunkSize)
+import System.Directory qualified as D
+import System.Environment (lookupEnv)
+import System.FilePath qualified as FP
+import System.IO (IOMode (WriteMode), withBinaryFile)
+import System.Posix qualified as P
+import System.Posix.Fcntl qualified as P
+import Text.Read (readMaybe)
+import Prelude hiding (read)
 
 -- | Effect for generating a new version of backup.
 data RepositoryBackup :: E.Effect
@@ -446,18 +431,46 @@ backup_file rel_file_name = do
     Just cached_digest -> do
       liftIO $ push_job $ FindNoChangeFile cached_digest st
       pure $! UnsafeMkFileDigest cached_digest
-    Nothing -> Tmp.withEmptyTmpFile $ \file_name' -> E.withEffToIO (E.ConcUnlift E.Ephemeral E.Unlimited) $ \conc_un -> do
+
+    -- Using reallyUnsafeUnliftIO since:
+    -- - It's performance critical path
+    -- - we know backup_chunk would run in same thread here
+    Nothing -> Tmp.withEmptyTmpFile $ \file_name' -> E.reallyUnsafeUnliftIO $ \unsafe_un -> do
       (!file_hash, !file_size) <- withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd ->
-        withBinaryFile (Path.fromAbsFile rel_file_name) ReadMode $ \fdd ->
-          Chunker.gearHash Chunker.defaultGearHashConfig (Path.fromAbsFile rel_file_name)
-            & S.mapM
-              ( \(Chunker.Chunk b e) -> do
-                  S.unfold chunkReaderFromToWith (b, e - 1, defaultChunkSize, fdd)
-                    & S.fold F.toList
-              )
-            & S.parMapM (S.ordered True . S.maxBuffer 8) (conc_un . backup_chunk)
-            & S.trace (BS.hPut fd)
-            & S.fold (F.tee hashByteStringFoldIO $ F.lmap (fromIntegral . BS.length) F.sum)
+        PosixFile.withFile rel_file_name P.ReadOnly P.defaultFileFlags $ \fd_read -> do
+          the_tail <- newIORef 0
+
+          let
+            fadvice_once !last_tail = do
+              !current_tail <- readIORef the_tail
+              when (last_tail /= current_tail) $ do
+                P.fileAdvise fd_read last_tail (current_tail - last_tail) P.AdviceDontNeed
+              pure current_tail
+
+            fadviser_last = fadvice_once 0
+
+            fadviser = (`finally` fadviser_last) $ flip fix 0 $ \rec !last_tail -> do
+              threadDelay 1000000
+              !current_tail <- fadvice_once last_tail
+              rec current_tail
+
+          -- TODO make fadviser toggleable function.
+          withAsync fadviser $ \_ ->
+            -- TODO Perhaps it's better to read chunks from Chunker directly in performance.
+            Chunker.gearHash Chunker.defaultGearHashConfig (Path.fromAbsFile rel_file_name)
+              & S.mapM
+                ( \(Chunker.Chunk b e) -> do
+                    -- We observed that reading via Fd is faster than Handle.
+                    ret <-
+                      S.unfold chunkReaderFromToWithFdPread (b, e - 1, defaultChunkSize, fd_read)
+                        & S.fold F.toList
+                    atomicModifyIORef' the_tail $ const (fromIntegral e - 1, ())
+                    pure ret
+                )
+              & S.parEval (S.ordered True . S.eager True . S.maxBuffer 16)
+              & S.mapM (unsafe_un . backup_chunk)
+              & S.trace (BS.hPut fd)
+              & S.fold (F.tee hashByteStringFoldIO $ F.lmap (fromIntegral . BS.length) F.sum)
 
       push_job $ UploadFile file_hash file_name' (Just st) file_size
       pure $ UnsafeMkFileDigest file_hash
