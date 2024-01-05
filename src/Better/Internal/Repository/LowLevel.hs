@@ -69,62 +69,6 @@ module Better.Internal.Repository.LowLevel (
   s2d,
 ) where
 
-import Prelude hiding (read)
-
-import GHC.Stack (HasCallStack)
-
-import Data.Function ((&))
-import Data.Maybe (fromMaybe)
-import Data.Word (Word64, Word8)
-
-import Data.Text qualified as T
-import Data.Text.Encoding qualified as TE
-
-import Data.ByteString qualified as BS
-import Data.ByteString.Base16 qualified as BS16
-import Data.ByteString.Builder qualified as BB
-import Data.ByteString.Char8 qualified as BSC
-import Data.ByteString.Lazy qualified as BL
-import Data.ByteString.Short qualified as BShort
-import Data.Coerce (coerce)
-
-import Data.Binary qualified as Bin
-
-import Text.Read (readMaybe)
-
-import Control.Monad (unless)
-import Control.Monad.Catch (MonadThrow, handleIf, throwM)
-
-import Crypto.Cipher.AES (AES128)
-import Crypto.Cipher.Types qualified as Cipher
-
-import System.IO (IOMode (..), hClose, hPutBuf, openBinaryFile)
-import System.IO.Error (isDoesNotExistError)
-
-import System.Directory qualified as D
-
-import System.Posix.Directory qualified as P
-import System.Posix.Files qualified as P
-import System.Posix.Types (FileOffset)
-
-import Path (Path, (</>))
-import Path qualified
-
-import Streamly.Data.Array qualified as Array
-import Streamly.Data.Fold qualified as F
-import Streamly.Data.Stream.Prelude qualified as S
-import Streamly.External.ByteString (fromArray)
-import Streamly.External.ByteString.Lazy qualified as S
-import Streamly.FileSystem.File qualified as File
-import Streamly.Internal.Data.Array.Type qualified as Array
-import Streamly.Internal.Data.Fold qualified as F
-import Streamly.Internal.Unicode.Stream qualified as US
-
-import Control.Exception (mask_, onException)
-
-import Effectful qualified as E
-import Effectful.Dispatch.Static qualified as E
-
 import Better.Hash (
   ChunkDigest (..),
   Digest,
@@ -144,6 +88,46 @@ import Better.Internal.Streamly.Crypto.AES (compact, decryptCtr, encryptCtr)
 import Better.Repository.Class qualified as E
 import Better.Repository.Types (Version (..))
 import Better.Streamly.FileSystem.Dir qualified as Dir
+import Control.Exception (mask_, onException)
+import Control.Monad (unless, void)
+import Control.Monad.Catch (MonadThrow, handleIf, throwM)
+import Crypto.Cipher.AES (AES128)
+import Crypto.Cipher.Types qualified as Cipher
+import Data.Binary qualified as Bin
+import Data.ByteString qualified as BS
+import Data.ByteString.Base16 qualified as BS16
+import Data.ByteString.Builder qualified as BB
+import Data.ByteString.Char8 qualified as BSC
+import Data.ByteString.Lazy qualified as BL
+import Data.ByteString.Short qualified as BShort
+import Data.Coerce (coerce)
+import Data.Function ((&))
+import Data.Maybe (fromMaybe)
+import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
+import Data.Word (Word64, Word8)
+import Effectful qualified as E
+import Effectful.Dispatch.Static qualified as E
+import GHC.Stack (HasCallStack)
+import Path (Path, (</>))
+import Path qualified
+import Streamly.Data.Array qualified as Array
+import Streamly.Data.Fold qualified as F
+import Streamly.Data.Stream.Prelude qualified as S
+import Streamly.External.ByteString (fromArray)
+import Streamly.External.ByteString.Lazy qualified as S
+import Streamly.FileSystem.File qualified as File
+import Streamly.Internal.Data.Array.Type qualified as Array
+import Streamly.Internal.Data.Fold qualified as F
+import Streamly.Internal.Unicode.Stream qualified as US
+import System.Directory qualified as D
+import System.IO.Error (isDoesNotExistError)
+import System.Posix.Directory qualified as P
+import System.Posix.Files qualified as P
+import System.Posix.IO qualified as P
+import System.Posix.Types (FileOffset)
+import Text.Read (readMaybe)
+import Prelude hiding (read)
 
 data Repository = Repository
   { _repo_putFile :: (Path Path.Rel Path.File -> F.Fold IO (Array.Array Word8) ())
@@ -226,19 +210,18 @@ write_chunk path = F.Fold step initial extract
   where
     {-# INLINE [0] initial #-}
     initial = mask_ $ do
-      -- Using AppendMode to remove ftruncate syscall and makes the behaviour suites
-      -- its name, write.
-      hd <- openBinaryFile path AppendMode
-      pure $! F.Partial hd
+      !fd <- P.createFile path 0o755
+      pure $! F.Partial fd
 
     {-# INLINE [0] step #-}
-    step hd arr = (`onException` (hClose hd)) $ do
-      fastArrayAsPtrUnsafe arr $ \ptr -> hPutBuf hd ptr (Array.byteLength arr)
-      pure $! F.Partial hd
+    step fd arr = (`onException` P.closeFd fd) $ do
+      -- Using Fd for writing cost less CPU time than using Handle (hPutBuf).
+      void $ fastArrayAsPtrUnsafe arr $ \ptr -> P.fdWriteBuf fd ptr (fromIntegral $ Array.byteLength arr)
+      pure $! F.Partial fd
 
     {-# INLINE [0] extract #-}
-    extract hd = mask_ $ do
-      hClose hd
+    extract fd = mask_ $ do
+      P.closeFd fd
 
 localRepo :: Path Path.Abs Path.Dir -> Repository
 localRepo root =
