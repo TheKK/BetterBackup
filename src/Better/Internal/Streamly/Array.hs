@@ -1,4 +1,5 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE CApiFFI #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE MagicHash #-}
@@ -12,39 +13,36 @@ module Better.Internal.Streamly.Array (
   fastMutArrayAsPtrUnsafe,
   readChunks,
   chunkReaderFromToWith,
+  chunkReaderFromToWithFdPread,
 )
 where
 
+import Control.Exception (assert, mask_, onException)
+import Control.Monad ()
+import Data.ByteArray (ByteArrayAccess (..))
+import Data.ByteArray qualified as BA
 import Data.Function ()
 import Data.Word (Word8)
-
-import Control.Monad ()
-
-import qualified Streamly.Data.Fold as F
-import qualified Streamly.Internal.Data.Fold as F
-
-import Data.ByteArray (ByteArrayAccess (..))
-import qualified Data.ByteArray as BA
-
-import qualified Streamly.Internal.Data.Array.Mut.Type as MA
-
+import Foreign.C.String (CString)
+import Foreign.C.Types (CInt (..), CSize (..))
 import GHC.Exts (byteArrayContents#)
 import GHC.Ptr (Ptr (..), plusPtr)
-
-import qualified Streamly.Data.Array as Array
+import Streamly.Data.Array qualified as Array
+import Streamly.Data.Fold qualified as F
+import Streamly.FileSystem.File qualified as File
 import Streamly.Internal.Data.Array.Mut (touch)
-import qualified Streamly.Internal.Data.Array.Type as Array
+import Streamly.Internal.Data.Array.Mut qualified as MArray
+import Streamly.Internal.Data.Array.Mut.Type qualified as MA
+import Streamly.Internal.Data.Array.Type qualified as Array
+import Streamly.Internal.Data.Fold qualified as F
+import Streamly.Internal.Data.Stream qualified as S
 import Streamly.Internal.Data.Unboxed (getMutableByteArray#)
-
-import System.IO (Handle, IOMode (..), SeekMode (AbsoluteSeek), hClose, hGetBufSome, hPutBuf, hSeek, openBinaryFile)
-
-import Control.Exception (assert, mask_, onException)
-import qualified Streamly.Internal.Data.Array.Mut as MArray
-import qualified Streamly.Internal.Data.Stream as S
-import qualified Streamly.Internal.Data.Unfold.Type as Un
-import Unsafe.Coerce (unsafeCoerce#)
-import qualified Streamly.FileSystem.File as File
+import Streamly.Internal.Data.Unfold.Type qualified as Un
 import Streamly.Internal.System.IO (defaultChunkSize)
+import System.IO (Handle, IOMode (..), SeekMode (AbsoluteSeek), hClose, hGetBufSome, hPutBuf, hSeek, openBinaryFile)
+import System.Posix qualified as P
+import System.Posix.Types (COff (..), CSsize (..))
+import Unsafe.Coerce (unsafeCoerce#)
 
 -- * Functions that I need but not exists on upstream.
 
@@ -122,6 +120,27 @@ fastWriteChunkFold path = F.Fold step initial extract
     extract hd = mask_ $ do
       hClose hd
 
+-- | Read from Fd with pread syscall, which won't alter position of Fd.
+{-# INLINE chunkReaderFromToWithFdPread #-}
+chunkReaderFromToWithFdPread :: Un.Unfold IO (Int, Int, Int, P.Fd) (Array.Array Word8)
+chunkReaderFromToWithFdPread = Un.Unfold step inject
+  where
+    inject (!from :: Int, !to :: Int, !bufSize :: Int, !h) = do
+      return (fromIntegral from, fromIntegral to, fromIntegral bufSize, h)
+
+    {-# INLINE [0] step #-}
+    step (!from, !to, !bufSize, !h) =
+      let !remaining = fromIntegral $ to - from + 1
+      in  if remaining <= 0
+            then return S.Stop
+            else do
+              arr <- get_chunk_pread from (min bufSize remaining) h
+              case Array.byteLength arr of
+                0 -> pure S.Stop
+                len ->
+                  let !from' = from + fromIntegral len
+                  in  pure $ S.Yield arr (from', to, bufSize, h)
+
 -- Copy from streamly-core.
 {-# INLINE chunkReaderFromToWith #-}
 chunkReaderFromToWith :: Un.Unfold IO (Int, Int, Int, Handle) (Array.Array Word8)
@@ -173,3 +192,16 @@ getChunk !size h = do
     return $!
       Array.unsafeFreezeWithShrink $
         arr{MArray.arrEnd = n, MArray.arrBound = size}
+
+get_chunk_pread :: COff -> CSize -> P.Fd -> IO (Array.Array Word8)
+get_chunk_pread !off !size h = do
+  arr <- MArray.newPinnedBytes $! fromIntegral size
+  fastMutArrayAsPtrUnsafe arr $ \p -> do
+    -- I've gave unsafe version a try but found no difference on my machine.
+    -- it's still worth a try on difference machine & load.
+    !n <- c_pread_safe h p size off
+    return $!
+      Array.unsafeFreezeWithShrink $
+        arr{MArray.arrEnd = fromIntegral n, MArray.arrBound = fromIntegral size}
+
+foreign import ccall safe "pread" c_pread_safe :: P.Fd -> CString -> CSize -> System.Posix.Types.COff -> IO System.Posix.Types.CSsize
