@@ -51,8 +51,8 @@ extra-doc-files:    CHANGELOG.md
 -- extra-source-files:
 
 flag plugin
-  default: True
-  Manual: False
+  default: False
+  Manual: True
 
 common warnings
     ghc-options:
