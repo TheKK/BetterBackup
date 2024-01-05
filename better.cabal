@@ -88,6 +88,7 @@ library better-core
       Better.Streamly.FileSystem.Dir
       Better.Streamly.FileSystem.Chunker
       Better.Data.FileSystemChanges
+      Better.Posix.File
       Better.Repository
       Better.Repository.Types
       Better.Repository.Backup
