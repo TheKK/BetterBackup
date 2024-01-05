@@ -74,6 +74,7 @@ common warnings
       -optlo-O3
     if flag(plugin)
       ghc-options: -fplugin=Fusion.Plugin
+      -- ghc-options: -fplugin-opt=Fusion.Plugin:verbose=2
 
 library better-core
     import:           warnings
@@ -186,6 +187,7 @@ executable better
       Cli.Ref.Cat
       Repository.Find
       Repository.Restore
+      Repository.Traversal
       Config
       LocalCache
       Monad
@@ -251,6 +253,7 @@ benchmark cdc
     main-is:          Main.hs
     other-modules:
       Parser
+      Fusion
     hs-source-dirs:   bench/cdc
     default-language: GHC2021
     build-depends:  base >=4.16 && < 5, better-core, streamly, streamly-core, streamly-bytestring, criterion, fusion-plugin, crypton, bytestring, path, stm, random, splitmix, containers, unordered-containers, memory, blake3, base16 ^>= 1.0, megaparsec, parser-combinators

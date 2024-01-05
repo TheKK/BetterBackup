@@ -8,6 +8,8 @@ package *
 
 package better
   ld-options: -Wl,--gc-sections
+  ghc-options: -j6
+  ghc-options: -ddump-simpl -ddump-stg-final -dsuppress-coercions -dsuppress-type-applications -ddump-to-file  -dsuppress-idinfo
 
 package streamly-core
   flags: +use-unliftio +has-llvm
@@ -17,3 +19,5 @@ package streamly
 
 package crypton
   flags: +support_sse
+
+-- packages: ./3rd/hs-blake3/blake3

@@ -38,11 +38,17 @@ module Better.Internal.Repository.LowLevel (
   catChunk,
   getChunkSize,
   listFolderFiles,
-  listVersions,
   doesVersionExists,
   doesTreeExists,
   doesFileExists,
   doesChunkExists,
+
+  -- ** Traversal
+  listVersionDigests,
+  listTreeDigests,
+  listFileDigests,
+  listChunkDigests,
+  listVersions,
 
   -- * Repositories
   localRepo,
@@ -58,15 +64,16 @@ module Better.Internal.Repository.LowLevel (
   Object (..),
 
   -- * Constants
-  folder_tree,
-  folder_file,
-  folder_chunk,
-  folder_version,
+  pathOfVersion,
+  pathOfTree,
+  pathOfFile,
+  pathOfChunk,
 
   -- * Utils
   d2b,
   t2d,
   s2d,
+  initRepositoryStructure,
 ) where
 
 import Better.Hash (
@@ -78,7 +85,6 @@ import Better.Hash (
   digestFromByteString,
   digestSize,
   digestToBase16ByteString,
-  digestToBase16ShortByteString,
   hashByteStringFoldIO,
  )
 import Better.Hash qualified as Hash
@@ -101,11 +107,13 @@ import Data.ByteString.Char8 qualified as BSC
 import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Short qualified as BShort
 import Data.Coerce (coerce)
+import Data.Foldable (for_)
 import Data.Function ((&))
 import Data.Maybe (fromMaybe)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
-import Data.Word (Word64, Word8)
+import Data.Word (Word32, Word64, Word8)
+import Effectful ((:>))
 import Effectful qualified as E
 import Effectful.Dispatch.Static qualified as E
 import GHC.Stack (HasCallStack)
@@ -126,6 +134,7 @@ import System.Posix.Directory qualified as P
 import System.Posix.Files qualified as P
 import System.Posix.IO qualified as P
 import System.Posix.Types (FileOffset)
+import Text.Printf (printf)
 import Text.Read (readMaybe)
 import Prelude hiding (read)
 
@@ -166,32 +175,76 @@ listFolderFiles = mkListFolderFiles
 
 listVersions :: (E.Repository E.:> es) => S.Stream (E.Eff es) (VersionDigest, Version)
 listVersions =
-  listFolderFiles folder_version
-    -- TODO Maybe we could skip invalid version files.
+  listVersionDigests
     & S.mapM
-      ( \version_file_path -> do
-          !version_digest <- fmap UnsafeMkVersionDigest <$> s2d $ Path.fromRelFile version_file_path
+      ( \version_digest -> do
           !version <- catVersion version_digest
           pure (version_digest, version)
       )
 
-does_that_exist :: (E.Repository E.:> es) => Path Path.Rel Path.Dir -> Digest -> E.Eff es Bool
-does_that_exist that_folder digest = do
-  path_digest <- Path.parseRelFile $ show digest
-  exists <- fileExists $ that_folder </> path_digest
-  pure $! exists
+{-# INLINE listVersionDigests #-}
+listVersionDigests :: (E.Repository E.:> es) => S.Stream (E.Eff es) VersionDigest
+listVersionDigests =
+  listFolderFiles folder_version
+    -- TODO Maybe we could report invalid version files.
+    & S.mapMaybe (s2d . Path.fromRelFile)
+    & fmap UnsafeMkVersionDigest
+
+{-# INLINE listTreeDigests #-}
+listTreeDigests :: (E.Repository E.:> es) => S.Stream (E.Eff es) TreeDigest
+listTreeDigests = list_digest_under_no_sharding UnsafeMkTreeDigest folder_tree
+
+{-# INLINE listFileDigests #-}
+listFileDigests :: (E.Repository E.:> es) => S.Stream (E.Eff es) FileDigest
+listFileDigests = list_digest_under_no_sharding UnsafeMkFileDigest folder_file
+
+{-# INLINE listChunkDigests #-}
+listChunkDigests :: (E.Repository E.:> es) => S.Stream (E.Eff es) ChunkDigest
+listChunkDigests = list_digest_under_two_layer_sharding UnsafeMkChunkDigest folder_chunk
+
+{-# INLINE list_digest_under_no_sharding #-}
+list_digest_under_no_sharding
+  :: (E.Repository E.:> es)
+  => (Digest -> a)
+  -> Path Path.Rel Path.Dir
+  -> S.Stream (E.Eff es) a
+list_digest_under_no_sharding mk_digest folder =
+  listFolderFiles folder
+    & S.mapMaybe (s2d . Path.fromRelFile)
+    & fmap mk_digest
+
+{-# INLINE list_digest_under_two_layer_sharding #-}
+list_digest_under_two_layer_sharding
+  :: (E.Repository E.:> es)
+  => (Digest -> a)
+  -> Path Path.Rel Path.Dir
+  -> S.Stream (E.Eff es) a
+list_digest_under_two_layer_sharding mk_digest folder =
+  S.fromList dirs
+    & S.concatMap listFolderFiles
+    & S.mapMaybe (s2d . Path.fromRelFile)
+    & fmap mk_digest
+  where
+    dirs = do
+      l1 <- one_level_dirs
+      l2 <- one_level_dirs
+      pure $! folder </> l1 </> l2
+    one_level_dirs = fmap (fromMaybe (error "impossible") . Path.parseRelDir . to_hex) [0 .. 255]
+
+    to_hex :: Word32 -> String
+    to_hex = printf "%02x"
 
 doesVersionExists :: (E.Repository E.:> es) => VersionDigest -> E.Eff es Bool
-doesVersionExists = does_that_exist folder_version . coerce
+doesVersionExists = fileExists . pathOfVersion
 
 doesTreeExists :: (E.Repository E.:> es) => TreeDigest -> E.Eff es Bool
-doesTreeExists = does_that_exist folder_tree . coerce
+doesTreeExists = fileExists . pathOfTree
 
 doesFileExists :: (E.Repository E.:> es) => FileDigest -> E.Eff es Bool
-doesFileExists = does_that_exist folder_file . coerce
+doesFileExists = fileExists . pathOfFile
 
 doesChunkExists :: (E.Repository E.:> es) => ChunkDigest -> E.Eff es Bool
-doesChunkExists = does_that_exist folder_chunk . coerce
+doesChunkExists = fileExists . pathOfChunk
 
 tryCatingVersion :: (E.Repository E.:> es) => VersionDigest -> E.Eff es (Maybe Version)
 tryCatingVersion digest = do
@@ -302,6 +355,20 @@ folder_tree = [Path.reldir|tree|]
 folder_version :: Path Path.Rel Path.Dir
 folder_version = [Path.reldir|version|]
 
+pathOfVersion :: VersionDigest -> Path Path.Rel Path.File
+pathOfVersion d = folder_version </> d_path
+  where
+    !d_path = fromMaybe (error "impossible") $ Path.parseRelFile (show d)
+
+pathOfTree :: TreeDigest -> Path Path.Rel Path.File
+pathOfTree = (folder_tree </>) . no_sharding_for_digest . coerce
+
+pathOfFile :: FileDigest -> Path Path.Rel Path.File
+pathOfFile = (folder_file </>) . no_sharding_for_digest . coerce
+
+pathOfChunk :: ChunkDigest -> Path Path.Rel Path.File
+pathOfChunk = (folder_chunk </>) . two_layer_sharding_for_digest . coerce
+
 addChunk'
   :: (E.Repository E.:> es)
   => Digest
@@ -310,8 +377,7 @@ addChunk'
   -> E.Eff es Word64
   -- ^ Bytes written
 addChunk' digest chunks iv = do
-  file_name' <- Path.parseRelFile $ digest_to_base16_filepath digest
-  let f = folder_chunk </> file_name'
+  let !f = pathOfChunk $ UnsafeMkChunkDigest digest
   exist <- fileExists f
   if exist
     then pure 0
@@ -345,8 +411,7 @@ addFile'
   -> E.Eff es Bool
   -- ^ Dir added.
 addFile' digest file_path iv = do
-  file_name' <- Path.parseRelFile $ digest_to_base16_filepath digest
-  let f = folder_file </> file_name'
+  let f = pathOfFile $ UnsafeMkFileDigest digest
   exist <- fileExists f
   unless exist $ do
     aes <- getAES
@@ -373,8 +438,7 @@ addDir'
   -> E.Eff es Bool
   -- ^ Dir added.
 addDir' digest file_path iv = do
-  file_name' <- Path.parseRelFile $ digest_to_base16_filepath digest
-  let f = folder_tree </> file_name'
+  let f = pathOfTree $ UnsafeMkTreeDigest digest
   exist <- fileExists f
   unless exist $ do
     aes <- getAES
@@ -406,9 +470,8 @@ addVersion iv v = do
       & fmap fromArray
       & S.fold hashByteStringFoldIO
       & E.unsafeEff_
-  version_digest_filename <- Path.parseRelFile $ show version_digest
 
-  let f = folder_version </> version_digest_filename
+  let f = pathOfVersion $ UnsafeMkVersionDigest version_digest
 
   putFileFold <- mkPutFileFold
 
@@ -431,16 +494,6 @@ nextBackupVersionId = do
     & S.fold F.maximum
     & fmap (succ . fromMaybe 0)
 
-cat_stuff_under
-  :: (Show a, E.Repository E.:> es)
-  => Path Path.Rel Path.Dir
-  -> a
-  -> S.Stream (E.Eff es) (Array.Array Word8)
-cat_stuff_under folder stuff = S.concatEffect $ do
-  stuff_path <- E.unsafeEff_ $ Path.parseRelFile $ show stuff
-  pure $! read (folder </> stuff_path)
-{-# INLINE cat_stuff_under #-}
-
 assertSizeOfFile :: (HasCallStack, E.Repository E.:> es) => FileDigest -> E.Eff es ()
 assertSizeOfFile digest = do
   aes <- getAES
@@ -456,7 +509,7 @@ catFile digest = S.concatEffect $ do
   aes <- getAES
   E.unsafeConcUnliftIO E.Ephemeral E.Unlimited $ \un -> do
     pure $!
-      cat_stuff_under folder_file digest
+      read (pathOfFile digest)
         & S.morphInner un
         & decryptCtr aes (1024 * 32)
         & compact digestSize
@@ -476,28 +529,24 @@ catChunk digest = S.concatEffect $ do
   RepositoryRep _ aes <- E.getStaticRep
   E.unsafeConcUnliftIO E.Ephemeral E.Unlimited $ \un -> do
     pure $!
-      cat_stuff_under folder_chunk digest
+      read (pathOfChunk digest)
         & S.morphInner un
         & decryptCtr aes (32 * 1024)
         & S.morphInner E.unsafeEff_
 {-# INLINE catChunk #-}
 
 getChunkSize :: (E.Repository E.:> es) => ChunkDigest -> E.Eff es FileOffset
-getChunkSize sha = do
-  sha_path <- E.unsafeEff_ $ Path.parseRelFile $ show sha
-  fileSize $ folder_chunk </> sha_path
+getChunkSize = fileSize . pathOfChunk
 
 getFileSize :: (E.Repository E.:> es) => FileDigest -> E.Eff es FileOffset
-getFileSize sha = do
-  sha_path <- E.unsafeEff_ $ Path.parseRelFile $ show sha
-  fileSize $ folder_file </> sha_path
+getFileSize = fileSize . pathOfFile
 
 catVersion :: (E.Repository E.:> es) => VersionDigest -> E.Eff es Version
 catVersion digest = do
   RepositoryRep _ aes <- E.getStaticRep
 
   encrypted_bytes <-
-    cat_stuff_under folder_version digest
+    read (pathOfVersion digest)
       & fmap (BB.shortByteString . BShort.pack . Array.toList)
       & S.fold F.mconcat
       & fmap (BS.toStrict . BB.toLazyByteString)
@@ -524,7 +573,7 @@ catTree tree_sha' = S.concatEffect $ do
   aes <- getAES
   E.unsafeConcUnliftIO E.Ephemeral E.Unlimited $ \un -> do
     pure $!
-      cat_stuff_under folder_tree tree_sha'
+      read (pathOfTree tree_sha')
         & S.morphInner un
         & decryptCtr aes (1024 * 32)
         & US.decodeUtf8Chunks
@@ -571,8 +620,40 @@ s2d sha = do
 
   pure digest
 
-digest_to_base16_filepath :: Digest -> FilePath
-digest_to_base16_filepath = map (toEnum . fromIntegral) . BShort.unpack . digestToBase16ShortByteString
-
 d2b :: Digest -> BS.ByteString
 d2b = digestToBase16ByteString
+
+initRepositoryStructure :: (E.Repository :> es) => E.Eff es ()
+initRepositoryStructure = do
+  createDirectory [Path.reldir|.|]
+
+  -- The number of versions should be okay with only one level of folder to hold.
+  createDirectory folder_version
+
+  for_ [folder_tree, folder_file, folder_chunk] $ \folder -> do
+    createDirectory folder
+
+    for_ [0 .. 255 :: Word32] $ \layer_1 -> do
+      layer_1_dir <- Path.parseRelDir $ to_hex layer_1
+      createDirectory $ folder </> layer_1_dir
+
+      for_ [0 .. 255 :: Word32] $ \layer_2 -> do
+        layer_2_dir <- Path.parseRelDir $ to_hex layer_2
+        createDirectory $ folder </> layer_1_dir </> layer_2_dir
+  where
+    to_hex :: Word32 -> String
+    to_hex = printf "%02x"
+
+no_sharding_for_digest :: Digest -> Path Path.Rel Path.File
+no_sharding_for_digest d = d_path
+  where
+    !d_path = fromMaybe (error "impossible") $ Path.parseRelFile d_str
+    d_str = show d
+
+two_layer_sharding_for_digest :: Digest -> Path Path.Rel Path.File
+two_layer_sharding_for_digest d = l1_path </> l2_path </> d_path
+  where
+    !l1_path = fromMaybe (error "impossible") $ Path.parseRelDir $ take 2 d_str
+    !l2_path = fromMaybe (error "impossible") $ Path.parseRelDir $ take 2 $ drop 2 d_str
+    !d_path = fromMaybe (error "impossible") $ Path.parseRelFile d_str
+    d_str = show d
