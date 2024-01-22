@@ -284,13 +284,13 @@ write_chunk path = F.Fold step initial extract
       pure $! F.Partial fd
 
     {-# INLINE [0] step #-}
-    step fd arr = (`onException` P.closeFd fd) $ do
+    step !fd !arr = (`onException` P.closeFd fd) $ do
       -- Using Fd for writing cost less CPU time than using Handle (hPutBuf).
-      void $ fastArrayAsPtrUnsafe arr $ \ptr -> P.fdWriteBuf fd ptr (fromIntegral $ Array.byteLength arr)
+      void $ fastArrayAsPtrUnsafe arr $ \ptr -> P.fdWriteBuf fd ptr $! fromIntegral $! Array.byteLength arr
       pure $! F.Partial fd
 
     {-# INLINE [0] extract #-}
-    extract fd = mask_ $ do
+    extract !fd = mask_ $ do
       P.closeFd fd
 
 localRepo :: Path Path.Abs Path.Dir -> Repository
