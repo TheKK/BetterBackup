@@ -658,10 +658,14 @@ no_sharding_for_digest d = d_path
     !d_path = fromMaybe (error "impossible") $ Path.parseRelFile d_str
     d_str = show d
 
+-- About unsafeCoerce:
+--   Using unsafeCoerce to replace parseRelFile could reward you about 10 sec CPU time (from 300s to 290s)
+--   while backing up 13GiB (6 large file), without noticeable change on elapsed time though.
 two_layer_sharding_for_digest :: Digest -> Path Path.Rel Path.File
-two_layer_sharding_for_digest d = l1_path </> l2_path </> d_path
+two_layer_sharding_for_digest d = fromMaybe (error "impossible case") $ Path.parseRelFile raw_path
   where
-    !l1_path = fromMaybe (error "impossible") $ Path.parseRelDir $ take 2 d_str
-    !l2_path = fromMaybe (error "impossible") $ Path.parseRelDir $ take 2 $ drop 2 d_str
-    !d_path = fromMaybe (error "impossible") $ Path.parseRelFile d_str
+    raw_path = l1_path FP.</> l2_path FP.</> d_path
+    !l1_path = take 2 d_str
+    !l2_path = take 2 $ drop 2 d_str
+    !d_path = d_str
     d_str = show d
