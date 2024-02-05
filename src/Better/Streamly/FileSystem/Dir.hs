@@ -41,12 +41,12 @@ readEither = S.unfold eitherReader
 reader :: UF.Unfold IO (Path rel_or_abs Path.Dir) FilePath
 reader
   = UF.filter (\x -> x /= "." && x /= "..")
-  $ UF.bracketIO (P.openDirStream . Path.toFilePath) (P.closeDirStream)
-  $ UF.unfoldrM $ \dirp -> do
-    f <- liftIO $ P.readDirStream dirp
-    pure $ case f of
-      "" -> Nothing
-      _ -> Just (f, dirp)
+  $ UF.bracketIO (P.openDirStream . Path.toFilePath) P.closeDirStream
+  $ UF.unfoldrM $ \(!dirp) -> do
+    f <- P.readDirStream dirp
+    case f of
+      "" -> pure Nothing
+      _ -> pure $ Just (f, dirp)
 {-# INLINE reader #-}
 
 fileReader :: UF.Unfold IO (Path rel_or_abs Path.Dir) (Path Path.Rel Path.File)
