@@ -655,7 +655,8 @@ initRepositoryStructure = do
 no_sharding_for_digest :: Digest -> Path Path.Rel Path.File
 no_sharding_for_digest d = d_path
   where
-    !d_path = fromMaybe (error "impossible") $ Path.parseRelFile d_str
+    -- Unsafe: ensure `show d` always produces valid Path Rel File.
+    !d_path = unsafeCoerce d_str
     d_str = show d
 
 -- About unsafeCoerce:
