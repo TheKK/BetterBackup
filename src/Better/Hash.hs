@@ -5,7 +5,6 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE MagicHash #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeApplications #-}
 
 module Better.Hash (
   -- * Digest
@@ -59,7 +58,6 @@ import Streamly.Data.Array qualified as Array
 import Streamly.Data.Fold qualified as F
 
 import Data.ByteArray qualified as BA
-import Data.ByteArray.Sized qualified as BAS
 
 import BLAKE3 qualified
 import BLAKE3.IO qualified as BIO
@@ -68,9 +66,15 @@ import Better.Internal.Streamly.Array (ArrayBA (ArrayBA))
 
 import Control.Parallel.Strategies (NFData)
 
+import Control.Monad ((<$!>))
 import Control.Monad.ST (ST, stToIO)
 import Control.Monad.ST.Unsafe (unsafeIOToST)
 
+import Foreign.ForeignPtr (
+  ForeignPtr,
+  mallocForeignPtr,
+  withForeignPtr,
+ )
 import Foreign.Marshal qualified as Alloc
 
 newtype VersionDigest = UnsafeMkVersionDigest Digest
@@ -136,7 +140,7 @@ digestToByteString :: Digest -> BS.ByteString
 digestToByteString (Digest d) = BSS.fromShort d
 
 hashByteStringFold :: F.Fold (ST s) BS.ByteString Digest
-hashByteStringFold = hashByteArrayAccess $ BLAKE3.init Nothing
+hashByteStringFold = hashByteArrayAccess
 {-# INLINE hashByteStringFold #-}
 
 hashByteStringFoldIO :: F.Fold IO BS.ByteString Digest
@@ -144,7 +148,7 @@ hashByteStringFoldIO = F.morphInner stToIO hashByteStringFold
 {-# INLINE hashByteStringFoldIO #-}
 
 hashArrayFold :: F.Fold (ST s) (Array.Array Word8) Digest
-hashArrayFold = F.lmap ArrayBA $ hashByteArrayAccess $ BLAKE3.init Nothing
+hashArrayFold = F.lmap ArrayBA $ hashByteArrayAccess
 {-# INLINE hashArrayFold #-}
 
 hashArrayFoldIO :: F.Fold IO (Array.Array Word8) Digest
@@ -154,29 +158,34 @@ hashArrayFoldIO = F.morphInner stToIO hashArrayFold
 -- It's safe to unsafeIOToST here since we only do memroy operations in IO, and returns ShortByteString
 -- which doesn't expose state inside ST.
 {-# INLINE finalize #-}
-finalize :: BIO.Hasher -> ST s Digest
+finalize :: ForeignPtr BIO.Hasher -> ST s Digest
 finalize hasher = unsafeIOToST $ do
-  BA.withByteArray hasher $ \hasher_ptr -> Alloc.allocaBytes digestSize $ \buf_ptr -> do
+  -- TODO Here we allocate twice (allocaBytes + createFromPtr). Can we create ShortByteString directly?
+  withForeignPtr hasher $ \(!hasher_ptr) -> Alloc.allocaBytes digestSize $ \(!buf_ptr) -> do
     BIO.c_finalize hasher_ptr buf_ptr $! fromIntegral digestSize
-    Digest <$> BSS.createFromPtr buf_ptr digestSize
+    Digest <$!> BSS.createFromPtr buf_ptr digestSize
 
 -- | ST version of blake3 hash
 -- The benefit of using ST monad is low overhead of memory allocation, comparing to pure version.
 {-# INLINE hashByteArrayAccess #-}
-hashByteArrayAccess :: (BA.ByteArrayAccess ba) => BIO.Hasher -> F.Fold (ST s) ba Digest
-hashByteArrayAccess = F.rmapM finalize . hashByteArrayAccess'
+hashByteArrayAccess :: (BA.ByteArrayAccess ba) => F.Fold (ST s) ba Digest
+hashByteArrayAccess = F.rmapM finalize hashByteArrayAccess'
 
 -- | hashByteArrayAccess but returns Hasher instead of Digest.
 {-# INLINE hashByteArrayAccess' #-}
-hashByteArrayAccess' :: (BA.ByteArrayAccess ba) => BIO.Hasher -> F.Fold (ST s) ba BIO.Hasher
-hashByteArrayAccess' hasher0 = F.foldlM' step clone_hash0
+hashByteArrayAccess' :: (BA.ByteArrayAccess ba) => F.Fold (ST s) ba (ForeignPtr BIO.Hasher)
+hashByteArrayAccess' = F.foldlM' step mk_hasher
   where
     -- For referential transparency, we shouldn't modify the input hasher.
-    clone_hash0 = unsafeIOToST $ BAS.copy hasher0 $ \ptr -> BIO.update @BS.ByteString ptr []
-
+    mk_hasher = unsafeIOToST $ do
+      -- `mallocForeignPtr` use Storeable which has no memset zero operation on hasher after finalized.
+      -- This is what we want to reduce CPU time. We also don't require that kind of behaviour now.
+      hasher <- mallocForeignPtr
+      withForeignPtr hasher BIO.c_init
+      pure $! hasher
     -- It's safe to unsafeIOToST here since we only do memroy operations in IO.
     {-# INLINE [0] step #-}
-    step (!hasher :: BIO.Hasher) !bs = unsafeIOToST $ do
-      BA.withByteArray hasher $ \hasher_ptr -> BA.withByteArray bs $ \bs_ptr ->
-        BIO.c_update hasher_ptr bs_ptr $! fromIntegral (BA.length bs)
+    step (!hasher :: ForeignPtr BIO.Hasher) !bs = unsafeIOToST $ do
+      withForeignPtr hasher $ \(!hasher_ptr) -> BA.withByteArray bs $ \(!bs_ptr) ->
+        BIO.c_update hasher_ptr bs_ptr $! fromIntegral $! BA.length bs
       pure $! hasher

@@ -738,7 +738,7 @@ keep_traversing_existed_tree fsc digest_of_existed_tree rel_dir_path_in_tree pos
           & S.trace (liftIO . BC.hPut fd)
           & S.fold
             ( F.tee
-                (F.morphInner (liftIO . stToIO) $ hashByteArrayAccess' $ Hash.init Nothing)
+                (F.morphInner (liftIO . stToIO) $ hashByteArrayAccess')
                 (F.lmap (fromIntegral . BS.length) F.sum)
             )
 
