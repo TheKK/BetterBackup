@@ -24,7 +24,7 @@ import Unsafe.Coerce (unsafeCoerce#)
 -- The callback function must not return the pointer. The argument byte
 -- array must be /pinned/. See 'byteArrayContents' for an explanation
 -- of which byte arrays are pinned.
-withMutableByteArrayContents :: PrimBase m => MutableByteArray (PrimState m) -> (Ptr Word8 -> m a) -> m a
+withMutableByteArrayContents :: PrimBase m => MutableByteArray (PrimState m) -> (Ptr b -> m a) -> m a
 {-# INLINE withMutableByteArrayContents #-}
 withMutableByteArrayContents (MutableByteArray arr#) f =
   keepAliveUnlifted arr# (f (Ptr (mutableByteArrayContentsShim arr#)))
