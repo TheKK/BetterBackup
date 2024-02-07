@@ -131,6 +131,7 @@ import Streamly.Internal.Data.Array.Type qualified as Array
 import Streamly.Internal.Data.Fold qualified as F
 import Streamly.Internal.Unicode.Stream qualified as US
 import System.Directory qualified as D
+import System.FilePath qualified as FP
 import System.IO.Error (isAlreadyExistsError, isDoesNotExistError)
 import System.Posix.Directory qualified as P
 import System.Posix.Files qualified as P
@@ -138,6 +139,7 @@ import System.Posix.IO qualified as P
 import System.Posix.Types (FileOffset)
 import Text.Printf (printf)
 import Text.Read (readMaybe)
+import Unsafe.Coerce (unsafeCoerce)
 import Prelude hiding (read)
 
 data Repository = Repository
