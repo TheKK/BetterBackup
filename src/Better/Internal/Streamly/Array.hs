@@ -12,15 +12,18 @@ module Better.Internal.Streamly.Array (
   fastArrayAsPtrUnsafe,
   fastMutArrayAsPtrUnsafe,
   readChunks,
+  fdReadChunksWith,
   chunkReaderFromToWith,
   chunkReaderFromToWithFdPread,
 )
 where
 
 import Control.Exception (assert, mask_, onException)
-import Control.Monad ()
+import Control.Monad ((<$!>))
 import Data.ByteArray (ByteArrayAccess (..))
 import Data.ByteArray qualified as BA
+import Data.ByteString qualified as BS
+import Data.ByteString.Internal qualified as BS
 import Data.Function ()
 import Data.Word (Word8)
 import Foreign.C.String (CString)
@@ -180,6 +183,17 @@ readChunksWith size h = S.Stream step ()
       case Array.byteLength arr of
         0 -> pure S.Stop
         _ -> pure $ S.Yield arr ()
+
+{-# INLINE fdReadChunksWith #-}
+fdReadChunksWith :: Int -> P.Fd -> S.Stream IO BS.ByteString
+fdReadChunksWith !size !fd = S.Stream step ()
+  where
+    {-# INLINE [0] step #-}
+    step _ s = do
+      !arr <- BS.createUptoN size $ \(!ptr) -> fmap fromIntegral <$!> P.fdReadBuf fd ptr $! fromIntegral size
+      if BS.null arr
+        then pure S.Stop
+        else pure $ S.Yield arr s
 
 -- Copy from streamly-core.
 getChunk :: Int -> Handle -> IO (Array.Array Word8)
