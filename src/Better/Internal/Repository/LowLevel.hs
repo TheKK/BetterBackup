@@ -91,6 +91,7 @@ import Better.Hash qualified as Hash
 import Better.Internal.Streamly.Array (fastArrayAsPtrUnsafe)
 import Better.Internal.Streamly.Array qualified as BetterArray
 import Better.Internal.Streamly.Crypto.AES (compact, decryptCtr, encryptCtr)
+import Better.Posix.File qualified as BF
 import Better.Repository.Class qualified as E
 import Better.Repository.Types (Version (..))
 import Better.Streamly.FileSystem.Dir qualified as Dir
@@ -124,11 +125,11 @@ import Path qualified
 import Streamly.Data.Array qualified as Array
 import Streamly.Data.Fold qualified as F
 import Streamly.Data.Stream.Prelude qualified as S
-import Streamly.External.ByteString (fromArray)
+import Streamly.External.ByteString (fromArray, toArray)
 import Streamly.External.ByteString.Lazy qualified as S
-import Streamly.FileSystem.File qualified as File
 import Streamly.Internal.Data.Array.Type qualified as Array
 import Streamly.Internal.Data.Fold qualified as F
+import Streamly.Internal.System.IO (defaultChunkSize)
 import Streamly.Internal.Unicode.Stream qualified as US
 import System.Directory qualified as D
 import System.FilePath qualified as FP
@@ -409,7 +410,7 @@ addChunk' digest chunks iv = do
 --   - user must ensure that @Digest@ and file at @Path@ are matched
 --   - user must ensure that @Cipher.IV@ is not reused and won't be reused by other operations
 addFile'
-  :: (E.Repository E.:> es)
+  :: (E.Repository E.:> es, E.IOE E.:> es)
   => Digest
   -> Path Path.Abs Path.File
   -> Cipher.IV AES128
@@ -421,13 +422,17 @@ addFile' digest file_path iv = do
   unless exist $ do
     aes <- getAES
     putFileFold <- mkPutFileFold
-    File.readChunks (Path.toFilePath file_path)
-      & encryptCtr aes iv (1024 * 32)
-      -- Do compact here so that impl of Repository doesn't need to care about buffering.
-      -- TODO In the other hand, they can't do desired buffering.
-      & compact (1024 * 32)
-      & S.morphInner E.unsafeEff_
-      & S.fold (putFileFold f)
+
+    -- Optmization: `Handle` costs more CPU time and memory (perhaps for buffering).
+    BF.withFile file_path P.ReadOnly P.defaultFileFlags $ \read_fd -> do
+      BetterArray.fdReadChunksWith defaultChunkSize read_fd
+        & fmap toArray
+        & encryptCtr aes iv (1024 * 32)
+        -- Do compact here so that impl of Repository doesn't need to care about buffering.
+        -- TODO In the other hand, they can't do desired buffering.
+        & compact (1024 * 32)
+        & S.morphInner E.unsafeEff_
+        & S.fold (putFileFold f)
   pure $! not exist
 
 -- | Add single 'tree' into repository.
@@ -436,7 +441,7 @@ addFile' digest file_path iv = do
 --   - user must ensure that @Digest@ and file at @Path@ are matched
 --   - user must ensure that @Cipher.IV@ is not reused and won't be reused by other operations
 addDir'
-  :: (E.Repository E.:> es)
+  :: (E.IOE E.:> es, E.Repository E.:> es)
   => Digest
   -> Path Path.Abs Path.File
   -> Cipher.IV AES128
@@ -448,13 +453,17 @@ addDir' digest file_path iv = do
   unless exist $ do
     aes <- getAES
     putFileFold <- mkPutFileFold
-    File.readChunks (Path.toFilePath file_path)
-      & encryptCtr aes iv (1024 * 32)
-      -- Do compact here so that impl of Repository doesn't need to care about buffering.
-      -- TODO In the other hand, they can't do desired buffering.
-      & compact (1024 * 32)
-      & S.morphInner E.unsafeEff_
-      & S.fold (putFileFold f)
+
+    -- Optmization: `Handle` costs more CPU time and memory (perhaps for buffering).
+    BF.withFile file_path P.ReadOnly P.defaultFileFlags $ \read_fd -> do
+      BetterArray.fdReadChunksWith defaultChunkSize read_fd
+        & fmap toArray
+        & encryptCtr aes iv (1024 * 32)
+        -- Do compact here so that impl of Repository doesn't need to care about buffering.
+        -- TODO In the other hand, they can't do desired buffering.
+        & compact (1024 * 32)
+        & S.morphInner E.unsafeEff_
+        & S.fold (putFileFold f)
   pure $! not exist
 
 -- | Use @Binary Version@ to encode given Version into byte string, then store them.
