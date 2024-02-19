@@ -1,4 +1,5 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE CApiFFI #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE LambdaCase #-}
@@ -25,52 +26,43 @@ module Better.Streamly.FileSystem.Chunker (
   props_fast_cdc,
 ) where
 
-import Fusion.Plugin.Types (Fuse (Fuse))
-
-import GHC.Types (SPEC (SPEC))
-
-import qualified Data.Bits as Bits
-
-import qualified Data.ByteArray as BA
-import qualified Data.ByteString as BS
-import qualified Data.ByteString.Lazy as BL
-import qualified Data.ByteString.Unsafe as BS
-
-import Data.Coerce (coerce)
+import Better.Internal.Primitive (withMutableByteArrayContents)
+import Control.Exception (bracket)
+import Control.Monad (forM_, unless, void, (<$!>))
+import Control.Monad.IO.Class (liftIO)
+import Data.Bits qualified as Bits
+import Data.ByteArray qualified as BA
+import Data.ByteString qualified as BS
+import Data.ByteString.Lazy qualified as BL
+import Data.ByteString.Unsafe qualified as BS
 import Data.Foldable (for_)
 import Data.Function (fix, (&))
 import Data.Functor.Identity (runIdentity)
 import Data.List (foldl')
-import qualified Data.Primitive.ByteArray as Prim
+import Data.Primitive.ByteArray qualified as Prim
+import Data.Vector.Unboxed qualified as UV
 import Data.Word (Word32, Word64, Word8)
-
-import qualified Data.Vector.Unboxed as UV
-
-import qualified Streamly.Data.Stream as S
+import Foreign.Storable (Storable (peekElemOff))
+import Fusion.Plugin.Types (Fuse (Fuse))
+import GHC.Exts (Ptr, RealWorld, SPEC (SPEC), coerce)
+import Hedgehog qualified as H
+import Hedgehog.Gen qualified as Gen
+import Hedgehog.Range qualified as Range
+import Streamly.Data.Stream qualified as S
 import Streamly.Internal.Data.SVar (adaptState)
-import qualified Streamly.Internal.Data.Stream as S
-import qualified Streamly.Internal.Data.Unfold.Exception as Unfold
+import Streamly.Internal.Data.Stream qualified as S
+import Streamly.Internal.Data.Unfold.Exception qualified as Unfold
 import Streamly.Internal.Data.Unfold.Type (Unfold (Unfold))
 import Streamly.Internal.System.IO (defaultChunkSize)
-import System.Posix.Temp (mkstemp)
-import qualified System.Random as Rng
-import qualified System.Random.SplitMix as Rng
-
-import Control.Exception (bracket)
-import Control.Monad (forM_, unless)
-
-import System.IO (Handle, IOMode (ReadMode), SeekMode (AbsoluteSeek, RelativeSeek), hClose, hFileSize, hGetBufSome, hIsEOF, hSeek, openFile, withFile)
-
-import qualified Hedgehog as H
-import qualified Hedgehog.Gen as Gen
-import qualified Hedgehog.Range as Range
-
-import Control.Monad.IO.Class (liftIO)
-import Control.Monad.Primitive (RealWorld)
-import System.Directory (removeFile)
-
-import Better.Internal.Primitive (withMutableByteArrayContents)
+import System.IO (SeekMode (AbsoluteSeek, RelativeSeek), hClose)
 import System.IO.Temp (withSystemTempFile)
+import System.Posix.Files qualified as P
+import System.Posix.IO qualified as P
+import System.Posix.Types qualified as P
+import System.Random qualified as Rng
+import System.Random.SplitMix qualified as Rng
+
+{-# ANN type Chunk Fuse #-}
 
 -- | Chunk section after chunking.
 data Chunk = Chunk
@@ -82,16 +74,16 @@ data Chunk = Chunk
   deriving (Show, Eq)
 
 data GearHashConfig = GearHashConfig
-  { gearhash_low_mask :: Word64
-  , gearhash_high_mask :: Word64
-  , gearhash_min_size :: Word32
-  , gearhash_avg_size :: Word32
-  , gearhash_max_size :: Word32
+  { gearhash_low_mask :: !Word64
+  , gearhash_high_mask :: !Word64
+  , gearhash_min_size :: !Word32
+  , gearhash_avg_size :: !Word32
+  , gearhash_max_size :: !Word32
   }
   deriving (Show)
 
 gearHashConfig :: Word32 -> Word32 -> GearHashConfig
-gearHashConfig normalize_level avg_bytes =
+gearHashConfig !normalize_level !avg_bytes =
   GearHashConfig
     { gearhash_low_mask = distribute (floor @Double $ logBase 2 $ fromIntegral max_bytes) 48
     , gearhash_high_mask = distribute (ceiling @Double $ logBase 2 $ fromIntegral min_bytes) 48
@@ -107,10 +99,10 @@ defaultGearHashConfig :: GearHashConfig
 defaultGearHashConfig = gearHashConfig normalize_level avg_bytes
   where
     normalize_level :: Word32
-    normalize_level = 2
+    !normalize_level = 2
 
     avg_bytes :: Word32
-    avg_bytes = 32 * 2 ^ (10 :: Int)
+    !avg_bytes = 32 * 2 ^ (10 :: Int)
 
 gearHashConfigMinChunkSize :: GearHashConfig -> Word32
 gearHashConfigMinChunkSize = gearhash_min_size
@@ -129,12 +121,12 @@ data GearState s
 
 {-# INLINE gearHash #-}
 gearHash :: GearHashConfig -> FilePath -> S.Stream IO Chunk
-gearHash cfg = S.unfold (Unfold.bracket (`openFile` ReadMode) hClose $ gearHashWithFileUnfold cfg)
+gearHash cfg = S.unfold (Unfold.bracket (\path -> P.openFd path P.ReadOnly Nothing P.defaultFileFlags) P.closeFd $ gearHashWithFileUnfold cfg)
 
 data Buf = Buf
   { buf_offset :: {-# UNPACK #-} !Int
   , buf_len :: {-# UNPACK #-} !Int
-  , buf_content :: !(Prim.MutableByteArray RealWorld)
+  , buf_content :: {-# UNPACK #-} !(Prim.MutableByteArray RealWorld)
   }
 
 instance Show Buf where
@@ -183,50 +175,59 @@ buf_split_at !n buf = (buf_take n buf, buf_drop n buf)
 
 {-# ANN type GearStateFd Fuse #-}
 data GearStateFd
-  = GearFindingFd !Word64 !Int !Int !Handle !Buf
-  | GearSeekingFd !Int !Word64 !Int !Int !Handle !Buf
+  = GearFindingFd {-# UNPACK #-} !Word64 {-# UNPACK #-} !Int {-# UNPACK #-} !Int !P.Fd {-# UNPACK #-} !Buf
+  | GearLastFd !Chunk
   | GearEndFd
 
 -- NOTE Keep cfg a thunk here make GHC possible to inline step function.
 -- Othersise the expression `(gearHashWithFileUnfold some_cfg)` might be floated out to a global binding.
 {-# INLINE gearHashWithFileUnfold #-}
-gearHashWithFileUnfold :: GearHashConfig -> Unfold IO Handle Chunk
-gearHashWithFileUnfold cfg = Unfold step inject
+gearHashWithFileUnfold :: GearHashConfig -> Unfold IO P.Fd Chunk
+gearHashWithFileUnfold !cfg = Unfold step inject
   where
-    min_chunk_size = gearHashConfigMinChunkSize cfg
+    !min_chunk_size = gearHashConfigMinChunkSize cfg
 
-    inject h = do
-      buf <- buf_new_pinned defaultChunkSize
-      hSeek h AbsoluteSeek 0
-      pure $ GearSeekingFd (fromIntegral $ gearHashConfigMinChunkSize cfg) 0 0 0 h buf
+    inject !h = do
+      !buf <- buf_new_pinned defaultChunkSize
+      !file_size <- P.fileSize <$!> P.getFdStatus h
+      if file_size == 0
+        then pure GearEndFd
+        else
+          if fromIntegral file_size <= gearHashConfigMinChunkSize cfg
+            then do
+              pure $! GearLastFd $! Chunk 0 $! fromIntegral file_size
+            else do
+              init_read_byte <- P.fdSeek h AbsoluteSeek $! fromIntegral $! gearHashConfigMinChunkSize cfg
+              pure $! GearFindingFd 0 0 (fromIntegral $! init_read_byte) h buf
 
     {-# INLINE [0] step #-}
+    step (GearLastFd chunk) = pure $! S.Yield chunk GearEndFd
     step (GearFindingFd last_hash chunk_begin' read_bytes h buf) = do
       ret <-
         if buf_length buf /= 0
           then pure $! SJust buf
           else do
             let !content = buf_content buf
-            capacity <- buf_capacity buf
-            bytes <- withMutableByteArrayContents content $ \ptr -> hGetBufSome h ptr capacity
+            !capacity <- buf_capacity buf
+            !bytes <- withMutableByteArrayContents content $ \ptr -> P.fdReadBuf h ptr $! fromIntegral capacity
             if bytes /= 0
               then do
-                new_buf <- buf_take bytes <$> buf_full buf
+                !new_buf <- buf_take (fromIntegral bytes) <$> buf_full buf
                 pure $! SJust new_buf
               else pure SNothing
 
       case ret of
         SJust entire_buf -> do
           let
-            bytes_until_max_chunk_size = fromIntegral (gearHashConfigMaxChunkSize cfg) - read_bytes
-            (buf_before_max_limit, buf_after_max_limit) = buf_split_at bytes_until_max_chunk_size entire_buf
+            !bytes_until_max_chunk_size = fromIntegral (gearHashConfigMaxChunkSize cfg) - read_bytes
+            (!buf_before_max_limit, !buf_after_max_limit) = buf_split_at bytes_until_max_chunk_size entire_buf
           search_break_point_for_muarray read_bytes (fromIntegral $ gearhash_avg_size cfg) last_hash buf_before_max_limit (gearhash_low_mask cfg, gearhash_high_mask cfg) >>= \case
             -- No breakpoing was found in entire buf, try next block
-            (SNothing, !new_gear) ->
+            NotFound new_gear ->
               if buf_length buf_after_max_limit == 0
                 then
                   pure $!
-                    S.Skip $!
+                    S.Skip $
                       GearFindingFd
                         new_gear
                         chunk_begin'
@@ -235,57 +236,48 @@ gearHashWithFileUnfold cfg = Unfold step inject
                         (buf_reset entire_buf)
                 else do
                   let
-                    chunk_end' = chunk_begin' + read_bytes + coerce (buf_length buf_before_max_limit)
+                    !chunk_end' = chunk_begin' + read_bytes + coerce (buf_length buf_before_max_limit)
                     !new_chunk = Chunk chunk_begin' chunk_end'
 
-                    remaining_buf = buf_after_max_limit
-                    !next_state = next_state_from_remaining_buf new_gear chunk_end' h remaining_buf
+                    !remaining_buf = buf_after_max_limit
+                  !next_state <- next_state_from_remaining_buf new_gear chunk_end' h remaining_buf
 
                   pure $! S.Yield new_chunk next_state
 
             -- Breakpoint was found after reading n bytes from buf, try next block
-            (SJust read_bytes_of_arr, !new_gear) -> do
+            Found new_gear read_bytes_of_arr -> do
               let
-                chunk_end' = chunk_begin' + read_bytes + read_bytes_of_arr
+                !chunk_end' = chunk_begin' + read_bytes + read_bytes_of_arr
                 !new_chunk = Chunk chunk_begin' chunk_end'
-                remaining_buf = buf_drop read_bytes_of_arr entire_buf
-                !next_state = next_state_from_remaining_buf new_gear chunk_end' h remaining_buf
+                !remaining_buf = buf_drop read_bytes_of_arr entire_buf
+              !next_state <- next_state_from_remaining_buf new_gear chunk_end' h remaining_buf
 
               pure $! S.Yield new_chunk next_state
         SNothing ->
           if read_bytes /= 0
-            then -- The last chunk to yield
-
-              let
-                chunk_end' = chunk_begin' + read_bytes
-                !next_chunk = Chunk chunk_begin' chunk_end'
-              in
-                pure $! S.Yield next_chunk GearEndFd
-            else pure S.Stop
-    step (GearSeekingFd remaining_bytes last_hash chunk_begin' read_bytes' h buf)
-      | remaining_bytes <= 0 = pure $! S.Skip $! GearFindingFd last_hash chunk_begin' read_bytes' h (buf_reset buf)
-      | otherwise = do
-          hSeek h RelativeSeek (fromIntegral remaining_bytes)
-          eof <- hIsEOF h
-          if not eof
-            then pure $! S.Skip $! GearFindingFd last_hash chunk_begin' (read_bytes' + remaining_bytes) h (buf_reset buf)
-            else do
-              file_size' <- hFileSize h
+            then do
+              -- The last chunk to yield
+              !file_size' <- P.fileSize <$!> P.getFdStatus h
               let !chunk_end' = fromIntegral file_size'
                   !next_chunk = Chunk chunk_begin' chunk_end'
               if chunk_begin' == chunk_end'
                 then pure S.Stop
                 else pure $! S.Yield next_chunk GearEndFd
+            else pure S.Stop
     step GearEndFd = pure S.Stop
 
     {-# INLINE next_state_from_remaining_buf #-}
-    next_state_from_remaining_buf :: Word64 -> Int -> Handle -> Buf -> GearStateFd
+    next_state_from_remaining_buf :: Word64 -> Int -> P.Fd -> Buf -> IO GearStateFd
     next_state_from_remaining_buf !new_gear !chunk_end' !h !buf =
-      let remaining_buf_length = buf_length buf
-      in  case fromIntegral min_chunk_size `compare` remaining_buf_length of
-            GT -> GearSeekingFd (fromIntegral min_chunk_size - remaining_buf_length) new_gear chunk_end' remaining_buf_length h (buf_reset buf)
-            LT -> GearFindingFd new_gear chunk_end' (fromIntegral min_chunk_size) h (buf_drop (fromIntegral min_chunk_size) buf)
-            EQ -> GearFindingFd new_gear chunk_end' (fromIntegral min_chunk_size) h (buf_reset buf)
+      let
+        !remaining_buf_length = buf_length buf
+      in
+        case fromIntegral min_chunk_size `compare` remaining_buf_length of
+          GT -> do
+            void $ P.fdSeek h RelativeSeek $! (fromIntegral min_chunk_size - fromIntegral remaining_buf_length)
+            pure $! GearFindingFd new_gear chunk_end' (fromIntegral min_chunk_size) h (buf_reset buf)
+          LT -> pure $! GearFindingFd new_gear chunk_end' (fromIntegral min_chunk_size) h (buf_drop (fromIntegral min_chunk_size) buf)
+          EQ -> pure $! GearFindingFd new_gear chunk_end' (fromIntegral min_chunk_size) h (buf_reset buf)
 
 -- NOTE Keep cfg a thunk here make GHC possible to inline step function.
 -- Othersise the expression `(gearHashPure cfg)` might be floated out to a global binding.
@@ -398,22 +390,35 @@ search_break_point !read_bytes !avg_chunk_size !init_hash !buf (!lomask, !himask
         then (SJust (i + 1), new_hash)
         else rec (spec, new_hash, i + 1)
 
-{-# INLINE search_break_point_for_muarray #-}
-search_break_point_for_muarray :: Int -> Int -> Word64 -> Buf -> (Word64, Word64) -> IO (SMaybe Int, Word64)
-search_break_point_for_muarray !read_bytes !avg_chunk_size !init_hash !buf (!lomask, !himask) = flip fix (SPEC, init_hash, 0) $ \rec (!spec, !cur_hash, !i) ->
-  if i >= buf_length buf
-    then pure (SNothing, cur_hash)
-    else do
-      let
-        mask = if read_bytes + i < avg_chunk_size then lomask else himask
-      new_hash <- gear_hash_update cur_hash <$> buf_unsafe_index i buf
+-- Using specific unboxed data type instead of SMaybe reduces cost of memory consumption.
+{-# ANN type SearchRet Fuse #-}
+data SearchRet = Found {-# UNPACK #-} !Word64 {-# UNPACK #-} !Int | NotFound {-# UNPACK #-} !Word64
 
-      if new_hash Bits..&. mask == 0
-        then pure (SJust (i + 1), new_hash)
-        else rec (spec, new_hash, i + 1)
+{-# INLINE search_break_point_for_muarray #-}
+search_break_point_for_muarray :: Int -> Int -> Word64 -> Buf -> (Word64, Word64) -> IO SearchRet
+search_break_point_for_muarray !read_bytes !avg_chunk_size !init_hash !buf (!lomask, !himask) = do
+  lo_go init_hash lomask 0 junction_i >>= \case
+    ret@(Found _ _) -> pure $! ret
+    NotFound hash' -> lo_go hash' himask junction_i end_i
+  where
+    !junction_i = 0 `max` (avg_chunk_size - read_bytes) `min` end_i
+    !end_i = buf_length buf
+
+    {-# INLINE lo_go #-}
+    lo_go !hash0 !mask !i0 !iend = flip fix (SPEC, hash0, i0) $ \rec (!spec, !cur_hash, !i) -> do
+      if i < iend
+        then do
+          !v <- buf_unsafe_index i buf
+          !new_hash <- c_gear_hash_update cur_hash v
+
+          if new_hash Bits..&. mask == 0
+            then pure $! Found new_hash (i + 1)
+            else rec (spec, new_hash, i + 1)
+        else pure $! NotFound cur_hash
 
 -- TODO Should this large vector be here or locally to its user to be memory usage
 -- friendly?
+-- Keep this vector for documentation, reference implmentation and testing purpose.
 gear_table :: UV.Vector Word64
 gear_table =
   UV.fromListN 256 $
@@ -421,6 +426,17 @@ gear_table =
     -- CAUTION Don't change seeds unless you'd like to break old deduplications.
     $
       Rng.seedSMGen 123 456
+
+-- Accessing this random table is the hot spot while chunking and it does cost less CPU resource comparing to UV.Vector.
+foreign import capi unsafe "gear.h &rng_table" c_rng_table :: Ptr Word64
+
+{-# INLINE c_gear_hash_update #-}
+c_gear_hash_update :: Word64 -> Word8 -> IO Word64
+c_gear_hash_update !w64 !w8 = do
+  let
+    !shift_prev = Bits.unsafeShiftL w64 1
+  !table_value <- peekElemOff c_rng_table $! fromIntegral w8
+  pure $! shift_prev + table_value
 
 gear_hash_update :: Word64 -> Word8 -> Word64
 gear_hash_update !w64 !w8 =
@@ -582,8 +598,8 @@ props_fast_cdc =
         -- Close tmp_h so it can be read by others
         mapM_ (BS.hPut tmp_h) input_stream >> hClose tmp_h
 
-        withFile tmp_p ReadMode $ \h ->
-          S.unfold (gearHashWithFileUnfold chunk_config) h
+        bracket (liftIO $ P.openFd tmp_p P.ReadOnly Nothing P.defaultFileFlags) (liftIO . P.closeFd) $ \h ->
+          S.unfold (gearHashWithFileUnfold chunk_config) (h)
             & S.toList
 
       H.cover 1 "empty input stream" $ null input_stream

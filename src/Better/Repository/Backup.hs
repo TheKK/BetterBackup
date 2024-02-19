@@ -422,22 +422,22 @@ backup_file
   :: (E.Repository E.:> es, BackupWorkers E.:> es, BackupCache E.:> es, Tmp E.:> es, E.IOE E.:> es)
   => Path Path.Abs Path.File
   -> E.Eff es FileDigest
-backup_file rel_file_name = do
-  BackupWorkersRep push_job <- E.getStaticRep
+backup_file rel_file_name = E.withSeqEffToIO $ \seq_un -> PosixFile.withFile rel_file_name P.ReadOnly P.defaultFileFlags $ \fd_read -> do
+  BackupWorkersRep push_job <- seq_un E.getStaticRep
 
-  st <- liftIO $ P.getFileStatus $ Path.fromAbsFile rel_file_name
-  to_scan <- BackupCacheLevelDB.tryReadingCacheHash st
+  st <- P.getFdStatus fd_read
+
+  to_scan <- seq_un $ BackupCacheLevelDB.tryReadingCacheHash st
   case to_scan of
     Just cached_digest -> do
-      liftIO $ push_job $ FindNoChangeFile cached_digest st
+      push_job $ FindNoChangeFile cached_digest st
       pure $! UnsafeMkFileDigest cached_digest
 
     -- Using reallyUnsafeUnliftIO since:
     -- - It's performance critical path
     -- - we know backup_chunk would run in same thread here
-    Nothing -> Tmp.withEmptyTmpFile $ \file_name' -> E.reallyUnsafeUnliftIO $ \unsafe_un -> do
-      (!file_hash, !file_size) <- withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd ->
-        PosixFile.withFile rel_file_name P.ReadOnly P.defaultFileFlags $ \fd_read -> do
+    Nothing -> seq_un $ Tmp.withEmptyTmpFile $ \file_name' -> E.reallyUnsafeUnliftIO $ \unsafe_un -> do
+      (!file_hash, !file_size) <- withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
           the_tail <- newIORef 0
 
           let
@@ -457,7 +457,7 @@ backup_file rel_file_name = do
           -- TODO make fadviser toggleable function.
           withAsync fadviser $ \_ ->
             -- TODO Perhaps it's better to read chunks from Chunker directly in performance.
-            Chunker.gearHash Chunker.defaultGearHashConfig (Path.fromAbsFile rel_file_name)
+            S.unfold (Chunker.gearHashWithFileUnfold Chunker.defaultGearHashConfig) fd_read
               & S.mapM
                 ( \(Chunker.Chunk b e) -> do
                     -- We observed that reading via Fd is faster than Handle.

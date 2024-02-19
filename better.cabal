@@ -77,6 +77,10 @@ common warnings
 
 library better-core
     import:           warnings
+    C-sources:
+      cbits/gear.c
+    include-dirs:
+      cbits
     exposed-modules:
       Better.Internal.Primitive
       Better.Internal.Repository
