@@ -52,26 +52,17 @@ import Effectful.Concurrent.Async (pooledForConcurrentlyN, runConcurrent)
 import Effectful.Dispatch.Static qualified as E
 import Effectful.Ki qualified as EKi
 
-import Better.Bin.Pretty (mkBackupStatisticsDoc)
+import Better.Bin.Pretty (PrevStatistic, initPrevStatistic, mkBackupStatisticsDoc)
 import Better.Logging.Effect (logging, loggingOnSyncException)
 import Better.Repository.Backup (DirEntry (DirEntryDir))
 import Better.Repository.Backup qualified as Repo
-import Better.Statistics.Backup qualified as BackupSt
 import Better.Statistics.Backup.Class (
   BackupStatistics,
   BackupStatisticsRep,
-  newChunkCount,
-  newDirCount,
-  newFileCount,
-  processedChunkCount,
-  processedDirCount,
-  processedFileCount,
-  totalDirCount,
-  totalFileCount,
-  uploadedBytes,
  )
 import Better.Statistics.Backup.Class qualified as BackupSt
 
+import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Monad (runRepositoryForBackupFromCwd)
 import Util.Options (someBaseDirRead)
 
@@ -121,7 +112,7 @@ parser_info = info (helper <*> parser) infoMod
             Path.Rel dir -> abs_pwd Path.</> dir
 
           process_reporter stat_map_tvar = forever $ do
-            mask_ $ report_backup_stat stat_map_tvar
+            mask_ $ report_backup_stat (Just 0.3) stat_map_tvar
             liftIO $ threadDelay (300 * 1000)
 
         logging Log.InfoS "checking permission of pathes"
@@ -142,7 +133,8 @@ parser_info = info (helper <*> parser) infoMod
         let
           gen_statistic_rep_for name = do
             !rep <- BackupSt.mkBackupStatisticsRep
-            liftIO $ atomically $ modifyTVar' stat_map_tvar (Seq.|> (name, rep))
+            prev_stat_ref <- liftIO $ newIORef initPrevStatistic
+            liftIO $ atomically $ modifyTVar' stat_map_tvar (Seq.|> (name, rep, prev_stat_ref))
             pure rep
 
         stat_os_config <- gen_statistic_rep_for "OS CONFIG"
@@ -173,20 +165,24 @@ parser_info = info (helper <*> parser) infoMod
               ]
 
         liftIO $ putStrLn "result:"
-        report_backup_stat stat_map_tvar
+        report_backup_stat Nothing stat_map_tvar
         liftIO $ print v
 
         pure (v_digest, v)
 
-report_backup_stat :: (BackupStatistics E.:> es, E.IOE E.:> es) => TVar (Seq (String, BackupStatisticsRep)) -> E.Eff es ()
-report_backup_stat tvar_stat_map =
+report_backup_stat :: (BackupStatistics E.:> es, E.IOE E.:> es) => Maybe Double -> TVar (Seq (String, BackupStatisticsRep, IORef PrevStatistic)) -> E.Eff es ()
+report_backup_stat opt_dt tvar_stat_map =
   E.unsafeEff_ Console.size >>= \case
     Nothing -> pure ()
     Just (Console.Window _h w) -> do
       doc_lazy_text <-
         renderLazy . layoutPretty (LayoutOptions $ AvailablePerLine w 1) <$> do
           stat_map <- liftIO $ readTVarIO tvar_stat_map
-          docs <- for (toList stat_map) $ \(name, rep) -> BackupSt.runBackupStatisticsWithRep rep $ mkBackupStatisticsDoc $ Just name
+          docs <- for (toList stat_map) $ \(name, rep, prev_stat_ref) -> BackupSt.runBackupStatisticsWithRep rep $ do
+            prev_stat <- E.unsafeEff_ $ readIORef prev_stat_ref
+            (doc, cur_stat) <- mkBackupStatisticsDoc (Just name) $ fmap (prev_stat,) opt_dt
+            E.unsafeEff_ $ writeIORef prev_stat_ref cur_stat
+            pure doc
           pure $ vsep docs
       let !doc_height = TL.foldl' (\(!acc) c -> if c == '\n' then acc + 1 else acc) 1 doc_lazy_text
       E.unsafeEff_ $ do
