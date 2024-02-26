@@ -721,7 +721,7 @@ keep_traversing_existed_tree fsc digest_of_existed_tree rel_dir_path_in_tree pos
 
   fmap Just $ Tmp.withEmptyTmpFile $ \file_name' -> EU.withSeqEffToIO $ \seq_un -> do
     (!dir_hash, !file_size) <- withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> seq_un $ do
-      (!mid_hasher, !mid_file_size) <-
+      mid_fold <-
         -- Traverse existed part.
         Repo.catTree digest_of_existed_tree
           & S.mapM
@@ -736,14 +736,15 @@ keep_traversing_existed_tree fsc digest_of_existed_tree rel_dir_path_in_tree pos
           & S.catMaybes
           & fmap tree_content_from_dir_entry
           & S.trace (liftIO . BC.hPut fd)
-          & S.fold
+          & flip
+            F.addStream
             ( F.tee
                 (F.morphInner (liftIO . stToIO) $ hashByteArrayAccess')
                 (F.lmap (fromIntegral . BS.length) F.sum)
             )
 
       -- Traverse added part.
-      (!digest, !rest_file_size) <-
+      (!digest, !file_size) <-
         S.fromList possible_new_entries
           & S.mapM
             ( \(entry_rel_path_in_tree, entry_abs_path_on_filesystem) -> do
@@ -752,13 +753,9 @@ keep_traversing_existed_tree fsc digest_of_existed_tree rel_dir_path_in_tree pos
           & S.catMaybes
           & fmap tree_content_from_dir_entry
           & S.trace (liftIO . BC.hPut fd)
-          & S.fold
-            ( F.tee
-                (F.morphInner (liftIO . stToIO) $ F.rmapM finalize $ hashByteArrayAccess' mid_hasher)
-                (F.lmap (fromIntegral . BS.length) F.sum)
-            )
+          & S.fold mid_fold
 
-      pure (digest, mid_file_size + rest_file_size)
+      pure (runST $ finalize digest, file_size)
 
     liftIO $ push_job $ UploadTree dir_hash file_name' file_size
 
