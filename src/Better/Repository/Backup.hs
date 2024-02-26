@@ -74,7 +74,7 @@ import Control.Concurrent.STM.TSem (TSem, newTSem, signalTSem, waitTSem)
 import Control.Monad (guard, replicateM, replicateM_, unless, when)
 import Control.Monad.Catch (finally, mask, onException, throwM)
 import Control.Monad.IO.Class (liftIO)
-import Control.Monad.ST.Strict (stToIO)
+import Control.Monad.ST.Strict (runST, stToIO)
 import Control.Monad.Trans.Maybe (MaybeT (MaybeT, runMaybeT))
 import Crypto.Cipher.AES (AES128)
 import Crypto.Cipher.AES qualified as Cipher
@@ -373,10 +373,10 @@ backupDirWithoutCollectingDirAndFileStatistics rel_tree_name = do
   BackupWorkersRep push_job <- E.getStaticRep
   backupEnv <- E.getStaticRep @RepositoryBackup
   let
-    (ForkFns file_fork_or_not dir_fork_or_not) = repobackuprep_forkfns backupEnv
+    !(ForkFns file_fork_or_not dir_fork_or_not) = repobackuprep_forkfns backupEnv
 
-  Tmp.withEmptyTmpFile $ \file_name' -> EU.withSeqEffToIO $ \seq_un -> do
-    (!dir_hash, !file_size) <- withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
+  Tmp.withEmptyTmpFileFd $ \file_name' fd -> do
+    (!dir_hash, !file_size) <- do
       Dir.readEither rel_tree_name
         & S.morphInner E.unsafeEff_
         & S.mapM
@@ -392,7 +392,6 @@ backupDirWithoutCollectingDirAndFileStatistics rel_tree_name = do
               $ F.lmap (fromIntegral . BS.length) F.sum
           )
         & E.withUnliftStrategy (E.ConcUnlift E.Ephemeral E.Unlimited)
-        & seq_un
 
     liftIO $ push_job $ UploadTree dir_hash file_name' file_size
 
@@ -422,55 +421,55 @@ backup_file
   :: (E.Repository E.:> es, BackupWorkers E.:> es, BackupCache E.:> es, Tmp E.:> es, E.IOE E.:> es)
   => Path Path.Abs Path.File
   -> E.Eff es FileDigest
-backup_file rel_file_name = E.withSeqEffToIO $ \seq_un -> PosixFile.withFile rel_file_name P.ReadOnly P.defaultFileFlags $ \fd_read -> do
-  BackupWorkersRep push_job <- seq_un E.getStaticRep
+backup_file rel_file_name = PosixFile.withFile rel_file_name P.ReadOnly P.defaultFileFlags $ \fd_read -> do
+  BackupWorkersRep push_job <- E.getStaticRep
 
-  st <- P.getFdStatus fd_read
+  st <- E.unsafeEff_ $ P.getFdStatus fd_read
 
-  to_scan <- seq_un $ BackupCacheLevelDB.tryReadingCacheHash st
+  to_scan <- BackupCacheLevelDB.tryReadingCacheHash st
   case to_scan of
     Just cached_digest -> do
-      push_job $ FindNoChangeFile cached_digest st
+      E.unsafeEff_ $ push_job $ FindNoChangeFile cached_digest st
       pure $! UnsafeMkFileDigest cached_digest
 
     -- Using reallyUnsafeUnliftIO since:
     -- - It's performance critical path
     -- - we know backup_chunk would run in same thread here
-    Nothing -> seq_un $ Tmp.withEmptyTmpFile $ \file_name' -> E.reallyUnsafeUnliftIO $ \unsafe_un -> do
-      (!file_hash, !file_size) <- withBinaryFile (Path.fromAbsFile file_name') WriteMode $ \fd -> do
-          the_tail <- newIORef 0
+    Nothing -> Tmp.withEmptyTmpFileFd $ \file_name' fd -> E.reallyUnsafeUnliftIO $ \unsafe_un -> do
+      (!file_hash, !file_size) <- do
+        the_tail <- newIORef 0
 
-          let
-            fadvice_once !last_tail = do
-              !current_tail <- readIORef the_tail
-              when (last_tail /= current_tail) $ do
-                P.fileAdvise fd_read last_tail (current_tail - last_tail) P.AdviceDontNeed
-              pure current_tail
+        let
+          fadvice_once !last_tail = do
+            !current_tail <- readIORef the_tail
+            when (last_tail /= current_tail) $ do
+              P.fileAdvise fd_read last_tail (current_tail - last_tail) P.AdviceDontNeed
+            pure current_tail
 
-            fadviser_last = fadvice_once 0
+          fadviser_last = fadvice_once 0
 
-            fadviser = (`finally` fadviser_last) $ flip fix 0 $ \rec !last_tail -> do
-              threadDelay 1000000
-              !current_tail <- fadvice_once last_tail
-              rec current_tail
+          fadviser = (`finally` fadviser_last) $ flip fix 0 $ \rec !last_tail -> do
+            threadDelay 1000000
+            !current_tail <- fadvice_once last_tail
+            rec current_tail
 
-          -- TODO make fadviser toggleable function.
-          withAsync fadviser $ \_ ->
-            -- TODO Perhaps it's better to read chunks from Chunker directly in performance.
-            S.unfold (Chunker.gearHashWithFileUnfold Chunker.defaultGearHashConfig) fd_read
-              & S.mapM
-                ( \(Chunker.Chunk b e) -> do
-                    -- We observed that reading via Fd is faster than Handle.
-                    ret <-
-                      S.unfold chunkReaderFromToWithFdPread (b, e - 1, defaultChunkSize, fd_read)
-                        & S.fold F.toList
-                    atomicModifyIORef' the_tail $ const (fromIntegral e - 1, ())
-                    pure ret
-                )
-              & S.parEval (S.ordered True . S.eager True . S.maxBuffer 16)
-              & S.mapM (unsafe_un . backup_chunk)
-              & S.trace (BS.hPut fd)
-              & S.fold (F.tee hashByteStringFoldIO $ F.lmap (fromIntegral . BS.length) F.sum)
+        -- TODO make fadviser toggleable function.
+        withAsync fadviser $ \_ ->
+          -- TODO Perhaps it's better to read chunks from Chunker directly in performance.
+          S.unfold (Chunker.gearHashWithFileUnfold Chunker.defaultGearHashConfig) fd_read
+            & S.mapM
+              ( \(Chunker.Chunk b e) -> do
+                  -- We observed that reading via Fd is faster than Handle.
+                  ret <-
+                    S.unfold chunkReaderFromToWithFdPread (b, e - 1, defaultChunkSize, fd_read)
+                      & S.fold F.toList
+                  atomicModifyIORef' the_tail $ const (fromIntegral e - 1, ())
+                  pure ret
+              )
+            & S.parEval (S.ordered True . S.eager True . S.maxBuffer 2)
+            & S.mapM (unsafe_un . backup_chunk)
+            & S.trace (BS.hPut fd)
+            & S.fold (F.tee hashByteStringFoldIO $ F.lmap (fromIntegral . BS.length) F.sum)
 
       push_job $ UploadFile file_hash file_name' (Just st) file_size
       pure $ UnsafeMkFileDigest file_hash
