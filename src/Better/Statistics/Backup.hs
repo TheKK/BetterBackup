@@ -1,26 +1,23 @@
-
 module Better.Statistics.Backup (
   -- | General operations
   readStatistics,
   modifyStatistic',
 ) where
 
-import qualified Control.Monad.IO.Unlift as Un
-
-import Control.Monad.IO.Class (liftIO)
-
 import Control.Concurrent.STM (TVar, atomically, modifyTVar', readTVarIO)
+import Effectful qualified as E
+import Effectful.Dispatch.Static qualified as E
 
 -- TODO Maybe could move to Better.Statistics
 {-# INLINE readStatistics #-}
-readStatistics :: (Un.MonadUnliftIO m) => m (TVar a) -> m a
-readStatistics mtvar = Un.withRunInIO $ \un -> do
-  tvar <- un mtvar
-  liftIO $ readTVarIO tvar
+readStatistics :: E.Eff es (TVar a) -> E.Eff es a
+readStatistics mtvar = do
+  tvar <- mtvar
+  E.unsafeEff_ $ readTVarIO tvar
 
 -- TODO Maybe could move to Better.Statistics
 {-# INLINE modifyStatistic' #-}
-modifyStatistic' :: (Un.MonadUnliftIO m) => m (TVar a) -> (a -> a) -> m ()
-modifyStatistic' mtvar f = Un.withRunInIO $ \un -> do
-  tvar <- un mtvar
-  atomically $ modifyTVar' tvar f
+modifyStatistic' :: E.Eff es (TVar a) -> (a -> a) -> E.Eff es ()
+modifyStatistic' mtvar f = do
+  tvar <- mtvar
+  E.unsafeEff_ $ atomically $ modifyTVar' tvar f
