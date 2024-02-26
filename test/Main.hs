@@ -5,31 +5,26 @@ module Main (
   main,
 ) where
 
-import Test.Tasty (defaultMain, testGroup)
-import Test.Tasty.Hedgehog (fromGroup, testProperty)
-
+import Better.Data.FileSystemChanges (props_filesystem_change)
+import Better.Internal.Streamly.Crypto.AES (compact, decryptCtr, encryptCtr)
+import Better.Repository.Backup (props_what_to_do_with_file_and_dir)
+import Better.Streamly.FileSystem.Chunker (props_distribute, props_fast_cdc)
 import Control.Monad (when)
 import Control.Monad.IO.Class (MonadIO (liftIO))
-
-import Hedgehog (Property, annotateShow, cover, diff, forAll, property, (===))
-import qualified Hedgehog.Gen as Gen
-import qualified Hedgehog.Range as Range
-
-import qualified Crypto.Cipher.Types as Cipher
-
+import Crypto.Cipher.AES (AES128)
+import Crypto.Cipher.Types qualified as Cipher
+import Crypto.Error (CryptoFailable (CryptoFailed, CryptoPassed))
+import Data.ByteString qualified as BS
+import Data.ByteString.Lazy qualified as BL
 import Data.Foldable (for_)
 import Data.Function ((&))
-
-import qualified Data.ByteString as BS
-import qualified Data.ByteString.Lazy as BL
-
-import qualified Streamly.Data.Stream as S
-import Streamly.External.ByteString
-
-import Better.Internal.Streamly.Crypto.AES (compact, decryptCtr, encryptCtr, that_aes)
-import Better.Streamly.FileSystem.Chunker (props_distribute, props_fast_cdc)
-import Better.Repository.Backup (props_what_to_do_with_file_and_dir)
-import Better.Data.FileSystemChanges (props_filesystem_change)
+import Hedgehog (Property, annotateShow, cover, diff, forAll, property, (===))
+import Hedgehog.Gen qualified as Gen
+import Hedgehog.Range qualified as Range
+import Streamly.Data.Stream qualified as S
+import Streamly.External.ByteString (fromArray, toArray)
+import Test.Tasty (defaultMain, testGroup)
+import Test.Tasty.Hedgehog (fromGroup, testProperty)
 
 main :: IO ()
 main =
@@ -42,10 +37,15 @@ main =
     , testProperty "compact" prop_compact
     ]
 
+gen_aes128 :: IO AES128
+gen_aes128 = case Cipher.cipherInit @AES128 @BS.ByteString "just for testxxx" of
+  CryptoPassed aes -> pure aes
+  CryptoFailed err -> error $ show err
+
 -- TODO Move this property to its own module.
 prop_ctr_enc_dec :: Property
 prop_ctr_enc_dec = property $ do
-  aes <- liftIO that_aes
+  aes <- liftIO gen_aes128
   let iv = Cipher.nullIV
 
   plain_text_chunks <-
