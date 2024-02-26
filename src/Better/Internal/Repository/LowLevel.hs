@@ -326,10 +326,10 @@ getAES = do
   RepositoryRep _ aes <- E.getStaticRep
   pure $! aes
 
-mkPutFileFold :: (E.Repository E.:> es) => E.Eff es (Path Path.Rel Path.File -> F.Fold (E.Eff es) (Array.Array Word8) ())
+mkPutFileFold :: (E.Repository E.:> es) => E.Eff es (Path Path.Rel Path.File -> F.Fold IO (Array.Array Word8) ())
 mkPutFileFold = do
   RepositoryRep repo _ <- E.getStaticRep
-  pure $! F.morphInner E.unsafeEff_ . _repo_putFile repo
+  pure $ _repo_putFile repo
 
 removeFiles :: (E.Repository E.:> es) => [Path Path.Rel Path.File] -> E.Eff es ()
 removeFiles files = do
@@ -382,27 +382,24 @@ addChunk'
   -> Cipher.IV AES128
   -> E.Eff es Word64
   -- ^ Bytes written
-addChunk' digest chunks iv = do
-  let !f = pathOfChunk $ UnsafeMkChunkDigest digest
-  exist <- fileExists f
+addChunk' !digest chunks !iv = do
+  let !f = pathOfChunk $! UnsafeMkChunkDigest digest
+  !exist <- fileExists f
   if exist
     then pure 0
     else do
-      aes <- getAES
-      putFileFold <- mkPutFileFold
-      ((), !len) <-
+      !aes <- getAES
+      !putFileFold <- mkPutFileFold
+      !len <-
         S.fromList chunks
           & encryptCtr aes iv (1024 * 32)
           -- Do compact here so that impl of Repository doesn't need to care about buffering.
           -- TODO In the other hand, they can't do desired buffering.
           & compact (1024 * 32)
-          & S.morphInner E.unsafeEff_
-          & S.fold
-            ( F.tee
-                (putFileFold f)
-                (fromIntegral <$> F.lmap Array.byteLength F.sum)
-            )
-      pure len
+          & S.tap (putFileFold f)
+          & S.fold (F.lmap Array.byteLength F.sum)
+          & E.unsafeEff_
+      pure $! fromIntegral len
 
 -- | Add single 'file' into repository.
 --
@@ -416,12 +413,12 @@ addFile'
   -> Cipher.IV AES128
   -> E.Eff es Bool
   -- ^ Dir added.
-addFile' digest file_path iv = do
-  let f = pathOfFile $ UnsafeMkFileDigest digest
-  exist <- fileExists f
+addFile' !digest file_path !iv = do
+  let !f = pathOfFile $! UnsafeMkFileDigest digest
+  !exist <- fileExists f
   unless exist $ do
-    aes <- getAES
-    putFileFold <- mkPutFileFold
+    !aes <- getAES
+    !putFileFold <- mkPutFileFold
 
     -- Optmization: `Handle` costs more CPU time and memory (perhaps for buffering).
     BF.withFile file_path P.ReadOnly P.defaultFileFlags $ \read_fd -> do
@@ -431,8 +428,8 @@ addFile' digest file_path iv = do
         -- Do compact here so that impl of Repository doesn't need to care about buffering.
         -- TODO In the other hand, they can't do desired buffering.
         & compact (1024 * 32)
-        & S.morphInner E.unsafeEff_
         & S.fold (putFileFold f)
+        & E.unsafeEff_
   pure $! not exist
 
 -- | Add single 'tree' into repository.
@@ -447,12 +444,12 @@ addDir'
   -> Cipher.IV AES128
   -> E.Eff es Bool
   -- ^ Dir added.
-addDir' digest file_path iv = do
-  let f = pathOfTree $ UnsafeMkTreeDigest digest
-  exist <- fileExists f
+addDir' !digest file_path !iv = do
+  let !f = pathOfTree $! UnsafeMkTreeDigest digest
+  !exist <- fileExists f
   unless exist $ do
-    aes <- getAES
-    putFileFold <- mkPutFileFold
+    !aes <- getAES
+    !putFileFold <- mkPutFileFold
 
     -- Optmization: `Handle` costs more CPU time and memory (perhaps for buffering).
     BF.withFile file_path P.ReadOnly P.defaultFileFlags $ \read_fd -> do
@@ -462,8 +459,8 @@ addDir' digest file_path iv = do
         -- Do compact here so that impl of Repository doesn't need to care about buffering.
         -- TODO In the other hand, they can't do desired buffering.
         & compact (1024 * 32)
-        & S.morphInner E.unsafeEff_
         & S.fold (putFileFold f)
+        & E.unsafeEff_
   pure $! not exist
 
 -- | Use @Binary Version@ to encode given Version into byte string, then store them.
@@ -473,7 +470,7 @@ addVersion
   -> Version
   -> E.Eff es (Word64, Hash.VersionDigest)
   -- ^ Written bytes and digest of created version
-addVersion iv v = do
+addVersion !iv !v = do
   RepositoryRep _ aes <- E.getStaticRep
 
   -- It should be safe to store entire version bytes here since Version is relative small (under hundred of bytes)
@@ -487,7 +484,7 @@ addVersion iv v = do
 
   let f = pathOfVersion $ UnsafeMkVersionDigest version_digest
 
-  putFileFold <- mkPutFileFold
+  !putFileFold <- mkPutFileFold
 
   written_bytes <- do
     S.toChunks version_bytes
@@ -495,9 +492,9 @@ addVersion iv v = do
       -- Do compact here so that impl of Repository doesn't need to care about buffering.
       -- TODO In the other hand, they can't do desired buffering.
       & compact (1024 * 32)
-      & S.morphInner E.unsafeEff_
       & S.tap (putFileFold f)
       & S.fold (F.lmap (fromIntegral . Array.length) F.sum)
+      & E.unsafeEff_
 
   pure (written_bytes, Hash.UnsafeMkVersionDigest version_digest)
 
