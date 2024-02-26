@@ -19,6 +19,7 @@ module Better.Hash (
   digestToBase16ShortByteString,
   digestFromByteString,
   digestToByteString,
+  digestToShortByteString,
 
   -- * Pure versions
   hashByteStringFold,
@@ -138,6 +139,9 @@ digestFromByteString bs
 
 digestToByteString :: Digest -> BS.ByteString
 digestToByteString (Digest d) = BSS.fromShort d
+
+digestToShortByteString :: Digest -> BSS.ShortByteString
+digestToShortByteString (Digest d) = d
 
 hashByteStringFold :: F.Fold (ST s) BS.ByteString Digest
 hashByteStringFold = hashByteArrayAccess
