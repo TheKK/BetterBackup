@@ -13,41 +13,6 @@ module Better.Internal.Repository.GarbageCollection (
   garbageCollection,
 ) where
 
-import Prelude hiding (read)
-
-import Data.Foldable (for_)
-import Data.Function (fix, (&))
-
-import Debug.Trace (traceMarker, traceMarkerIO)
-
-import Data.Set qualified as Set
-
-import Path qualified
-
-import Streamly.Data.Fold qualified as F
-import Streamly.Data.Stream.Prelude qualified as S
-
-import System.IO.Error (tryIOError)
-
-import Control.Monad (unless, void, when)
-
-import Effectful qualified as E
-import Effectful.Dispatch.Static.Unsafe qualified as E
-
-import Control.Concurrent.Async (replicateConcurrently_)
-import Control.Concurrent.STM (
-  atomically,
-  modifyTVar',
-  newTQueueIO,
-  newTVarIO,
-  readTVar,
-  readTVarIO,
-  retry,
-  tryReadTQueue,
-  writeTQueue,
- )
-import Control.Exception (bracket_)
-
 import Better.Hash (ChunkDigest (), FileDigest ())
 import Better.Internal.Repository.LowLevel (
   FFile (file_sha),
@@ -65,15 +30,43 @@ import Better.Internal.Repository.LowLevel (
   pathOfTree,
   removeFiles,
  )
+import Better.Logging.Effect (logging)
+import Better.Logging.Effect qualified as E
 import Better.Repository.Class qualified as E
+import Control.Concurrent.Async (replicateConcurrently_)
+import Control.Concurrent.STM (
+  atomically,
+  modifyTVar',
+  newTQueueIO,
+  newTVarIO,
+  readTVar,
+  readTVarIO,
+  retry,
+  tryReadTQueue,
+  writeTQueue,
+ )
+import Control.Exception (bracket_)
+import Control.Monad (unless, void, when)
+import Data.Foldable (for_)
+import Data.Function (fix, (&))
+import Data.Set qualified as Set
+import Debug.Trace (traceMarker, traceMarkerIO)
+import Effectful qualified as E
+import Effectful.Dispatch.Static qualified as E
+import Katip.Core qualified as L
+import Path qualified
+import Streamly.Data.Fold qualified as F
+import Streamly.Data.Stream.Prelude qualified as S
+import System.IO.Error (tryIOError)
+import Prelude hiding (read)
 
 {-# NOINLINE garbageCollection #-}
-garbageCollection :: (E.Repository E.:> es) => E.Eff es ()
+garbageCollection :: (E.Repository E.:> es, E.Logging E.:> es) => E.Eff es ()
 garbageCollection = gc_tree >>= gc_file >>= gc_chunk
   where
     {-# INLINE [2] gc_tree #-}
-    gc_tree :: (E.Repository E.:> es) => E.Eff es (Set.Set FileDigest)
-    gc_tree = Debug.Trace.traceMarker "gc_tree" $ E.reallyUnsafeUnliftIO $ \un -> do
+    gc_tree :: (E.Repository E.:> es, E.Logging E.:> es) => E.Eff es (Set.Set FileDigest)
+    gc_tree = Debug.Trace.traceMarker "gc_tree" $ E.unsafeConcUnliftIO E.Ephemeral E.Unlimited $ \un -> do
       (traversal_queue, live_tree_set) <- do
         trees <-
           un $
@@ -134,20 +127,20 @@ garbageCollection = gc_tree >>= gc_file >>= gc_chunk
       -- Now marked_set should be filled with live nodes.
 
       live_tree_set' <- readTVarIO live_tree_set
-      putStrLn $ "size of live tree set: " <> show (Set.size live_tree_set')
+      un $ logging L.InfoS $ L.ls @String "size of live tree set: " <> L.ls (show (Set.size live_tree_set'))
 
       -- TODO compact it
       Debug.Trace.traceMarkerIO "gc_tree/delete/begin"
       listTreeDigests
         & S.morphInner un
         & S.parMapM
-          (S.eager True . S.maxBuffer 100)
+          (S.eager True . S.maxBuffer 8)
           ( \tree_digest -> tryIOError $ do
               let exist = Set.member tree_digest live_tree_set'
-              unless exist $ void $ tryIOError $ do
+              unless exist $ void $ un $ do
                 let tree_path = pathOfTree tree_digest
-                putStrLn $ "delete tree: " <> Path.fromRelFile tree_path
-                un $ removeFiles [tree_path]
+                logging L.DebugS $ L.ls @String "delete tree: " <> L.ls (Path.fromRelFile tree_path)
+                removeFiles [tree_path]
           )
         & S.fold F.drain
       Debug.Trace.traceMarkerIO "gc_tree/delete/end"
@@ -155,12 +148,14 @@ garbageCollection = gc_tree >>= gc_file >>= gc_chunk
       readTVarIO live_file_set
 
     {-# INLINE [2] gc_file #-}
-    gc_file :: (E.Repository E.:> es) => Set.Set FileDigest -> E.Eff es (Set.Set ChunkDigest)
-    gc_file live_file_set = E.reallyUnsafeUnliftIO $ \un -> Debug.Trace.traceMarker "gc_file" $ do
+    gc_file :: (E.Repository E.:> es, E.Logging E.:> es) => Set.Set FileDigest -> E.Eff es (Set.Set ChunkDigest)
+    gc_file live_file_set = E.unsafeConcUnliftIO E.Ephemeral E.Unlimited $ \un -> Debug.Trace.traceMarker "gc_file" $ do
+      un $ logging L.InfoS $ L.ls @String "size of live file set: " <> L.ls (show (Set.size live_file_set))
+
       listFileDigests
         & S.morphInner un
         & S.parMapM
-          (S.eager True . S.maxBuffer 100)
+          (S.eager True . S.maxBuffer 8)
           ( \file_digest -> do
               let still_alive = Set.member file_digest live_file_set
 
@@ -169,25 +164,28 @@ garbageCollection = gc_tree >>= gc_file >>= gc_chunk
                   pure $! (catFile file_digest & S.morphInner un & fmap chunk_name)
                 else do
                   let file_path = pathOfFile file_digest
-                  putStrLn $ "delete file: " <> Path.fromRelFile file_path
-                  void $ tryIOError $ un $ removeFiles [file_path]
+                  void $ tryIOError $ un $ do
+                    logging L.DebugS $ L.ls @String "delete file: " <> L.ls (Path.fromRelFile file_path)
+                    removeFiles [file_path]
                   pure S.nil
           )
         & S.concatMap id
         & S.fold F.toSet
 
     {-# INLINE [2] gc_chunk #-}
-    gc_chunk :: (E.Repository E.:> es) => Set.Set ChunkDigest -> E.Eff es ()
-    gc_chunk live_chunk_set = E.reallyUnsafeUnliftIO $ \un -> Debug.Trace.traceMarker "gc_chunk" $ do
+    gc_chunk :: (E.Repository E.:> es, E.Logging E.:> es) => Set.Set ChunkDigest -> E.Eff es ()
+    gc_chunk live_chunk_set = E.unsafeConcUnliftIO E.Ephemeral E.Unlimited $ \un -> Debug.Trace.traceMarker "gc_chunk" $ do
+      un $ logging L.InfoS $ L.ls @String "size of live chunk set: " <> L.ls (show (Set.size live_chunk_set))
+
       listChunkDigests
         & S.morphInner un
         & S.parMapM
-          (S.eager True . S.maxBuffer 100)
+          (S.eager True . S.maxBuffer 16)
           ( \chunk_digest -> do
               let exist = Set.member chunk_digest live_chunk_set
-              unless exist $ void $ tryIOError $ do
+              unless exist $ void $ tryIOError $ un $ do
                 let chunk_path = pathOfChunk chunk_digest
-                putStrLn $ "delete chunk: " <> Path.fromRelFile chunk_path
-                un $ removeFiles [chunk_path]
+                logging L.DebugS $ L.ls @String "delete chunk: " <> L.ls (Path.fromRelFile chunk_path)
+                removeFiles [chunk_path]
           )
         & S.fold F.drain
