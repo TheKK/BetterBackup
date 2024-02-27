@@ -124,7 +124,6 @@ garbageCollection = gc_tree >>= gc_file >>= gc_chunk
                           let is_new_item = prev_size /= cur_size
                           when is_new_item $ do
                             writeTQueue traversal_queue dir_sha
-                            modifyTVar' live_tree_set . Set.insert $ dir_sha
                       Right file -> atomically $ do
                         modifyTVar' live_file_set $ Set.insert $ file_sha file
                   )
