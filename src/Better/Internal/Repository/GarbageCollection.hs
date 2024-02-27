@@ -33,12 +33,15 @@ import Better.Internal.Repository.LowLevel (
 import Better.Logging.Effect (logging)
 import Better.Logging.Effect qualified as E
 import Better.Repository.Class qualified as E
+import Control.Applicative ((<|>))
 import Control.Concurrent.Async (replicateConcurrently_)
 import Control.Concurrent.STM (
   atomically,
+  check,
   modifyTVar',
   newTQueueIO,
   newTVarIO,
+  readTQueue,
   readTVar,
   readTVarIO,
   retry,
@@ -50,6 +53,7 @@ import Control.Monad (unless, void, when)
 import Data.Foldable (for_)
 import Data.Function (fix, (&))
 import Data.Set qualified as Set
+import Data.Word (Word32)
 import Debug.Trace (traceMarker, traceMarkerIO)
 import Effectful qualified as E
 import Effectful.Dispatch.Static qualified as E
@@ -83,26 +87,21 @@ garbageCollection = gc_tree >>= gc_file >>= gc_chunk
 
       live_file_set <- newTVarIO Set.empty
 
+      num_of_working_thread_tvar <- newTVarIO (0 :: Word32)
+      let
+        take_job = modifyTVar' num_of_working_thread_tvar succ
+        done_job = modifyTVar' num_of_working_thread_tvar pred
+        running_bracket = bracket_ (pure ()) (atomically done_job)
+        no_one_is_running = check . (0 ==) =<< readTVar num_of_working_thread_tvar
+
       let worker_num = 10 :: Int
-      live_worker_num <- newTVarIO worker_num
-      waiting_num <- newTVarIO (0 :: Int)
       replicateConcurrently_ worker_num $ do
         fix $ \cont -> do
-          opt_to_traverse <- bracket_ (atomically $ modifyTVar' waiting_num succ) (atomically $ modifyTVar' waiting_num pred) $ atomically $ do
-            opt_to_traverse' <- tryReadTQueue traversal_queue
-            case opt_to_traverse' of
-              Just _ -> pure opt_to_traverse'
-              Nothing -> do
-                waiting <- readTVar waiting_num
-                live_num <- readTVar live_worker_num
-                if waiting == live_num
-                  then do
-                    modifyTVar' live_worker_num pred
-                    pure Nothing
-                  else retry
+          opt_to_traverse <- atomically $ do
+            (Just <$> (take_job >> readTQueue traversal_queue)) <|> (Nothing <$ no_one_is_running)
 
           case opt_to_traverse of
-            Just e -> do
+            Just e -> running_bracket $ do
               catTree e
                 & S.morphInner un
                 & S.mapM
