@@ -375,7 +375,7 @@ backupDirWithoutCollectingDirAndFileStatistics rel_tree_name = do
   let
     !(ForkFns file_fork_or_not dir_fork_or_not) = repobackuprep_forkfns backupEnv
 
-  Tmp.withEmptyTmpFileFd $ \file_name' fd -> do
+  (file_name, dir_hash, file_size) <- Tmp.withEmptyTmpFileFd $ \file_name' fd -> do
     (!dir_hash, !file_size) <- do
       Dir.readEither rel_tree_name
         & S.morphInner E.unsafeEff_
@@ -392,10 +392,13 @@ backupDirWithoutCollectingDirAndFileStatistics rel_tree_name = do
               $ F.lmap (fromIntegral . BS.length) F.sum
           )
         & E.withUnliftStrategy (E.ConcUnlift E.Ephemeral E.Unlimited)
+    pure (file_name', dir_hash, file_size)
 
-    liftIO $ push_job $ UploadTree dir_hash file_name' file_size
+  -- NOTE push_job should be run after withEmptyTmpFileFd so that content of file_name
+  -- could be flushed via hClose.
+  liftIO $ push_job $ UploadTree dir_hash file_name file_size
 
-    pure $ UnsafeMkTreeDigest dir_hash
+  pure $ UnsafeMkTreeDigest dir_hash
 
 data DirEntry
   = DirEntryFile {-# UNPACK #-} !FileDigest {-# UNPACK #-} !BS.ByteString
@@ -435,8 +438,8 @@ backup_file rel_file_name = PosixFile.withFile rel_file_name P.ReadOnly P.defaul
     -- Using reallyUnsafeUnliftIO since:
     -- - It's performance critical path
     -- - we know backup_chunk would run in same thread here
-    Nothing -> Tmp.withEmptyTmpFileFd $ \file_name' fd -> E.reallyUnsafeUnliftIO $ \unsafe_un -> do
-      (!file_hash, !file_size) <- do
+    Nothing -> do
+      (!file_name, !file_hash, !file_size) <- Tmp.withEmptyTmpFileFd $ \file_name' fd -> E.reallyUnsafeUnliftIO $ \unsafe_un -> do
         the_tail <- newIORef 0
 
         let
@@ -454,7 +457,7 @@ backup_file rel_file_name = PosixFile.withFile rel_file_name P.ReadOnly P.defaul
             rec current_tail
 
         -- TODO make fadviser toggleable function.
-        withAsync fadviser $ \_ ->
+        (file_hash, file_size) <- withAsync fadviser $ \_ ->
           -- TODO Perhaps it's better to read chunks from Chunker directly in performance.
           S.unfold (Chunker.gearHashWithFileUnfold Chunker.defaultGearHashConfig) fd_read
             & S.mapM
@@ -471,7 +474,11 @@ backup_file rel_file_name = PosixFile.withFile rel_file_name P.ReadOnly P.defaul
             & S.trace (BS.hPut fd)
             & S.fold (F.tee hashByteStringFoldIO $ F.lmap (fromIntegral . BS.length) F.sum)
 
-      push_job $ UploadFile file_hash file_name' (Just st) file_size
+        pure (file_name', file_hash, file_size)
+
+      -- NOTE push_job should be run after withEmptyTmpFileFd so that content of file_name
+      -- could be flushed via hClose.
+      E.unsafeEff_ $ push_job $ UploadFile file_hash file_name (Just st) file_size
       pure $ UnsafeMkFileDigest file_hash
 
 backupFileFromBuilder
