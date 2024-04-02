@@ -75,8 +75,7 @@ checksum n = do
                 in
                   pure $ Just (path, actual_sha_str)
         )
-      & S.filter isJust
-      & fmap fromJust
+      & S.catMaybes
       & S.fold
         ( F.foldMapM $ \(invalid_f, actual_sha) ->
             liftIO $ T.putStrLn $ "invalid file: " <> T.pack (Path.toFilePath invalid_f) <> ", checksum: " <> actual_sha
