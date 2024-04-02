@@ -91,7 +91,7 @@ newtype ChunkDigest = UnsafeMkChunkDigest Digest
   deriving newtype (Ord, Eq, NFData, Hashable, Show, Bin.Binary)
 
 newtype Digest = Digest BSS.ShortByteString
-  deriving (Ord, Eq, NFData)
+  deriving (Ord, Eq, NFData, Bin.Binary)
 
 instance Hashable Digest where
   hash (Digest (BSS.SBS ba)) = fromIntegral $! v1 + v2 + v3 + v4
@@ -112,12 +112,6 @@ instance Hashable Digest where
 instance Show Digest where
   {-# INLINE show #-}
   show = BSC.unpack . digestToBase16ByteString
-
-instance Bin.Binary Digest where
-  {-# INLINE put #-}
-  put d = mapM_ Bin.put $ digestUnpack d
-  {-# INLINE get #-}
-  get = Digest . BSS.toShort <$> Bin.getByteString digestSize
 
 digestSize :: Int
 digestSize = 32
