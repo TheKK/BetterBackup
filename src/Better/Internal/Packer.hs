@@ -1,0 +1,33 @@
+-- | Packer, a format that stores multiple values in single file and could be accessed via key.
+--
+-- Packer always comes with index, which contains headers from multiple packers. This allows us to
+-- construct complete key-to-value map (for searching) without doing too many IO request
+-- (HTTP request/syscall/etc), since single index contains headers from multiple packers.
+--
+-- To summarize:
+--
+-- * multiple key value pairs construct single packer
+-- * multiple headers from Packer construct single index
+--
+-- = Binary format of packer
+--
+-- [packer]: [ body | headers ]
+-- [body]: [ bytes of body (raw bytes) ]
+-- [header]:
+--   [ length of key (w64-le)
+--   | bytes of key (raw bytes)
+--   | offset of value in packer (w64-le)
+--   | length of value in packer (w64-le)
+--   ]
+-- [headers]: [ header * N | sum of length of headers (w64-le) ]
+--
+-- = Binary format of packed indexes
+--
+-- [packed_indexes]: [ packer_name | [ [ packer_name ] or [ key_in_packer ] * N ] ]
+-- [packer_name]: [ 0x00 (word8) | length of packer name (w64-le) | bytes of packer name (UTF8) ]
+-- [key_in_packer]: [ 0x01 (word8) | headers ]
+--
+-- == Notes
+-- We use TVL(Type-Length-Value) encoding here to maximun the ability of streaming index.
+module Better.Internal.Packer (
+) where

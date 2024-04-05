@@ -89,6 +89,8 @@ library better-core
       Better.Internal.Repository.IntegrityCheck
       Better.Internal.Streamly.Crypto.AES
       Better.Internal.Streamly.Array
+      Better.Internal.Packer
+      Better.Internal.Packer.Model
       Better.Streamly.FileSystem.Dir
       Better.Streamly.FileSystem.Chunker
       Better.Data.FileSystemChanges
