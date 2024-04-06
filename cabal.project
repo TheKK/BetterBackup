@@ -17,3 +17,6 @@ package streamly
 
 package crypton
   flags: +support_sse
+
+package flatparse
+  flags: +llvm
