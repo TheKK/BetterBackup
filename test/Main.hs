@@ -6,6 +6,7 @@ module Main (
 ) where
 
 import Better.Data.FileSystemChanges (props_filesystem_change)
+import Better.Internal.Packer (propsPacker)
 import Better.Internal.Packer.Model (props_packer_model)
 import Better.Internal.Streamly.Crypto.AES (compact, decryptCtr, encryptCtr)
 import Better.Repository.Backup (props_what_to_do_with_file_and_dir)
@@ -35,6 +36,7 @@ main =
     , fromGroup props_filesystem_change
     , fromGroup props_what_to_do_with_file_and_dir
     , fromGroup props_packer_model
+    , fromGroup propsPacker
     , testProperty "ctr enc & dec" prop_ctr_enc_dec
     , testProperty "compact" prop_compact
     ]
