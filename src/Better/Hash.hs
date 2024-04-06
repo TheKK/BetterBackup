@@ -18,6 +18,7 @@ module Better.Hash (
   digestToBase16ByteString,
   digestToBase16ShortByteString,
   digestFromByteString,
+  digestFromShortByteString,
   digestToByteString,
   digestToShortByteString,
 
@@ -46,6 +47,7 @@ import Data.Base16.Types qualified as B16
 
 import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BSC
+import Data.ByteString.Short (ShortByteString)
 import Data.ByteString.Short qualified as BSS
 import Data.ByteString.Short.Base16 qualified as BSS16
 import Data.ByteString.Short.Internal qualified as BSS
@@ -53,7 +55,6 @@ import Data.ByteString.Short.Internal qualified as BSS
 import Data.Hashable (Hashable, hash, hashWithSalt)
 
 import Data.Binary qualified as Bin
-import Data.Binary.Get qualified as Bin
 
 import Streamly.Data.Array qualified as Array
 import Streamly.Data.Fold qualified as F
@@ -126,10 +127,13 @@ digestToBase16ShortByteString :: Digest -> BSS.ShortByteString
 digestToBase16ShortByteString (Digest di) = B16.extractBase16 $ BSS16.encodeBase16' di
 {-# INLINE digestToBase16ShortByteString #-}
 
-digestFromByteString :: BS.ByteString -> Maybe Digest
-digestFromByteString bs
-  | BS.length bs == digestSize = Just $! Digest $ BSS.toShort bs
+digestFromShortByteString :: ShortByteString -> Maybe Digest
+digestFromShortByteString !sbs
+  | BSS.length sbs == digestSize = Just $ Digest sbs
   | otherwise = Nothing
+
+digestFromByteString :: BS.ByteString -> Maybe Digest
+digestFromByteString = digestFromShortByteString . BSS.toShort
 
 digestToByteString :: Digest -> BS.ByteString
 digestToByteString (Digest d) = BSS.fromShort d
