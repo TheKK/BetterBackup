@@ -25,8 +25,8 @@ import Data.Function ((&))
 import Data.Int (Int64)
 import Data.List (find)
 import Data.Maybe (catMaybes)
-import Data.Set (Set)
-import Data.Set qualified as Set
+import Data.Sequence (Seq)
+import Data.Sequence qualified as Seq
 import Data.Word (Word64)
 import Hedgehog qualified as H
 import Hedgehog.Gen qualified as Gen
@@ -49,7 +49,7 @@ data Header = PackerHeader
   , header_value_offset :: !Word64
   , header_value_length :: !Word64
   }
-  deriving (Show, Eq)
+  deriving (Show, Eq, Ord)
 
 empty_packer :: Packer
 empty_packer = Packer mempty []
@@ -74,15 +74,16 @@ packer_to_builder (Packer body headers) = body_bytes_builder <> BB.lazyByteStrin
 
     -- We need length of headers so must run its builder now.
     headers_bl = BB.toLazyByteString headers_builder
-    headers_builder = foldMap mk_header_builder headers
+    headers_builder = foldMap header_builder headers
 
-    mk_header_builder (PackerHeader value_digest value_off value_len) =
-      let
-        key_builder = sbs_to_builder $ Hash.digestToShortByteString value_digest
-        value_off_builder = BB.word64LE $ value_off
-        value_len_builder = BB.word64LE $ value_len
-      in
-        key_builder <> value_off_builder <> value_len_builder
+header_builder :: Header -> BB.Builder
+header_builder (PackerHeader value_digest value_off value_len) =
+  let
+    key_builder = sbs_to_builder $ Hash.digestToShortByteString value_digest
+    value_off_builder = BB.word64LE value_off
+    value_len_builder = BB.word64LE value_len
+  in
+    key_builder <> value_off_builder <> value_len_builder
 
 compute_packer_digest :: Packer -> Digest
 compute_packer_digest packer = compute_digest $ BB.toLazyByteString $ packer_to_builder packer
@@ -101,8 +102,8 @@ packed_indexes_to_builder (PackedIndexes idxes) = foldMap idx_to_builder idxes
     packer_digest_to_builder :: Digest -> BB.Builder
     packer_digest_to_builder d = BB.word8 0x00 <> sbs_to_builder (Hash.digestToShortByteString d)
 
-    key_to_builder :: Digest -> BB.Builder
-    key_to_builder d = BB.word8 0x01 <> sbs_to_builder (Hash.digestToShortByteString d)
+    key_to_builder :: Header -> BB.Builder
+    key_to_builder h = BB.word8 0x01 <> header_builder h
 
 sbs_to_builder :: ShortByteString -> BB.Builder
 sbs_to_builder sbs = BB.word64LE (fromIntegral $! SBS.length sbs) <> BB.shortByteString sbs
@@ -120,19 +121,19 @@ compute_packer_index_digest = compute_digest . BB.toLazyByteString . packed_inde
 
 data Index = Index
   { index_source_packer :: !Digest
-  , index_content :: !(Set Digest)
+  , index_content :: !(Seq Header)
   }
   deriving (Show, Eq)
 
 append_index :: Index -> PackedIndexes -> PackedIndexes
 append_index idx (PackedIndexes indexes) = PackedIndexes (indexes <> [idx])
 
-type PackingState = (Packer, Set Digest, PackedIndexes)
+type PackingState = (Packer, Seq Header, PackedIndexes)
 
-init_packing_state :: (Packer, Set digest, PackedIndexes)
-init_packing_state = (empty_packer, Set.empty, empty_packer_index)
+init_packing_state :: (Packer, Seq digest, PackedIndexes)
+init_packing_state = (empty_packer, Seq.empty, empty_packer_index)
 
-extract_packing_state :: (Packer, Set Digest, PackedIndexes) -> (Maybe (Digest, Packer), Maybe (Digest, PackedIndexes))
+extract_packing_state :: (Packer, Seq Header, PackedIndexes) -> (Maybe (Digest, Packer), Maybe (Digest, PackedIndexes))
 extract_packing_state (packer, idx, packer_idx)
   | packer == empty_packer = (Nothing, yield_packer_idx)
   | otherwise = (Just (compute_packer_digest packer, packer), yield_packer_idx)
@@ -144,7 +145,7 @@ extract_packing_state (packer, idx, packer_idx)
 
     packer_digest = compute_packer_digest packer
     packer_idx'
-      | Set.null idx = packer_idx
+      | null idx = packer_idx
       | otherwise = append_index (Index packer_digest idx) packer_idx
 
 data PackerConfig = PackerConfig
@@ -159,7 +160,7 @@ fold_packing_state_once
   -> PackingState
   -> BL.LazyByteString
   -> (PackingState, Maybe (Digest, Packer, Maybe (Digest, PackedIndexes)))
-fold_packing_state_once cfg (prev_packer, prev_collecting_key_set, prev_packer_index) value = ((packer', collecting_key_set', packer_index'), yield)
+fold_packing_state_once cfg (prev_packer, prev_collecting_header_seq, prev_packer_index) value = ((packer', collecting_header_seq', packer_index'), yield)
   where
     yield = case yield_packer of
       Nothing -> Nothing
@@ -170,18 +171,24 @@ fold_packing_state_once cfg (prev_packer, prev_collecting_key_set, prev_packer_i
         then (empty_packer, Just (compute_packer_digest cur_packer, cur_packer))
         else (cur_packer, Nothing)
 
-    (packer_index', collecting_key_set', yield_packer_index) = case yield_packer of
-      Nothing -> (prev_packer_index, cur_collecting_key_set, Nothing)
+    (packer_index', collecting_header_seq', yield_packer_index) = case yield_packer of
+      Nothing -> (prev_packer_index, cur_collecting_header_seq, Nothing)
       Just (yield_packer_digest, _) ->
-        let cur_packer_index = append_index (Index yield_packer_digest cur_collecting_key_set) prev_packer_index
+        let cur_packer_index = append_index (Index yield_packer_digest cur_collecting_header_seq) prev_packer_index
         in  if fromIntegral (index_body_length cur_packer_index) >= packer_config_max_index_bytes cfg
-              then (empty_packer_index, Set.empty, Just (compute_packer_index_digest cur_packer_index, cur_packer_index))
-              else (cur_packer_index, Set.empty, Nothing)
+              then (empty_packer_index, Seq.empty, Just (compute_packer_index_digest cur_packer_index, cur_packer_index))
+              else (cur_packer_index, Seq.empty, Nothing)
 
     cur_packer = append_lazy_bytestring value prev_packer
     -- Yes we compute digest of value of multiple times in different place, but since this is code
     -- for modling let's prioritize correctness over prioritize.
-    cur_collecting_key_set = Set.insert (compute_digest value) prev_collecting_key_set
+    cur_collecting_header_seq = prev_collecting_header_seq Seq.|> header_of_value
+
+    header_of_value =
+      PackerHeader
+        (compute_digest value)
+        (fromIntegral $ BL.length $ packer_body prev_packer)
+        (fromIntegral $ BL.length value)
 
 packing
   :: (Monad m)
@@ -227,14 +234,14 @@ props_packer_model =
       -- packer to index
       for_ digest_n_packers $ \(packer_digest, packer) -> do
         possible_indexes <- H.eval $ filter ((packer_digest ==) . index_source_packer) indexes
-        for_ (header_key <$> packer_header packer) $ \content_digest -> do
-          void $ H.evalMaybe $ find (Set.member content_digest . index_content) possible_indexes
+        for_ (packer_header packer) $ \header_from_packer -> do
+          void $ H.evalMaybe $ find (elem header_from_packer . index_content) possible_indexes
 
       -- index to packer
-      for_ indexes $ \(Index source_packer_digest content_digest_set) -> do
+      for_ indexes $ \(Index source_packer_digest content_header_seq) -> do
         source_packer <- H.evalMaybe (snd <$> find ((source_packer_digest ==) . fst) digest_n_packers)
-        for_ content_digest_set $ \content_digest -> do
-          void $ H.evalMaybe $ find ((content_digest ==) . header_key) $ packer_header source_packer
+        for_ content_header_seq $ \header_from_index -> do
+          void $ H.evalMaybe $ find ((header_from_index ==)) $ packer_header source_packer
 
     prop_sum_of_length_in_header_should_match_body :: H.Property
     prop_sum_of_length_in_header_should_match_body = H.property $ do
