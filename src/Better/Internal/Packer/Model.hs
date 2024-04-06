@@ -6,6 +6,15 @@
 --
 -- Please checkout "Better.Internal.Packer" for details.
 module Better.Internal.Packer.Model (
+  -- * Model of packer
+  PackerConfig (..),
+  Packer,
+  PackedIndexes,
+  packing,
+  packerToBuilder,
+  packedIndexToBuilder,
+
+  -- * Tests
   props_packer_model,
 ) where
 
@@ -57,7 +66,7 @@ empty_packer = Packer mempty []
 packer_body_length :: Packer -> Int64
 packer_body_length packer
   | packer == empty_packer = 0
-  | otherwise = BL.length $ BB.toLazyByteString $ packer_to_builder packer
+  | otherwise = BL.length $ BB.toLazyByteString $ packerToBuilder packer
 
 -- Unsafety: client must ensure that key is not duplicated.
 append_lazy_bytestring :: BL.LazyByteString -> Packer -> Packer
@@ -66,8 +75,8 @@ append_lazy_bytestring !value (Packer body header) = Packer (body <> value) (hea
     !new_header = PackerHeader (compute_digest value) cur_offset (fromIntegral $ BL.length value)
     !cur_offset = fromIntegral $ BL.length body
 
-packer_to_builder :: Packer -> BB.Builder
-packer_to_builder (Packer body headers) = body_bytes_builder <> BB.lazyByteString headers_bl <> headers_len_builder
+packerToBuilder :: Packer -> BB.Builder
+packerToBuilder (Packer body headers) = body_bytes_builder <> BB.lazyByteString headers_bl <> headers_len_builder
   where
     body_bytes_builder = BB.lazyByteString body
     headers_len_builder = BB.int64LE (BL.length headers_bl)
@@ -86,14 +95,14 @@ header_builder (PackerHeader value_digest value_off value_len) =
     key_builder <> value_off_builder <> value_len_builder
 
 compute_packer_digest :: Packer -> Digest
-compute_packer_digest packer = compute_digest $ BB.toLazyByteString $ packer_to_builder packer
+compute_packer_digest packer = compute_digest $ BB.toLazyByteString $ packerToBuilder packer
 
 newtype PackedIndexes = PackedIndexes [Index]
   deriving stock (Show)
   deriving newtype (Eq, Semigroup, Monoid)
 
-packed_indexes_to_builder :: PackedIndexes -> BB.Builder
-packed_indexes_to_builder (PackedIndexes idxes) = foldMap idx_to_builder idxes
+packedIndexToBuilder :: PackedIndexes -> BB.Builder
+packedIndexToBuilder (PackedIndexes idxes) = foldMap idx_to_builder idxes
   where
     idx_to_builder :: Index -> BB.Builder
     idx_to_builder (Index packer_digest keys_in_packer) =
@@ -114,10 +123,10 @@ empty_packer_index = PackedIndexes []
 index_body_length :: PackedIndexes -> Int64
 index_body_length packer_idx
   | packer_idx == empty_packer_index = 0
-  | otherwise = BL.length $ BB.toLazyByteString $ packed_indexes_to_builder packer_idx
+  | otherwise = BL.length $ BB.toLazyByteString $ packedIndexToBuilder packer_idx
 
 compute_packer_index_digest :: PackedIndexes -> Digest
-compute_packer_index_digest = compute_digest . BB.toLazyByteString . packed_indexes_to_builder
+compute_packer_index_digest = compute_digest . BB.toLazyByteString . packedIndexToBuilder
 
 data Index = Index
   { index_source_packer :: !Digest
@@ -190,6 +199,9 @@ fold_packing_state_once cfg (prev_packer, prev_collecting_header_seq, prev_packe
         (fromIntegral $ BL.length $ packer_body prev_packer)
         (fromIntegral $ BL.length value)
 
+-- | Main entry of packer model.
+--
+-- Use 'packerToBuilder' and 'packedIndexToBuilder' to obtain corresponding binary.
 packing
   :: (Monad m)
   => PackerConfig
