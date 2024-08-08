@@ -13,21 +13,35 @@ module Better.TempDir (
   runTmp,
   withEmptyTmpFile,
   withEmptyTmpFileFd,
+  withTmpFileHandle,
+  withTmpDir,
 ) where
 
 import Better.TempDir.Class (Tmp)
 import Control.Exception (bracketOnError)
 import Effectful ((:>))
 import Effectful qualified as E
+import Effectful.Dispatch.Static qualified as E
 import Effectful.Dispatch.Static qualified as ES
 import Effectful.Dispatch.Static.Unsafe qualified as EU
 import Path (Path, (</>))
 import Path qualified
 import System.Directory (removeFile)
 import System.IO (Handle, hClose)
+import System.IO.Temp (withTempDirectory, withTempFile)
 import System.Posix.Temp qualified as P
 
 newtype instance ES.StaticRep Tmp = TmpRep (Path Path.Abs Path.Dir)
+
+-- | Provide temporary directory in @run@. Given 'Path' would be removed from filesystem recursively after
+-- @run@ completes or failes.
+withTmpDir :: Tmp :> es => (Path Path.Abs Path.Dir -> E.Eff es a) -> E.Eff es a
+withTmpDir run = do
+  TmpRep tmp_dir <- ES.getStaticRep
+  E.unsafeSeqUnliftIO $ \seq_un -> do
+    withTempDirectory (Path.toFilePath tmp_dir) "tmp-dir" $ \raw_tmp_dir -> do
+      dir <- Path.parseAbsDir raw_tmp_dir
+      seq_un $ run dir
 
 withEmptyTmpFile :: Tmp :> es => (Path Path.Abs Path.File -> E.Eff es a) -> E.Eff es a
 withEmptyTmpFile run = do
@@ -46,6 +60,14 @@ withEmptyTmpFile run = do
           abs_file <- Path.parseAbsFile filename
           un $ run abs_file
       )
+
+-- | Provide temporary file in @run@. Given 'Handle' would be closed and removed from
+-- filesystem after @run@ completes or failes.
+withTmpFileHandle :: Tmp :> es => (Handle -> E.Eff es a) -> E.Eff es a
+withTmpFileHandle run = do
+  TmpRep tmp_dir <- ES.getStaticRep
+  E.unsafeSeqUnliftIO $ \seq_un -> do
+    withTempFile (Path.toFilePath tmp_dir) "empty-tmp" $ \p h -> seq_un $ run h
 
 -- | Provide tmp file in @run
 --
