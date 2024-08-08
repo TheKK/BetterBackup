@@ -9,8 +9,12 @@
 {-# LANGUAGE UndecidableInstances #-}
 
 module Better.TempDir (
-  -- * Effectful
+  module Better.TempDir.Class,
+
+  -- * Effectful handlers
   runTmp,
+
+  -- * Effectful functions
   withEmptyTmpFile,
   withEmptyTmpFileFd,
   withTmpFileHandle,

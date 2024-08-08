@@ -2,20 +2,12 @@
 {-# LANGUAGE TypeFamilies #-}
 
 module Better.TempDir.Class (
-  MonadTmp (..),
-
-  -- * Effectufl
+  -- * Effectful effects
   Tmp,
 ) where
 
-import Path (Path)
-import qualified Path
-
-import qualified Effectful as E
-import qualified Effectful.Dispatch.Static as ES
-
-class MonadTmp m where
-  withEmptyTmpFile :: (Path Path.Abs Path.File -> m a) -> m a
+import Effectful qualified as E
+import Effectful.Dispatch.Static qualified as ES
 
 data Tmp :: E.Effect
 type instance E.DispatchOf Tmp = 'E.Static 'ES.WithSideEffects
