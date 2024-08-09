@@ -29,7 +29,7 @@
 --
 -- [packed_indexes]: [ packer_name | [ [ packer_name ] or [ key_in_packer ] * N ] ]
 -- [packer_name]: [ 0x00 (word8) | length of packer name (w64-le) | bytes of packer name (raw bytes) ]
--- [key_in_packer]: [ 0x01 (word8) | headers ]
+-- [key_in_packer]: [ 0x01 (word8) | header ]
 --
 -- == Notes
 -- We use TVL(Type-Length-Value) encoding here to maximun the ability of streaming index.
