@@ -102,7 +102,7 @@ defaultGearHashConfig = gearHashConfig normalize_level avg_bytes
     !normalize_level = 2
 
     avg_bytes :: Word32
-    !avg_bytes = 32 * 2 ^ (10 :: Int)
+    !avg_bytes = 1 * 2 ^ (20 :: Int)
 
 gearHashConfigMinChunkSize :: GearHashConfig -> Word32
 gearHashConfigMinChunkSize = gearhash_min_size
